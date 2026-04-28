@@ -5,7 +5,7 @@
 
 import Foundation
 
-struct UserID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
+nonisolated struct UserID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
     let rawValue: String
 
     init(rawValue: String) {
@@ -17,7 +17,7 @@ struct UserID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStrin
     }
 }
 
-struct ConversationID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
+nonisolated struct ConversationID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
     let rawValue: String
 
     init(rawValue: String) {
@@ -29,7 +29,7 @@ struct ConversationID: RawRepresentable, Hashable, Codable, Sendable, Expressibl
     }
 }
 
-struct MessageID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
+nonisolated struct MessageID: RawRepresentable, Hashable, Codable, Sendable, ExpressibleByStringLiteral {
     let rawValue: String
 
     init(rawValue: String) {

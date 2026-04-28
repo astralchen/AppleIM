@@ -12,7 +12,7 @@ private let conversationListSection = "main"
 
 @MainActor
 final class ConversationListViewController: UIViewController {
-    private let viewModel = ConversationListViewModel(useCase: PreviewConversationListUseCase())
+    private let viewModel: ConversationListViewModel
     private var cancellables = Set<AnyCancellable>()
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ConversationListRowState] = [:]
@@ -24,6 +24,15 @@ final class ConversationListViewController: UIViewController {
 
     private let emptyLabel = UILabel()
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
+
+    init(viewModel: ConversationListViewModel) {
+        self.viewModel = viewModel
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("Storyboard initialization is not supported.")
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()

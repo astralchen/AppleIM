@@ -9,7 +9,34 @@ protocol ConversationListUseCase: Sendable {
     func loadConversations() async throws -> [ConversationListRowState]
 }
 
-struct PreviewConversationListUseCase: ConversationListUseCase {
+nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
+    private let userID: UserID
+    private let storeProvider: ChatStoreProvider
+
+    init(userID: UserID, storeProvider: ChatStoreProvider) {
+        self.userID = userID
+        self.storeProvider = storeProvider
+    }
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        let repository = try await storeProvider.repository()
+        let conversations = try await repository.listConversations(for: userID)
+
+        return conversations.map { conversation in
+            ConversationListRowState(
+                id: conversation.id,
+                title: conversation.title,
+                subtitle: conversation.lastMessageDigest,
+                timeText: conversation.lastMessageTimeText,
+                unreadText: conversation.unreadCount > 0 ? "\(conversation.unreadCount)" : nil,
+                isPinned: conversation.isPinned,
+                isMuted: conversation.isMuted
+            )
+        }
+    }
+}
+
+nonisolated struct PreviewConversationListUseCase: ConversationListUseCase {
     func loadConversations() async throws -> [ConversationListRowState] {
         try await Task.sleep(nanoseconds: 120_000_000)
 

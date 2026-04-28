@@ -5,7 +5,7 @@
 
 import Foundation
 
-struct ConversationListRowState: Identifiable, Equatable, Sendable {
+nonisolated struct ConversationListRowState: Identifiable, Equatable, Sendable {
     let id: ConversationID
     let title: String
     let subtitle: String
@@ -15,7 +15,7 @@ struct ConversationListRowState: Identifiable, Equatable, Sendable {
     let isMuted: Bool
 }
 
-struct ConversationListViewState: Equatable, Sendable {
+nonisolated struct ConversationListViewState: Equatable, Sendable {
     enum LoadingPhase: Equatable, Sendable {
         case idle
         case loading

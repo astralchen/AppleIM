@@ -16,7 +16,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = ConversationListViewController()
+
+        do {
+            let dependencies = try AppDependencyContainer()
+            window.rootViewController = UINavigationController(
+                rootViewController: dependencies.makeConversationListViewController()
+            )
+        } catch {
+            window.rootViewController = makeStartupErrorViewController()
+        }
+
         window.makeKeyAndVisible()
         self.window = window
     }
@@ -50,4 +59,24 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
 
+}
+
+private func makeStartupErrorViewController() -> UIViewController {
+    let viewController = UIViewController()
+    viewController.view.backgroundColor = .systemBackground
+
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.text = "Unable to start ChatBridge"
+    label.textColor = .secondaryLabel
+    label.font = .preferredFont(forTextStyle: .body)
+
+    viewController.view.addSubview(label)
+
+    NSLayoutConstraint.activate([
+        label.centerXAnchor.constraint(equalTo: viewController.view.centerXAnchor),
+        label.centerYAnchor.constraint(equalTo: viewController.view.centerYAnchor)
+    ])
+
+    return viewController
 }

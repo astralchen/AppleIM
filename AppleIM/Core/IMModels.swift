@@ -5,14 +5,14 @@
 
 import Foundation
 
-enum ConversationType: Int, Codable, Sendable {
+nonisolated enum ConversationType: Int, Codable, Sendable {
     case single = 1
     case group = 2
     case system = 3
     case service = 4
 }
 
-enum MessageType: Int, Codable, Sendable {
+nonisolated enum MessageType: Int, Codable, Sendable {
     case text = 1
     case image = 2
     case voice = 3
@@ -24,14 +24,19 @@ enum MessageType: Int, Codable, Sendable {
     case quote = 11
 }
 
-enum MessageSendStatus: Int, Codable, Sendable {
+nonisolated enum MessageSendStatus: Int, Codable, Sendable {
     case pending = 0
     case sending = 1
     case success = 2
     case failed = 3
 }
 
-struct Conversation: Identifiable, Equatable, Sendable {
+nonisolated enum MessageDirection: Int, Codable, Sendable {
+    case outgoing = 1
+    case incoming = 2
+}
+
+nonisolated struct Conversation: Identifiable, Equatable, Sendable {
     let id: ConversationID
     let type: ConversationType
     let title: String
@@ -40,4 +45,16 @@ struct Conversation: Identifiable, Equatable, Sendable {
     let unreadCount: Int
     let isPinned: Bool
     let isMuted: Bool
+}
+
+nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
+    let id: MessageID
+    let conversationID: ConversationID
+    let senderID: UserID
+    let type: MessageType
+    let direction: MessageDirection
+    let sendStatus: MessageSendStatus
+    let text: String?
+    let sortSequence: Int64
+    let localTime: Int64
 }
