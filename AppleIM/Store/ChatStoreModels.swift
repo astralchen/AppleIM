@@ -72,4 +72,6 @@ protocol ConversationRepository: Sendable {
 protocol MessageRepository: Sendable {
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
+    func message(messageID: MessageID) async throws -> StoredMessage?
+    func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus) async throws
 }

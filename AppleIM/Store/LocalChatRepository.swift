@@ -45,6 +45,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         )
     }
 
+    func message(messageID: MessageID) async throws -> StoredMessage? {
+        try await messageDAO.message(messageID: messageID)
+    }
+
+    func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus) async throws {
+        try await messageDAO.updateSendStatus(messageID: messageID, status: status)
+    }
+
     func hasConversations(for userID: UserID) async throws -> Bool {
         try await conversationDAO.countConversations(for: userID) > 0
     }

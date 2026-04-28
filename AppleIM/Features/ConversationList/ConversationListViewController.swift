@@ -13,6 +13,7 @@ private let conversationListSection = "main"
 @MainActor
 final class ConversationListViewController: UIViewController {
     private let viewModel: ConversationListViewModel
+    private let onSelectConversation: (ConversationListRowState) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ConversationListRowState] = [:]
@@ -25,8 +26,12 @@ final class ConversationListViewController: UIViewController {
     private let emptyLabel = UILabel()
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
 
-    init(viewModel: ConversationListViewModel) {
+    init(
+        viewModel: ConversationListViewModel,
+        onSelectConversation: @escaping (ConversationListRowState) -> Void
+    ) {
         self.viewModel = viewModel
+        self.onSelectConversation = onSelectConversation
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -53,6 +58,7 @@ final class ConversationListViewController: UIViewController {
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .systemGroupedBackground
+        collectionView.delegate = self
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.textColor = .secondaryLabel
@@ -172,6 +178,21 @@ final class ConversationListViewController: UIViewController {
         }
 
         return accessories
+    }
+}
+
+extension ConversationListViewController: UICollectionViewDelegate {
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        collectionView.deselectItem(at: indexPath, animated: true)
+
+        guard
+            let rowID = dataSource?.itemIdentifier(for: indexPath),
+            let row = rowsByID[rowID]
+        else {
+            return
+        }
+
+        onSelectConversation(row)
     }
 }
 

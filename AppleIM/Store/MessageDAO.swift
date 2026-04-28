@@ -47,6 +47,51 @@ nonisolated struct MessageDAO: Sendable {
         return try rows.map(Self.message(from:))
     }
 
+    func message(messageID: MessageID) async throws -> StoredMessage? {
+        let rows = try await database.query(
+            """
+            SELECT
+                message.message_id,
+                message.conversation_id,
+                message.sender_id,
+                message.msg_type,
+                message.direction,
+                message.send_status,
+                message.sort_seq,
+                message.local_time,
+                message_text.text
+            FROM message
+            LEFT JOIN message_text ON message_text.content_id = message.content_id
+            WHERE message.message_id = ?
+            AND message.is_deleted = 0
+            LIMIT 1;
+            """,
+            parameters: [.text(messageID.rawValue)],
+            paths: paths
+        )
+
+        guard let row = rows.first else {
+            return nil
+        }
+
+        return try Self.message(from: row)
+    }
+
+    func updateSendStatus(messageID: MessageID, status: MessageSendStatus) async throws {
+        try await database.execute(
+            """
+            UPDATE message
+            SET send_status = ?
+            WHERE message_id = ?;
+            """,
+            parameters: [
+                .integer(Int64(status.rawValue)),
+                .text(messageID.rawValue)
+            ],
+            paths: paths
+        )
+    }
+
     static func insertOutgoingTextStatements(_ input: OutgoingTextMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
         let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
         let clientMessageID = input.clientMessageID ?? messageID.rawValue

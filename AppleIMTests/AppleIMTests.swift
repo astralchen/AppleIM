@@ -238,6 +238,147 @@ struct AppleIMTests {
         #expect(rows.first?.id == "single_sondra")
         #expect(rows.first?.unreadText == "2")
     }
+
+    @Test func messageRepositoryUpdatesSendStatusAndFindsMessageByID() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "status_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "status_conversation", userID: "status_user", title: "Status", sortTimestamp: 1)
+        )
+
+        let insertedMessage = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "status_user",
+                conversationID: "status_conversation",
+                senderID: "status_user",
+                text: "Status update",
+                localTime: 400,
+                messageID: "status_message",
+                clientMessageID: "status_client",
+                sortSequence: 400
+            )
+        )
+
+        try await repository.updateMessageSendStatus(messageID: insertedMessage.id, status: .success)
+
+        let updatedMessage = try await repository.message(messageID: insertedMessage.id)
+        let missingMessage = try await repository.message(messageID: "missing_message")
+
+        #expect(updatedMessage?.sendStatus == .success)
+        #expect(missingMessage == nil)
+    }
+
+    @Test func chatUseCaseLoadsInitialMessagesInAscendingOrder() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "chat_order_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "chat_order_conversation", userID: "chat_order_user", title: "Chat", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "chat_order_user",
+                conversationID: "chat_order_conversation",
+                senderID: "chat_order_user",
+                text: "First",
+                localTime: 100,
+                messageID: "chat_first",
+                clientMessageID: "chat_first_client",
+                sortSequence: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "chat_order_user",
+                conversationID: "chat_order_conversation",
+                senderID: "chat_order_user",
+                text: "Second",
+                localTime: 200,
+                messageID: "chat_second",
+                clientMessageID: "chat_second_client",
+                sortSequence: 200
+            )
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "chat_order_user",
+            conversationID: "chat_order_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let rows = try await useCase.loadInitialMessages()
+
+        #expect(rows.map(\.text) == ["First", "Second"])
+    }
+
+    @Test func chatUseCaseSendTextYieldsSendingThenSuccess() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "chat_send_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "chat_send_conversation", userID: "chat_send_user", title: "Send", sortTimestamp: 1)
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "chat_send_user",
+            conversationID: "chat_send_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let rows = try await collectRows(from: useCase.sendText("Hello mock ack"))
+        let storedMessage = try await repository.message(messageID: rows[0].id)
+
+        #expect(rows.count == 2)
+        #expect(rows[0].statusText == "Sending")
+        #expect(rows[1].statusText == nil)
+        #expect(storedMessage?.sendStatus == .success)
+    }
+
+    @Test func chatUseCaseDoesNotSendBlankText() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "blank_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "blank_conversation", userID: "blank_user", title: "Blank", sortTimestamp: 1)
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "blank_user",
+            conversationID: "blank_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let rows = try await collectRows(from: useCase.sendText("   \n  "))
+        let messages = try await repository.listMessages(conversationID: "blank_conversation", limit: 20, beforeSortSeq: nil)
+
+        #expect(rows.isEmpty)
+        #expect(messages.isEmpty)
+    }
+
+    @MainActor
+    @Test func chatViewModelCancelStopsPendingLoadUpdate() async throws {
+        let viewModel = ChatViewModel(useCase: SlowChatUseCase(), title: "Cancel")
+
+        viewModel.load()
+        viewModel.cancel()
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        #expect(viewModel.currentState.phase == .loading)
+        #expect(viewModel.currentState.rows.isEmpty)
+    }
 }
 
 private struct StubConversationListUseCase: ConversationListUseCase {
@@ -253,6 +394,27 @@ private struct StubConversationListUseCase: ConversationListUseCase {
                 isMuted: false
             )
         ]
+    }
+}
+
+private struct SlowChatUseCase: ChatUseCase {
+    func loadInitialMessages() async throws -> [ChatMessageRowState] {
+        try await Task.sleep(nanoseconds: 200_000_000)
+        return [
+            ChatMessageRowState(
+                id: "slow_message",
+                text: "Too late",
+                timeText: "Now",
+                statusText: nil,
+                isOutgoing: true
+            )
+        ]
+    }
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
     }
 }
 
@@ -305,4 +467,14 @@ private func makeConversationRecord(
         updatedAt: sortTimestamp,
         createdAt: sortTimestamp
     )
+}
+
+private func collectRows(from stream: AsyncThrowingStream<ChatMessageRowState, Error>) async throws -> [ChatMessageRowState] {
+    var rows: [ChatMessageRowState] = []
+
+    for try await row in stream {
+        rows.append(row)
+    }
+
+    return rows
 }
