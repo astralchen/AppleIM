@@ -23,10 +23,12 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         let conversations = try await repository.listConversations(for: userID)
 
         return conversations.map { conversation in
-            ConversationListRowState(
+            let subtitle = conversation.draftText.map { "Draft: \($0)" } ?? conversation.lastMessageDigest
+
+            return ConversationListRowState(
                 id: conversation.id,
                 title: conversation.title,
-                subtitle: conversation.lastMessageDigest,
+                subtitle: subtitle,
                 timeText: conversation.lastMessageTimeText,
                 unreadText: conversation.unreadCount > 0 ? "\(conversation.unreadCount)" : nil,
                 isPinned: conversation.isPinned,

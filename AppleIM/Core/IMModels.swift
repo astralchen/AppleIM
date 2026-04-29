@@ -45,15 +45,23 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
     let unreadCount: Int
     let isPinned: Bool
     let isMuted: Bool
+    let draftText: String?
 }
 
 nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let id: MessageID
     let conversationID: ConversationID
     let senderID: UserID
+    let clientMessageID: String?
+    let serverMessageID: String?
+    let sequence: Int64?
     let type: MessageType
     let direction: MessageDirection
     let sendStatus: MessageSendStatus
+    let serverTime: Int64?
+    let isRevoked: Bool
+    let isDeleted: Bool
+    let revokeReplacementText: String?
     let text: String?
     let sortSequence: Int64
     let localTime: Int64

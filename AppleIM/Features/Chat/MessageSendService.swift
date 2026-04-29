@@ -5,8 +5,14 @@
 
 import Foundation
 
+nonisolated struct MessageSendAck: Equatable, Sendable {
+    let serverMessageID: String
+    let sequence: Int64
+    let serverTime: Int64
+}
+
 nonisolated enum MessageSendResult: Equatable, Sendable {
-    case success
+    case success(MessageSendAck)
     case failure
 }
 
@@ -18,7 +24,10 @@ nonisolated struct MockMessageSendService: MessageSendService {
     private let result: MessageSendResult
     private let delayNanoseconds: UInt64
 
-    init(result: MessageSendResult = .success, delayNanoseconds: UInt64 = 300_000_000) {
+    init(
+        result: MessageSendResult = .success(MessageSendAck(serverMessageID: "", sequence: 0, serverTime: 0)),
+        delayNanoseconds: UInt64 = 300_000_000
+    ) {
         self.result = result
         self.delayNanoseconds = delayNanoseconds
     }
@@ -30,6 +39,17 @@ nonisolated struct MockMessageSendService: MessageSendService {
             return .failure
         }
 
-        return result
+        switch result {
+        case .success:
+            return .success(
+                MessageSendAck(
+                    serverMessageID: "server_\(message.id.rawValue)",
+                    sequence: message.sortSequence,
+                    serverTime: Int64(Date().timeIntervalSince1970)
+                )
+            )
+        case .failure:
+            return .failure
+        }
     }
 }

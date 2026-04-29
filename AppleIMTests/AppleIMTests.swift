@@ -263,7 +263,11 @@ struct AppleIMTests {
             )
         )
 
-        try await repository.updateMessageSendStatus(messageID: insertedMessage.id, status: .success)
+        try await repository.updateMessageSendStatus(
+            messageID: insertedMessage.id,
+            status: .success,
+            ack: MessageSendAck(serverMessageID: "server_status", sequence: 401, serverTime: 401)
+        )
 
         let updatedMessage = try await repository.message(messageID: insertedMessage.id)
         let missingMessage = try await repository.message(messageID: "missing_message")
@@ -368,6 +372,193 @@ struct AppleIMTests {
         #expect(messages.isEmpty)
     }
 
+    @Test func chatUseCaseResendsFailedTextWithoutDuplicatingMessage() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "resend_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "resend_conversation", userID: "resend_user", title: "Resend", sortTimestamp: 1)
+        )
+
+        let failingUseCase = LocalChatUseCase(
+            userID: "resend_user",
+            conversationID: "resend_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(result: .failure, delayNanoseconds: 0)
+        )
+        let failedRows = try await collectRows(from: failingUseCase.sendText("Retry me"))
+        let failedMessageID = failedRows[0].id
+        let failedMessage = try await repository.message(messageID: failedMessageID)!
+
+        let retryingUseCase = LocalChatUseCase(
+            userID: "resend_user",
+            conversationID: "resend_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
+        let storedMessages = try await repository.listMessages(conversationID: "resend_conversation", limit: 20, beforeSortSeq: nil)
+        let resentMessage = try await repository.message(messageID: failedMessageID)!
+
+        #expect(failedRows.map(\.statusText) == ["Sending", "Failed"])
+        #expect(failedRows.last?.canRetry == true)
+        #expect(retryRows.map(\.statusText) == ["Sending", nil])
+        #expect(storedMessages.count == 1)
+        #expect(resentMessage.sendStatus == .success)
+        #expect(resentMessage.clientMessageID == failedMessage.clientMessageID)
+    }
+
+    @Test func repositoryDeletesMessageAndRefreshesConversationSummary() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "delete_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "delete_conversation", userID: "delete_user", title: "Delete", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "delete_user",
+                conversationID: "delete_conversation",
+                senderID: "delete_user",
+                text: "First visible",
+                localTime: 100,
+                messageID: "delete_first",
+                clientMessageID: "delete_first_client",
+                sortSequence: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "delete_user",
+                conversationID: "delete_conversation",
+                senderID: "delete_user",
+                text: "Delete me",
+                localTime: 200,
+                messageID: "delete_second",
+                clientMessageID: "delete_second_client",
+                sortSequence: 200
+            )
+        )
+
+        try await repository.markMessageDeleted(messageID: "delete_second", userID: "delete_user")
+
+        let messages = try await repository.listMessages(conversationID: "delete_conversation", limit: 20, beforeSortSeq: nil)
+        let conversations = try await repository.listConversations(for: "delete_user")
+
+        #expect(messages.map(\.id.rawValue) == ["delete_first"])
+        #expect(conversations.first?.lastMessageDigest == "First visible")
+    }
+
+    @Test func repositoryRevokesMessageAndPersistsReplacementText() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "revoke_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "revoke_conversation", userID: "revoke_user", title: "Revoke", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "revoke_user",
+                conversationID: "revoke_conversation",
+                senderID: "revoke_user",
+                text: "Secret",
+                localTime: 300,
+                messageID: "revoke_message",
+                clientMessageID: "revoke_client",
+                sortSequence: 300
+            )
+        )
+
+        let revokedMessage = try await repository.revokeMessage(
+            messageID: "revoke_message",
+            userID: "revoke_user",
+            replacementText: "你撤回了一条消息"
+        )
+        let reloadedMessage = try await repository.message(messageID: "revoke_message")!
+        let conversations = try await repository.listConversations(for: "revoke_user")
+
+        #expect(revokedMessage.isRevoked)
+        #expect(reloadedMessage.isRevoked)
+        #expect(reloadedMessage.revokeReplacementText == "你撤回了一条消息")
+        #expect(conversations.first?.lastMessageDigest == "你撤回了一条消息")
+    }
+
+    @Test func draftIsPersistedAndPrioritizedInConversationList() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "draft_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.saveDraft(
+            conversationID: "system_release",
+            userID: "draft_user",
+            text: "Remember this"
+        )
+
+        let draftText = try await repository.draft(conversationID: "system_release", userID: "draft_user")
+        let rows = try await LocalConversationListUseCase(
+            userID: "draft_user",
+            storeProvider: storeProvider
+        ).loadConversations()
+        let draftRowIndex = rows.firstIndex { $0.id == "system_release" }
+        let otherUnpinnedRowIndex = rows.firstIndex { $0.id == "group_core" }
+
+        #expect(draftText == "Remember this")
+        #expect(draftRowIndex != nil)
+        #expect(otherUnpinnedRowIndex != nil)
+        #expect((draftRowIndex ?? 0) < (otherUnpinnedRowIndex ?? 0))
+        #expect(rows[draftRowIndex ?? 0].subtitle == "Draft: Remember this")
+
+        try await repository.clearDraft(conversationID: "system_release", userID: "draft_user")
+        #expect(try await repository.draft(conversationID: "system_release", userID: "draft_user") == nil)
+    }
+
+    @Test func chatUseCaseMarksConversationReadWhenLoadingMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "read_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "read_conversation",
+                userID: "read_user",
+                title: "Read",
+                unreadCount: 3,
+                sortTimestamp: 1
+            )
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "read_user",
+            conversationID: "read_conversation",
+            repository: repository,
+            conversationRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        _ = try await useCase.loadInitialMessages()
+        let conversations = try await repository.listConversations(for: "read_user")
+
+        #expect(conversations.first?.unreadCount == 0)
+    }
+
     @MainActor
     @Test func chatViewModelCancelStopsPendingLoadUpdate() async throws {
         let viewModel = ChatViewModel(useCase: SlowChatUseCase(), title: "Cancel")
@@ -406,16 +597,36 @@ private struct SlowChatUseCase: ChatUseCase {
                 text: "Too late",
                 timeText: "Now",
                 statusText: nil,
-                isOutgoing: true
+                isOutgoing: true,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false,
+                isRevoked: false
             )
         ]
     }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
 
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
         }
     }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
 }
 
 private func temporaryDirectory() -> URL {
@@ -447,6 +658,8 @@ private func makeConversationRecord(
     userID: UserID,
     title: String,
     isPinned: Bool = false,
+    unreadCount: Int = 0,
+    draftText: String? = nil,
     sortTimestamp: Int64
 ) -> ConversationRecord {
     ConversationRecord(
@@ -459,7 +672,8 @@ private func makeConversationRecord(
         lastMessageID: nil,
         lastMessageTime: sortTimestamp,
         lastMessageDigest: "Digest \(title)",
-        unreadCount: 0,
+        unreadCount: unreadCount,
+        draftText: draftText,
         isPinned: isPinned,
         isMuted: false,
         isHidden: false,

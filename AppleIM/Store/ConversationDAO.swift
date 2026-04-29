@@ -28,13 +28,14 @@ nonisolated struct ConversationDAO: Sendable {
                 last_message_time,
                 last_message_digest,
                 unread_count,
+                draft_text,
                 is_pinned,
                 is_muted,
                 is_hidden,
                 sort_ts,
                 updated_at,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 biz_type = excluded.biz_type,
@@ -45,6 +46,7 @@ nonisolated struct ConversationDAO: Sendable {
                 last_message_time = excluded.last_message_time,
                 last_message_digest = excluded.last_message_digest,
                 unread_count = excluded.unread_count,
+                draft_text = excluded.draft_text,
                 is_pinned = excluded.is_pinned,
                 is_muted = excluded.is_muted,
                 is_hidden = excluded.is_hidden,
@@ -70,6 +72,7 @@ nonisolated struct ConversationDAO: Sendable {
                 last_message_time,
                 last_message_digest,
                 unread_count,
+                draft_text,
                 is_pinned,
                 is_muted,
                 is_hidden,
@@ -162,13 +165,14 @@ nonisolated struct ConversationDAO: Sendable {
                 last_message_time,
                 last_message_digest,
                 unread_count,
+                draft_text,
                 is_pinned,
                 is_muted,
                 is_hidden,
                 sort_ts,
                 updated_at,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 user_id = excluded.user_id,
                 biz_type = excluded.biz_type,
@@ -179,6 +183,7 @@ nonisolated struct ConversationDAO: Sendable {
                 last_message_time = excluded.last_message_time,
                 last_message_digest = excluded.last_message_digest,
                 unread_count = excluded.unread_count,
+                draft_text = excluded.draft_text,
                 is_pinned = excluded.is_pinned,
                 is_muted = excluded.is_muted,
                 is_hidden = excluded.is_hidden,
@@ -201,6 +206,7 @@ nonisolated struct ConversationDAO: Sendable {
             .optionalInteger(record.lastMessageTime),
             .text(record.lastMessageDigest),
             .integer(Int64(record.unreadCount)),
+            .optionalText(record.draftText),
             .integer(record.isPinned ? 1 : 0),
             .integer(record.isMuted ? 1 : 0),
             .integer(record.isHidden ? 1 : 0),
@@ -228,6 +234,7 @@ nonisolated struct ConversationDAO: Sendable {
             lastMessageTime: row.int64("last_message_time"),
             lastMessageDigest: row.string("last_message_digest") ?? "",
             unreadCount: try row.requiredInt("unread_count"),
+            draftText: row.string("draft_text"),
             isPinned: row.bool("is_pinned"),
             isMuted: row.bool("is_muted"),
             isHidden: row.bool("is_hidden"),

@@ -44,6 +44,10 @@ final class ConversationListViewController: UIViewController {
         configureView()
         configureDataSource()
         bindViewModel()
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
         viewModel.load()
     }
 

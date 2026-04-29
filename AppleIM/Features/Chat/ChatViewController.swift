@@ -21,6 +21,7 @@ final class ChatViewController: UIViewController {
     )
     private let emptyLabel = UILabel()
     private let inputContainerView = UIView()
+    private let inputStackView = UIStackView()
     private let textField = UITextField()
     private let sendButton = UIButton(type: .system)
 
@@ -44,6 +45,7 @@ final class ChatViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         viewModel.cancel()
+        viewModel.flushDraft(textField.text ?? "")
     }
 
     private func configureView() {
@@ -53,6 +55,7 @@ final class ChatViewController: UIViewController {
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
+        collectionView.delegate = self
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.text = "No messages yet"
@@ -63,23 +66,53 @@ final class ChatViewController: UIViewController {
 
         inputContainerView.translatesAutoresizingMaskIntoConstraints = false
         inputContainerView.backgroundColor = .secondarySystemGroupedBackground
+        inputContainerView.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: 10,
+            leading: 16,
+            bottom: 10,
+            trailing: 16
+        )
+
+        inputStackView.translatesAutoresizingMaskIntoConstraints = false
+        inputStackView.axis = .horizontal
+        inputStackView.alignment = .center
+        inputStackView.spacing = 12
+        inputStackView.distribution = .fill
 
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.borderStyle = .roundedRect
         textField.placeholder = "Message"
         textField.returnKeyType = .send
         textField.delegate = self
+        textField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textField.addTarget(self, action: #selector(textFieldEditingChanged), for: .editingChanged)
 
         sendButton.translatesAutoresizingMaskIntoConstraints = false
-        sendButton.setTitle("Send", for: .normal)
-        sendButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
+        var sendButtonConfiguration = UIButton.Configuration.plain()
+        sendButtonConfiguration.title = "Send"
+        sendButtonConfiguration.contentInsets = NSDirectionalEdgeInsets(
+            top: 8,
+            leading: 10,
+            bottom: 8,
+            trailing: 10
+        )
+        sendButtonConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = .preferredFont(forTextStyle: .headline)
+            return attributes
+        }
+        sendButton.configuration = sendButtonConfiguration
+        sendButton.setContentHuggingPriority(.required, for: .horizontal)
+        sendButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         sendButton.addTarget(self, action: #selector(sendButtonTapped), for: .touchUpInside)
 
         view.addSubview(collectionView)
         view.addSubview(emptyLabel)
         view.addSubview(inputContainerView)
-        inputContainerView.addSubview(textField)
-        inputContainerView.addSubview(sendButton)
+        inputContainerView.addSubview(inputStackView)
+        inputStackView.addArrangedSubview(textField)
+        inputStackView.addArrangedSubview(sendButton)
 
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -94,23 +127,25 @@ final class ChatViewController: UIViewController {
 
             inputContainerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             inputContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            inputContainerView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            inputContainerView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
 
-            textField.leadingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.leadingAnchor),
-            textField.topAnchor.constraint(equalTo: inputContainerView.topAnchor, constant: 10),
-            textField.bottomAnchor.constraint(equalTo: inputContainerView.bottomAnchor, constant: -10),
+            inputStackView.leadingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.leadingAnchor),
+            inputStackView.trailingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.trailingAnchor),
+            inputStackView.topAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.topAnchor),
+            inputStackView.bottomAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.bottomAnchor),
 
-            sendButton.leadingAnchor.constraint(equalTo: textField.trailingAnchor, constant: 8),
-            sendButton.trailingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.trailingAnchor),
-            sendButton.centerYAnchor.constraint(equalTo: textField.centerYAnchor),
-            sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 52)
+            textField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            sendButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
         ])
     }
 
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, String> { [weak self] cell, _, rowID in
             guard let row = self?.rowsByID[rowID] else { return }
-            cell.configure(row: row)
+            cell.configure(row: row) { [weak self] messageID in
+                self?.viewModel.resend(messageID: messageID)
+            }
         }
 
         dataSource = UICollectionViewDiffableDataSource<String, String>(
@@ -140,11 +175,15 @@ final class ChatViewController: UIViewController {
         title = state.title
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
-        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
+        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.diffIdentifier, $0) })
+
+        if !textField.isFirstResponder, textField.text != state.draftText {
+            textField.text = state.draftText
+        }
 
         var snapshot = NSDiffableDataSourceSnapshot<String, String>()
         snapshot.appendSections([chatSection])
-        snapshot.appendItems(state.rows.map { $0.id.rawValue }, toSection: chatSection)
+        snapshot.appendItems(state.rows.map(\.diffIdentifier), toSection: chatSection)
         dataSource?.apply(snapshot, animatingDifferences: true)
 
         guard !state.rows.isEmpty else { return }
@@ -169,12 +208,17 @@ final class ChatViewController: UIViewController {
         sendCurrentText()
     }
 
+    @objc private func textFieldEditingChanged() {
+        viewModel.saveDraft(textField.text ?? "")
+    }
+
     private func sendCurrentText() {
         let text = textField.text ?? ""
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
 
         textField.text = nil
+        viewModel.saveDraft("")
         viewModel.sendText(trimmedText)
     }
 }
@@ -186,13 +230,67 @@ extension ChatViewController: UITextFieldDelegate {
     }
 }
 
+extension ChatViewController: UICollectionViewDelegate {
+    func collectionView(
+        _ collectionView: UICollectionView,
+        contextMenuConfigurationForItemAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard
+            let rowID = dataSource?.itemIdentifier(for: indexPath),
+            let row = rowsByID[rowID],
+            row.canDelete || row.canRevoke
+        else {
+            return nil
+        }
+
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            var actions: [UIAction] = []
+
+            if row.canRevoke {
+                actions.append(
+                    UIAction(title: "Revoke", image: UIImage(systemName: "arrow.uturn.backward")) { _ in
+                        self?.viewModel.revoke(messageID: row.id)
+                    }
+                )
+            }
+
+            if row.canDelete {
+                actions.append(
+                    UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
+                        self?.viewModel.delete(messageID: row.id)
+                    }
+                )
+            }
+
+            return UIMenu(children: actions)
+        }
+    }
+}
+
+private extension ChatMessageRowState {
+    var diffIdentifier: String {
+        [
+            id.rawValue,
+            text,
+            statusText ?? "",
+            canRetry ? "retry" : "no-retry",
+            canRevoke ? "revoke" : "no-revoke",
+            isRevoked ? "revoked" : "normal"
+        ].joined(separator: "|")
+    }
+}
+
 private final class ChatMessageCell: UICollectionViewCell {
     private let bubbleView = UIView()
     private let stackView = UIStackView()
     private let messageLabel = UILabel()
     private let metadataLabel = UILabel()
+    private let retryButton = UIButton(type: .system)
     private var leadingConstraint: NSLayoutConstraint?
     private var trailingConstraint: NSLayoutConstraint?
+    private var retryMessageID: MessageID?
+    private var onRetry: ((MessageID) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -204,12 +302,16 @@ private final class ChatMessageCell: UICollectionViewCell {
         configureView()
     }
 
-    func configure(row: ChatMessageRowState) {
+    func configure(row: ChatMessageRowState, onRetry: @escaping (MessageID) -> Void) {
+        retryMessageID = row.id
+        self.onRetry = onRetry
         messageLabel.text = row.text
         metadataLabel.text = [row.timeText, row.statusText].compactMap { $0 }.joined(separator: " · ")
-        bubbleView.backgroundColor = row.isOutgoing ? .systemBlue : .secondarySystemGroupedBackground
-        messageLabel.textColor = row.isOutgoing ? .white : .label
-        metadataLabel.textColor = row.isOutgoing ? .white.withAlphaComponent(0.75) : .secondaryLabel
+        bubbleView.backgroundColor = row.isRevoked ? .tertiarySystemGroupedBackground : (row.isOutgoing ? .systemBlue : .secondarySystemGroupedBackground)
+        messageLabel.textColor = row.isOutgoing && !row.isRevoked ? .white : .label
+        metadataLabel.textColor = row.isOutgoing && !row.isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel
+        retryButton.isHidden = !row.canRetry
+        retryButton.tintColor = row.isOutgoing ? .white : .systemBlue
 
         leadingConstraint?.isActive = !row.isOutgoing
         trailingConstraint?.isActive = row.isOutgoing
@@ -234,10 +336,16 @@ private final class ChatMessageCell: UICollectionViewCell {
         metadataLabel.adjustsFontForContentSizeCategory = true
         metadataLabel.numberOfLines = 1
 
+        retryButton.setTitle("Retry", for: .normal)
+        retryButton.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
+        retryButton.contentHorizontalAlignment = .leading
+        retryButton.addTarget(self, action: #selector(retryButtonTapped), for: .touchUpInside)
+
         contentView.addSubview(bubbleView)
         bubbleView.addSubview(stackView)
         stackView.addArrangedSubview(messageLabel)
         stackView.addArrangedSubview(metadataLabel)
+        stackView.addArrangedSubview(retryButton)
 
         leadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
         trailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
@@ -252,5 +360,10 @@ private final class ChatMessageCell: UICollectionViewCell {
             stackView.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -12),
             stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8)
         ])
+    }
+
+    @objc private func retryButtonTapped() {
+        guard let retryMessageID else { return }
+        onRetry?(retryMessageID)
     }
 }

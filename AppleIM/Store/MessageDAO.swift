@@ -21,14 +21,22 @@ nonisolated struct MessageDAO: Sendable {
                 message.message_id,
                 message.conversation_id,
                 message.sender_id,
+                message.client_msg_id,
+                message.server_msg_id,
+                message.seq,
                 message.msg_type,
                 message.direction,
                 message.send_status,
+                message.server_time,
+                message.revoke_status,
+                message.is_deleted,
+                message_revoke.replace_text,
                 message.sort_seq,
                 message.local_time,
                 message_text.text
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
+            LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
             WHERE message.conversation_id = ?
             AND (? IS NULL OR message.sort_seq < ?)
             AND message.is_deleted = 0
@@ -54,14 +62,22 @@ nonisolated struct MessageDAO: Sendable {
                 message.message_id,
                 message.conversation_id,
                 message.sender_id,
+                message.client_msg_id,
+                message.server_msg_id,
+                message.seq,
                 message.msg_type,
                 message.direction,
                 message.send_status,
+                message.server_time,
+                message.revoke_status,
+                message.is_deleted,
+                message_revoke.replace_text,
                 message.sort_seq,
                 message.local_time,
                 message_text.text
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
+            LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
             WHERE message.message_id = ?
             AND message.is_deleted = 0
             LIMIT 1;
@@ -77,19 +93,49 @@ nonisolated struct MessageDAO: Sendable {
         return try Self.message(from: row)
     }
 
-    func updateSendStatus(messageID: MessageID, status: MessageSendStatus) async throws {
+    func updateSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws {
         try await database.execute(
             """
             UPDATE message
-            SET send_status = ?
+            SET
+                send_status = ?,
+                server_msg_id = ?,
+                seq = ?,
+                server_time = ?
             WHERE message_id = ?;
             """,
             parameters: [
                 .integer(Int64(status.rawValue)),
+                .optionalText(ack?.serverMessageID),
+                .optionalInteger(ack?.sequence),
+                .optionalInteger(ack?.serverTime),
                 .text(messageID.rawValue)
             ],
             paths: paths
         )
+    }
+
+    func prepareTextMessageForResend(messageID: MessageID) async throws -> StoredMessage {
+        guard let existingMessage = try await message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        guard
+            existingMessage.type == .text,
+            existingMessage.sendStatus == .failed,
+            !existingMessage.isRevoked,
+            !existingMessage.isDeleted
+        else {
+            throw ChatStoreError.messageCannotBeResent(messageID)
+        }
+
+        try await updateSendStatus(messageID: messageID, status: .sending, ack: nil)
+
+        guard let updatedMessage = try await message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        return updatedMessage
     }
 
     static func insertOutgoingTextStatements(_ input: OutgoingTextMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
@@ -102,9 +148,16 @@ nonisolated struct MessageDAO: Sendable {
             id: messageID,
             conversationID: input.conversationID,
             senderID: input.senderID,
+            clientMessageID: clientMessageID,
+            serverMessageID: nil,
+            sequence: nil,
             type: .text,
             direction: .outgoing,
             sendStatus: .sending,
+            serverTime: nil,
+            isRevoked: false,
+            isDeleted: false,
+            revokeReplacementText: nil,
             text: input.text,
             sortSequence: sortSequence,
             localTime: input.localTime
@@ -208,9 +261,16 @@ nonisolated struct MessageDAO: Sendable {
             id: MessageID(rawValue: try row.requiredString("message_id")),
             conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
             senderID: UserID(rawValue: try row.requiredString("sender_id")),
+            clientMessageID: row.string("client_msg_id"),
+            serverMessageID: row.string("server_msg_id"),
+            sequence: row.int64("seq"),
             type: type,
             direction: direction,
             sendStatus: sendStatus,
+            serverTime: row.int64("server_time"),
+            isRevoked: row.bool("revoke_status"),
+            isDeleted: row.bool("is_deleted"),
+            revokeReplacementText: row.string("replace_text"),
             text: row.string("text"),
             sortSequence: try row.requiredInt64("sort_seq"),
             localTime: try row.requiredInt64("local_time")

@@ -11,6 +11,10 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let timeText: String
     let statusText: String?
     let isOutgoing: Bool
+    let canRetry: Bool
+    let canDelete: Bool
+    let canRevoke: Bool
+    let isRevoked: Bool
 }
 
 nonisolated struct ChatViewState: Equatable, Sendable {
@@ -24,6 +28,7 @@ nonisolated struct ChatViewState: Equatable, Sendable {
     var title: String
     var phase: LoadingPhase = .idle
     var rows: [ChatMessageRowState] = []
+    var draftText = ""
     var emptyMessage = "No messages yet"
 
     var isEmpty: Bool {

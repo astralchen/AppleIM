@@ -7,28 +7,38 @@ import Foundation
 
 protocol ChatUseCase: Sendable {
     func loadInitialMessages() async throws -> [ChatMessageRowState]
+    func loadDraft() async throws -> String?
+    func saveDraft(_ text: String) async throws
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    func delete(messageID: MessageID) async throws
+    func revoke(messageID: MessageID) async throws
 }
 
 nonisolated struct LocalChatUseCase: ChatUseCase {
     private let userID: UserID
     private let conversationID: ConversationID
     private let repository: any MessageRepository
+    private let conversationRepository: (any ConversationRepository)?
     private let sendService: any MessageSendService
 
     init(
         userID: UserID,
         conversationID: ConversationID,
         repository: any MessageRepository,
+        conversationRepository: (any ConversationRepository)? = nil,
         sendService: any MessageSendService
     ) {
         self.userID = userID
         self.conversationID = conversationID
         self.repository = repository
+        self.conversationRepository = conversationRepository
         self.sendService = sendService
     }
 
     func loadInitialMessages() async throws -> [ChatMessageRowState] {
+        try await conversationRepository?.markConversationRead(conversationID: conversationID, userID: userID)
+
         let messages = try await repository.listMessages(
             conversationID: conversationID,
             limit: 50,
@@ -38,6 +48,14 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         return messages
             .sorted { $0.sortSequence < $1.sortSequence }
             .map { Self.row(from: $0, currentUserID: userID) }
+    }
+
+    func loadDraft() async throws -> String? {
+        try await repository.draft(conversationID: conversationID, userID: userID)
+    }
+
+    func saveDraft(_ text: String) async throws {
+        try await repository.saveDraft(conversationID: conversationID, userID: userID, text: text)
     }
 
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -52,6 +70,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let now = Int64(Date().timeIntervalSince1970)
+                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
                     let insertedMessage = try await repository.insertOutgoingTextMessage(
                         OutgoingTextMessageInput(
                             userID: userID,
@@ -66,10 +85,23 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
 
                     let result = await sendService.sendText(message: insertedMessage)
-                    let finalStatus: MessageSendStatus = result == .success ? .success : .failed
+                    let finalStatus: MessageSendStatus
+                    let ack: MessageSendAck?
+
+                    switch result {
+                    case let .success(successAck):
+                        finalStatus = .success
+                        ack = successAck
+                        try await repository.clearDraft(conversationID: conversationID, userID: userID)
+                    case .failure:
+                        finalStatus = .failed
+                        ack = nil
+                    }
+
                     try await repository.updateMessageSendStatus(
                         messageID: insertedMessage.id,
-                        status: finalStatus
+                        status: finalStatus,
+                        ack: ack
                     )
 
                     if let updatedMessage = try await repository.message(messageID: insertedMessage.id) {
@@ -88,13 +120,74 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let sendingMessage = try await repository.resendTextMessage(messageID: messageID)
+                    continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
+
+                    let result = await sendService.sendText(message: sendingMessage)
+                    let finalStatus: MessageSendStatus
+                    let ack: MessageSendAck?
+
+                    switch result {
+                    case let .success(successAck):
+                        finalStatus = .success
+                        ack = successAck
+                    case .failure:
+                        finalStatus = .failed
+                        ack = nil
+                    }
+
+                    try await repository.updateMessageSendStatus(
+                        messageID: sendingMessage.id,
+                        status: finalStatus,
+                        ack: ack
+                    )
+
+                    if let updatedMessage = try await repository.message(messageID: sendingMessage.id) {
+                        continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {
+        try await repository.markMessageDeleted(messageID: messageID, userID: userID)
+    }
+
+    func revoke(messageID: MessageID) async throws {
+        _ = try await repository.revokeMessage(
+            messageID: messageID,
+            userID: userID,
+            replacementText: "你撤回了一条消息"
+        )
+    }
+
     nonisolated private static func row(from message: StoredMessage, currentUserID: UserID) -> ChatMessageRowState {
-        ChatMessageRowState(
+        let isOutgoing = message.senderID == currentUserID
+        let isRevoked = message.isRevoked
+
+        return ChatMessageRowState(
             id: message.id,
-            text: message.text ?? "",
+            text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : (message.text ?? ""),
             timeText: timeText(from: message.localTime),
-            statusText: statusText(for: message),
-            isOutgoing: message.senderID == currentUserID
+            statusText: isRevoked ? nil : statusText(for: message),
+            isOutgoing: isOutgoing,
+            canRetry: isOutgoing && message.type == .text && message.sendStatus == .failed && !isRevoked,
+            canDelete: !message.isDeleted,
+            canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked,
+            isRevoked: isRevoked
         )
     }
 
@@ -148,9 +241,34 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             userID: userID,
             conversationID: conversationID,
             repository: repository,
+            conversationRepository: repository,
             sendService: sendService
         )
         return try await useCase.loadInitialMessages()
+    }
+
+    func loadDraft() async throws -> String? {
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: repository,
+            sendService: sendService
+        )
+        return try await useCase.loadDraft()
+    }
+
+    func saveDraft(_ text: String) async throws {
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: repository,
+            sendService: sendService
+        )
+        try await useCase.saveDraft(text)
     }
 
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -162,6 +280,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         userID: userID,
                         conversationID: conversationID,
                         repository: repository,
+                        conversationRepository: repository,
                         sendService: sendService
                     )
 
@@ -179,5 +298,58 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                 task.cancel()
             }
         }
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let repository = try await storeProvider.repository()
+                    let useCase = LocalChatUseCase(
+                        userID: userID,
+                        conversationID: conversationID,
+                        repository: repository,
+                        conversationRepository: repository,
+                        sendService: sendService
+                    )
+
+                    for try await row in useCase.resend(messageID: messageID) {
+                        continuation.yield(row)
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: repository,
+            sendService: sendService
+        )
+        try await useCase.delete(messageID: messageID)
+    }
+
+    func revoke(messageID: MessageID) async throws {
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: repository,
+            sendService: sendService
+        )
+        try await useCase.revoke(messageID: messageID)
     }
 }

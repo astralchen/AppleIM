@@ -11,6 +11,8 @@ nonisolated enum ChatStoreError: Error, Equatable, Sendable {
     case invalidMessageType(Int)
     case invalidMessageDirection(Int)
     case invalidMessageSendStatus(Int)
+    case messageNotFound(MessageID)
+    case messageCannotBeResent(MessageID)
 }
 
 nonisolated struct ConversationRecord: Equatable, Sendable {
@@ -24,6 +26,7 @@ nonisolated struct ConversationRecord: Equatable, Sendable {
     let lastMessageTime: Int64?
     let lastMessageDigest: String
     let unreadCount: Int
+    let draftText: String?
     let isPinned: Bool
     let isMuted: Bool
     let isHidden: Bool
@@ -73,5 +76,11 @@ protocol MessageRepository: Sendable {
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
     func message(messageID: MessageID) async throws -> StoredMessage?
-    func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus) async throws
+    func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws
+    func resendTextMessage(messageID: MessageID) async throws -> StoredMessage
+    func markMessageDeleted(messageID: MessageID, userID: UserID) async throws
+    func revokeMessage(messageID: MessageID, userID: UserID, replacementText: String) async throws -> StoredMessage
+    func saveDraft(conversationID: ConversationID, userID: UserID, text: String) async throws
+    func draft(conversationID: ConversationID, userID: UserID) async throws -> String?
+    func clearDraft(conversationID: ConversationID, userID: UserID) async throws
 }
