@@ -57,17 +57,20 @@ nonisolated struct SyncBatch: Equatable, Sendable {
     let messages: [IncomingSyncMessage]
     let nextCursor: String?
     let nextSequence: Int64?
+    let hasMore: Bool
 
     init(
         bizKey: String = SyncEngineActor.messageBizKey,
         messages: [IncomingSyncMessage],
         nextCursor: String?,
-        nextSequence: Int64?
+        nextSequence: Int64?,
+        hasMore: Bool = false
     ) {
         self.bizKey = bizKey
         self.messages = messages
         self.nextCursor = nextCursor
         self.nextSequence = nextSequence
+        self.hasMore = hasMore
     }
 }
 
@@ -86,8 +89,21 @@ nonisolated struct SyncResult: Equatable, Sendable {
     let checkpoint: SyncCheckpoint
 }
 
+nonisolated struct SyncRunResult: Equatable, Sendable {
+    let batchCount: Int
+    let fetchedCount: Int
+    let insertedCount: Int
+    let skippedDuplicateCount: Int
+    let initialCheckpoint: SyncCheckpoint?
+    let finalCheckpoint: SyncCheckpoint
+}
+
+nonisolated enum SyncEngineError: Error, Equatable, Sendable {
+    case invalidMaxBatches
+    case exceededMaxBatches(Int)
+}
+
 protocol SyncStore: Sendable {
     func syncCheckpoint(for bizKey: String) async throws -> SyncCheckpoint?
     func applyIncomingSyncBatch(_ batch: SyncBatch, userID: UserID) async throws -> SyncApplyResult
 }
-

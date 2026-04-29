@@ -972,6 +972,329 @@ struct AppleIMTests {
         #expect(messages.isEmpty)
         #expect(checkpoint == nil)
     }
+
+    @Test func syncEngineRunsMultipleBatchesUntilCaughtUp() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_multi_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_multi_conversation", userID: "sync_multi_user", title: "Multi", sortTimestamp: 1)
+        )
+
+        let deltaService = ScriptedSyncDeltaService(
+            batches: [
+                SyncBatch(
+                    messages: [
+                        IncomingSyncMessage(
+                            messageID: "sync_multi_1",
+                            conversationID: "sync_multi_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_multi_client_1",
+                            serverMessageID: "sync_multi_server_1",
+                            sequence: 1,
+                            text: "First page",
+                            serverTime: 1
+                        )
+                    ],
+                    nextCursor: "cursor_1",
+                    nextSequence: 1,
+                    hasMore: true
+                ),
+                SyncBatch(
+                    messages: [
+                        IncomingSyncMessage(
+                            messageID: "sync_multi_2",
+                            conversationID: "sync_multi_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_multi_client_2",
+                            serverMessageID: "sync_multi_server_2",
+                            sequence: 2,
+                            text: "Second page",
+                            serverTime: 2
+                        )
+                    ],
+                    nextCursor: "cursor_2",
+                    nextSequence: 2
+                )
+            ]
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_multi_user",
+            store: repository,
+            deltaService: deltaService
+        )
+
+        let result = try await engine.syncUntilCaughtUp(maxBatches: 4)
+        let messages = try await repository.listMessages(conversationID: "sync_multi_conversation", limit: 20, beforeSortSeq: nil)
+        let checkpoint = try await repository.syncCheckpoint(for: SyncEngineActor.messageBizKey)
+        let requestedCheckpoints = await deltaService.requestedCheckpoints()
+
+        #expect(result.batchCount == 2)
+        #expect(result.fetchedCount == 2)
+        #expect(result.insertedCount == 2)
+        #expect(result.skippedDuplicateCount == 0)
+        #expect(result.initialCheckpoint == nil)
+        #expect(result.finalCheckpoint.cursor == "cursor_2")
+        #expect(messages.map(\.text) == ["Second page", "First page"])
+        #expect(checkpoint?.cursor == "cursor_2")
+        #expect(checkpoint?.sequence == 2)
+        #expect(requestedCheckpoints.map(\.?.cursor) == [nil, "cursor_1"])
+    }
+
+    @Test func syncEngineCatchesUpFromExistingCheckpointAndRefreshesLatestSummary() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_catchup_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_catchup_conversation", userID: "sync_catchup_user", title: "Catch Up", sortTimestamp: 1)
+        )
+
+        let firstEngine = SyncEngineActor(
+            userID: "sync_catchup_user",
+            store: repository,
+            deltaService: StaticSyncDeltaService(
+                batch: SyncBatch(
+                    messages: [
+                        IncomingSyncMessage(
+                            messageID: "sync_catchup_old",
+                            conversationID: "sync_catchup_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_catchup_client_1",
+                            serverMessageID: "sync_catchup_server_1",
+                            sequence: 10,
+                            text: "Already synced",
+                            serverTime: 10
+                        )
+                    ],
+                    nextCursor: "cursor_10",
+                    nextSequence: 10
+                )
+            )
+        )
+        _ = try await firstEngine.syncOnce()
+
+        let deltaService = ScriptedSyncDeltaService(
+            batches: [
+                SyncBatch(
+                    messages: [
+                        IncomingSyncMessage(
+                            messageID: "sync_catchup_newer",
+                            conversationID: "sync_catchup_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_catchup_client_20",
+                            serverMessageID: "sync_catchup_server_20",
+                            sequence: 20,
+                            text: "Caught up newer",
+                            serverTime: 20
+                        ),
+                        IncomingSyncMessage(
+                            messageID: "sync_catchup_latest",
+                            conversationID: "sync_catchup_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_catchup_client_30",
+                            serverMessageID: "sync_catchup_server_30",
+                            sequence: 30,
+                            text: "Caught up latest",
+                            serverTime: 30
+                        )
+                    ],
+                    nextCursor: "cursor_30",
+                    nextSequence: 30
+                )
+            ]
+        )
+        let catchUpEngine = SyncEngineActor(
+            userID: "sync_catchup_user",
+            store: repository,
+            deltaService: deltaService
+        )
+
+        let result = try await catchUpEngine.syncUntilCaughtUp()
+        let messages = try await repository.listMessages(conversationID: "sync_catchup_conversation", limit: 20, beforeSortSeq: nil)
+        let conversations = try await repository.listConversations(for: "sync_catchup_user")
+        let requestedCheckpoints = await deltaService.requestedCheckpoints()
+
+        #expect(result.initialCheckpoint?.cursor == "cursor_10")
+        #expect(result.finalCheckpoint.cursor == "cursor_30")
+        #expect(messages.map(\.text) == ["Caught up latest", "Caught up newer", "Already synced"])
+        #expect(conversations.first?.lastMessageDigest == "Caught up latest")
+        #expect(requestedCheckpoints.first??.cursor == "cursor_10")
+    }
+
+    @Test func syncEngineSkipsDuplicatesAcrossBatches() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_cross_duplicate_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_cross_duplicate_conversation", userID: "sync_cross_duplicate_user", title: "Cross Duplicates", sortTimestamp: 1)
+        )
+
+        let deltaService = ScriptedSyncDeltaService(
+            batches: [
+                SyncBatch(
+                    messages: [
+                        IncomingSyncMessage(
+                            messageID: "sync_cross_unique_1",
+                            conversationID: "sync_cross_duplicate_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_cross_client_1",
+                            serverMessageID: "sync_cross_server_1",
+                            sequence: 1,
+                            text: "Unique first batch",
+                            serverTime: 1
+                        )
+                    ],
+                    nextCursor: "cursor_1",
+                    nextSequence: 1,
+                    hasMore: true
+                ),
+                SyncBatch(
+                    messages: [
+                        IncomingSyncMessage(
+                            messageID: "sync_cross_duplicate_client",
+                            conversationID: "sync_cross_duplicate_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_cross_client_1",
+                            serverMessageID: "sync_cross_server_2",
+                            sequence: 2,
+                            text: "Duplicate client across batch",
+                            serverTime: 2
+                        ),
+                        IncomingSyncMessage(
+                            messageID: "sync_cross_duplicate_server",
+                            conversationID: "sync_cross_duplicate_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_cross_client_3",
+                            serverMessageID: "sync_cross_server_1",
+                            sequence: 3,
+                            text: "Duplicate server across batch",
+                            serverTime: 3
+                        ),
+                        IncomingSyncMessage(
+                            messageID: "sync_cross_duplicate_sequence",
+                            conversationID: "sync_cross_duplicate_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_cross_client_4",
+                            serverMessageID: "sync_cross_server_4",
+                            sequence: 1,
+                            text: "Duplicate sequence across batch",
+                            serverTime: 4
+                        ),
+                        IncomingSyncMessage(
+                            messageID: "sync_cross_unique_5",
+                            conversationID: "sync_cross_duplicate_conversation",
+                            senderID: "sync_sender",
+                            clientMessageID: "sync_cross_client_5",
+                            serverMessageID: "sync_cross_server_5",
+                            sequence: 5,
+                            text: "Unique second batch",
+                            serverTime: 5
+                        )
+                    ],
+                    nextCursor: "cursor_5",
+                    nextSequence: 5
+                )
+            ]
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_cross_duplicate_user",
+            store: repository,
+            deltaService: deltaService
+        )
+
+        let result = try await engine.syncUntilCaughtUp(maxBatches: 3)
+        let messages = try await repository.listMessages(conversationID: "sync_cross_duplicate_conversation", limit: 20, beforeSortSeq: nil)
+
+        #expect(result.batchCount == 2)
+        #expect(result.fetchedCount == 5)
+        #expect(result.insertedCount == 2)
+        #expect(result.skippedDuplicateCount == 3)
+        #expect(messages.map(\.text) == ["Unique second batch", "Unique first batch"])
+    }
+
+    @Test func syncEngineStopsWhenHasMoreExceedsMaxBatches() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_limit_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_limit_conversation", userID: "sync_limit_user", title: "Limit", sortTimestamp: 1)
+        )
+
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "sync_limit_message",
+                    conversationID: "sync_limit_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "sync_limit_client",
+                    serverMessageID: "sync_limit_server",
+                    sequence: 1,
+                    text: "Still has more",
+                    serverTime: 1
+                )
+            ],
+            nextCursor: "cursor_limit",
+            nextSequence: 1,
+            hasMore: true
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_limit_user",
+            store: repository,
+            deltaService: StaticSyncDeltaService(batch: batch)
+        )
+
+        var caughtError: SyncEngineError?
+        do {
+            _ = try await engine.syncUntilCaughtUp(maxBatches: 2)
+        } catch let error as SyncEngineError {
+            caughtError = error
+        }
+
+        let messages = try await repository.listMessages(conversationID: "sync_limit_conversation", limit: 20, beforeSortSeq: nil)
+        let checkpoint = try await repository.syncCheckpoint(for: SyncEngineActor.messageBizKey)
+
+        #expect(caughtError == .exceededMaxBatches(2))
+        #expect(messages.map(\.text) == ["Still has more"])
+        #expect(checkpoint?.cursor == "cursor_limit")
+    }
+}
+
+private actor ScriptedSyncDeltaService: SyncDeltaService {
+    private let batches: [SyncBatch]
+    private var nextBatchIndex = 0
+    private var checkpoints: [SyncCheckpoint?] = []
+
+    init(batches: [SyncBatch]) {
+        self.batches = batches
+    }
+
+    func fetchDelta(after checkpoint: SyncCheckpoint?) async throws -> SyncBatch {
+        checkpoints.append(checkpoint)
+
+        guard !batches.isEmpty else {
+            return SyncBatch(messages: [], nextCursor: checkpoint?.cursor, nextSequence: checkpoint?.sequence)
+        }
+
+        let batchIndex = min(nextBatchIndex, batches.count - 1)
+        nextBatchIndex += 1
+        return batches[batchIndex]
+    }
+
+    func requestedCheckpoints() -> [SyncCheckpoint?] {
+        checkpoints
+    }
 }
 
 private struct StubConversationListUseCase: ConversationListUseCase {
