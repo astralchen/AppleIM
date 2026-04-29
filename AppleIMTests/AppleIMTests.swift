@@ -6,6 +6,7 @@
 //
 
 import Testing
+import Combine
 import Foundation
 @testable import AppleIM
 
@@ -471,7 +472,8 @@ struct AppleIMTests {
             userID: "resend_user",
             conversationID: "resend_conversation",
             repository: repository,
-            sendService: MockMessageSendService(result: .failure, delayNanoseconds: 0)
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(result: .failure(), delayNanoseconds: 0)
         )
         let failedRows = try await collectRows(from: failingUseCase.sendText("Retry me"))
         let failedMessageID = failedRows[0].id
@@ -481,6 +483,7 @@ struct AppleIMTests {
             userID: "resend_user",
             conversationID: "resend_conversation",
             repository: repository,
+            pendingJobRepository: repository,
             sendService: MockMessageSendService(delayNanoseconds: 0)
         )
         let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
@@ -493,6 +496,339 @@ struct AppleIMTests {
         #expect(storedMessages.count == 1)
         #expect(resentMessage.sendStatus == .success)
         #expect(resentMessage.clientMessageID == failedMessage.clientMessageID)
+    }
+
+    @Test func pendingJobRepositoryUpsertsAndRestoresUnfinishedJobs() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "pending_user")
+        let input = PendingJobInput(
+            id: "message_resend_pending_client",
+            userID: "pending_user",
+            type: .messageResend,
+            bizKey: "pending_client",
+            payloadJSON: #"{"message_id":"pending_message","client_msg_id":"pending_client"}"#,
+            maxRetryCount: 3,
+            nextRetryAt: 100
+        )
+
+        let insertedJob = try await repository.upsertPendingJob(input)
+        let duplicateJob = try await repository.upsertPendingJob(input)
+        try await repository.updatePendingJobStatus(jobID: input.id, status: .running, nextRetryAt: 100)
+
+        let storedJob = try await repository.pendingJob(id: input.id)
+        let recoverableJobs = try await repository.recoverablePendingJobs(userID: "pending_user", now: 100)
+
+        #expect(insertedJob.status == .pending)
+        #expect(duplicateJob.id == insertedJob.id)
+        #expect(storedJob?.status == .running)
+        #expect(recoverableJobs.map(\.id) == [input.id])
+    }
+
+    @Test func pendingJobRepositoryTracksFailedSuccessAndCancelledStates() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "pending_state_user")
+        let retryInput = PendingJobInput(
+            id: "retry_state_job",
+            userID: "pending_state_user",
+            type: .messageResend,
+            bizKey: "retry_state_client",
+            payloadJSON: #"{"message_id":"retry_state_message"}"#,
+            maxRetryCount: 2
+        )
+        let successInput = PendingJobInput(
+            id: "success_state_job",
+            userID: "pending_state_user",
+            type: .messageResend,
+            bizKey: "success_state_client",
+            payloadJSON: #"{"message_id":"success_state_message"}"#
+        )
+        let cancelledInput = PendingJobInput(
+            id: "cancelled_state_job",
+            userID: "pending_state_user",
+            type: .messageResend,
+            bizKey: "cancelled_state_client",
+            payloadJSON: #"{"message_id":"cancelled_state_message"}"#
+        )
+
+        _ = try await repository.upsertPendingJob(retryInput)
+        _ = try await repository.upsertPendingJob(successInput)
+        _ = try await repository.upsertPendingJob(cancelledInput)
+        try await repository.updatePendingJobStatus(jobID: retryInput.id, status: .failed, nextRetryAt: 200)
+        try await repository.updatePendingJobStatus(jobID: successInput.id, status: .success, nextRetryAt: nil)
+        try await repository.updatePendingJobStatus(jobID: cancelledInput.id, status: .cancelled, nextRetryAt: nil)
+
+        let retryJob = try await repository.pendingJob(id: retryInput.id)
+        let successJob = try await repository.pendingJob(id: successInput.id)
+        let cancelledJob = try await repository.pendingJob(id: cancelledInput.id)
+        let recoverableJobs = try await repository.recoverablePendingJobs(userID: "pending_state_user", now: 200)
+
+        #expect(retryJob?.status == .failed)
+        #expect(retryJob?.retryCount == 1)
+        #expect(successJob?.status == .success)
+        #expect(cancelledJob?.status == .cancelled)
+        #expect(recoverableJobs.isEmpty)
+    }
+
+    @Test func chatUseCaseCreatesPendingJobWhenSendFails() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "send_pending_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "send_pending_conversation", userID: "send_pending_user", title: "Pending", sortTimestamp: 1)
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "send_pending_user",
+            conversationID: "send_pending_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(result: .failure(.timeout), delayNanoseconds: 0),
+            retryPolicy: MessageRetryPolicy(initialDelaySeconds: 3, maxDelaySeconds: 30, maxRetryCount: 4)
+        )
+
+        let startedAt = Int64(Date().timeIntervalSince1970)
+        let rows = try await collectRows(from: useCase.sendText("Queue me"))
+        let failedMessage = try await repository.message(messageID: rows[0].id)!
+        let recoverableJobs = try await repository.recoverablePendingJobs(userID: "send_pending_user", now: Int64.max)
+        let job = recoverableJobs.first
+
+        #expect(rows.map(\.statusText) == ["Sending", "Failed"])
+        #expect(failedMessage.sendStatus == .failed)
+        #expect(recoverableJobs.count == 1)
+        #expect(job?.type == .messageResend)
+        #expect(job?.bizKey == failedMessage.clientMessageID)
+        #expect(job?.maxRetryCount == 4)
+        #expect((job?.nextRetryAt ?? 0) >= startedAt + 3)
+        #expect(job?.payloadJSON.contains(failedMessage.id.rawValue) == true)
+        #expect(job?.payloadJSON.contains("send_pending_conversation") == true)
+        #expect(job?.payloadJSON.contains("timeout") == true)
+    }
+
+    @Test func pendingMessageRetryRunnerReschedulesWeakNetworkFailuresWithBackoff() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "retry_runner_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "retry_runner_conversation", userID: "retry_runner_user", title: "Retry Runner", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "retry_runner_user",
+                conversationID: "retry_runner_conversation",
+                senderID: "retry_runner_user",
+                text: "Retry after weak network",
+                localTime: 100,
+                messageID: "retry_runner_message",
+                clientMessageID: "retry_runner_client",
+                sortSequence: 100
+            )
+        )
+        try await repository.updateMessageSendStatus(messageID: message.id, status: .failed, ack: nil)
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "message_resend_retry_runner_client",
+                userID: "retry_runner_user",
+                type: .messageResend,
+                bizKey: "retry_runner_client",
+                payloadJSON: #"{"messageID":"retry_runner_message","conversationID":"retry_runner_conversation","clientMessageID":"retry_runner_client","lastFailureReason":"offline"}"#,
+                maxRetryCount: 3,
+                nextRetryAt: 100
+            )
+        )
+        let runner = PendingMessageRetryRunner(
+            userID: "retry_runner_user",
+            messageRepository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(result: .failure(.ackMissing), delayNanoseconds: 0),
+            retryPolicy: MessageRetryPolicy(initialDelaySeconds: 10, maxDelaySeconds: 60, maxRetryCount: 3)
+        )
+
+        let result = try await runner.runDueJobs(now: 1_000)
+        let job = try await repository.pendingJob(id: "message_resend_retry_runner_client")
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(result == PendingMessageRetryRunResult(scannedJobCount: 1, attemptedCount: 1, successCount: 0, rescheduledCount: 1, exhaustedCount: 0))
+        #expect(job?.status == .pending)
+        #expect(job?.retryCount == 1)
+        #expect(job?.nextRetryAt == 1_020)
+        #expect(storedMessage?.sendStatus == .failed)
+    }
+
+    @Test func pendingMessageRetryRunnerMarksJobSuccessAfterRecoveredAck() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "retry_success_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "retry_success_conversation", userID: "retry_success_user", title: "Retry Success", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "retry_success_user",
+                conversationID: "retry_success_conversation",
+                senderID: "retry_success_user",
+                text: "Recover ack",
+                localTime: 200,
+                messageID: "retry_success_message",
+                clientMessageID: "retry_success_client",
+                sortSequence: 200
+            )
+        )
+        try await repository.updateMessageSendStatus(messageID: message.id, status: .failed, ack: nil)
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "message_resend_retry_success_client",
+                userID: "retry_success_user",
+                type: .messageResend,
+                bizKey: "retry_success_client",
+                payloadJSON: #"{"messageID":"retry_success_message","conversationID":"retry_success_conversation","clientMessageID":"retry_success_client","lastFailureReason":"ackMissing"}"#,
+                maxRetryCount: 3,
+                nextRetryAt: 100
+            )
+        )
+        let runner = PendingMessageRetryRunner(
+            userID: "retry_success_user",
+            messageRepository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+
+        let result = try await runner.runDueJobs(now: 100)
+        let job = try await repository.pendingJob(id: "message_resend_retry_success_client")
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(result.successCount == 1)
+        #expect(job?.status == .success)
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.serverMessageID == "server_retry_success_message")
+    }
+
+    @Test func pendingMessageRetryRunnerStopsAtRetryLimit() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "retry_limit_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "retry_limit_conversation", userID: "retry_limit_user", title: "Retry Limit", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "retry_limit_user",
+                conversationID: "retry_limit_conversation",
+                senderID: "retry_limit_user",
+                text: "Give up after limit",
+                localTime: 300,
+                messageID: "retry_limit_message",
+                clientMessageID: "retry_limit_client",
+                sortSequence: 300
+            )
+        )
+        try await repository.updateMessageSendStatus(messageID: message.id, status: .failed, ack: nil)
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "message_resend_retry_limit_client",
+                userID: "retry_limit_user",
+                type: .messageResend,
+                bizKey: "retry_limit_client",
+                payloadJSON: #"{"messageID":"retry_limit_message","conversationID":"retry_limit_conversation","clientMessageID":"retry_limit_client","lastFailureReason":"timeout"}"#,
+                maxRetryCount: 1,
+                nextRetryAt: 100
+            )
+        )
+        let runner = PendingMessageRetryRunner(
+            userID: "retry_limit_user",
+            messageRepository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(result: .failure(.timeout), delayNanoseconds: 0)
+        )
+
+        let result = try await runner.runDueJobs(now: 100)
+        let job = try await repository.pendingJob(id: "message_resend_retry_limit_client")
+
+        #expect(result.exhaustedCount == 1)
+        #expect(job?.status == .failed)
+        #expect(job?.retryCount == 1)
+    }
+
+    @MainActor
+    @Test func networkRecoveryCoordinatorRunsPendingJobsWhenNetworkRecovers() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "network_recovery_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "network_recovery_conversation", userID: "network_recovery_user", title: "Network", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "network_recovery_user",
+                conversationID: "network_recovery_conversation",
+                senderID: "network_recovery_user",
+                text: "Recover when online",
+                localTime: 400,
+                messageID: "network_recovery_message",
+                clientMessageID: "network_recovery_client",
+                sortSequence: 400
+            )
+        )
+        try await repository.updateMessageSendStatus(messageID: message.id, status: .failed, ack: nil)
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "message_resend_network_recovery_client",
+                userID: "network_recovery_user",
+                type: .messageResend,
+                bizKey: "network_recovery_client",
+                payloadJSON: #"{"messageID":"network_recovery_message","conversationID":"network_recovery_conversation","clientMessageID":"network_recovery_client","lastFailureReason":"offline"}"#,
+                nextRetryAt: 1
+            )
+        )
+        let monitor = TestNetworkConnectivityMonitor(isReachable: false)
+        let coordinator = NetworkRecoveryCoordinator(
+            userID: "network_recovery_user",
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            monitor: monitor
+        )
+
+        coordinator.start()
+        monitor.setReachable(true)
+        try await waitForCondition {
+            let job = try await repository.pendingJob(id: "message_resend_network_recovery_client")
+            return job?.status == .success
+        }
+        coordinator.stop()
+
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.serverMessageID == "server_network_recovery_message")
+        #expect(coordinator.lastRunResult?.successCount == 1)
     }
 
     @Test func repositoryDeletesMessageAndRefreshesConversationSummary() async throws {
@@ -1297,6 +1633,37 @@ private actor ScriptedSyncDeltaService: SyncDeltaService {
     }
 }
 
+@MainActor
+private final class TestNetworkConnectivityMonitor: NetworkConnectivityMonitoring {
+    private let subject: CurrentValueSubject<Bool, Never>
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
+
+    init(isReachable: Bool) {
+        self.subject = CurrentValueSubject(isReachable)
+    }
+
+    var isReachablePublisher: AnyPublisher<Bool, Never> {
+        subject.eraseToAnyPublisher()
+    }
+
+    var currentIsReachable: Bool {
+        subject.value
+    }
+
+    func start() {
+        startCallCount += 1
+    }
+
+    func stop() {
+        stopCallCount += 1
+    }
+
+    func setReachable(_ isReachable: Bool) {
+        subject.send(isReachable)
+    }
+}
+
 private struct StubConversationListUseCase: ConversationListUseCase {
     func loadConversations() async throws -> [ConversationListRowState] {
         [
@@ -1442,6 +1809,23 @@ private func makeRepository(rootDirectory: URL, accountID: UserID) async throws 
     let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: accountID)
     let repository = LocalChatRepository(database: databaseActor, paths: paths)
     return (repository, DatabaseTestContext(databaseActor: databaseActor, paths: paths))
+}
+
+private func waitForCondition(
+    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    condition: @escaping () async throws -> Bool
+) async throws {
+    let startedAt = DispatchTime.now().uptimeNanoseconds
+
+    while DispatchTime.now().uptimeNanoseconds - startedAt < timeoutNanoseconds {
+        if try await condition() {
+            return
+        }
+
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    Issue.record("Timed out waiting for condition")
 }
 
 private func makeConversationRecord(

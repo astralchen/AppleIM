@@ -5,7 +5,7 @@
 
 import Foundation
 
-nonisolated struct LocalChatRepository: ConversationRepository, MessageRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, SyncStore {
     private let database: DatabaseActor
     private let paths: AccountStoragePaths
     private let conversationDAO: ConversationDAO
@@ -50,7 +50,33 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
     }
 
     func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws {
-        try await messageDAO.updateSendStatus(messageID: messageID, status: status, ack: ack)
+        try await updateMessageSendStatus(messageID: messageID, status: status, ack: ack, pendingJob: nil)
+    }
+
+    func updateMessageSendStatus(
+        messageID: MessageID,
+        status: MessageSendStatus,
+        ack: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws {
+        var statements = [
+            Self.updateMessageSendStatusStatement(messageID: messageID, status: status, ack: ack)
+        ]
+
+        if let pendingJob {
+            let now = Self.currentTimestamp()
+            statements.append(
+                Self.upsertPendingJobStatement(
+                    pendingJob,
+                    status: .pending,
+                    retryCount: 0,
+                    updatedAt: now,
+                    createdAt: now
+                )
+            )
+        }
+
+        try await database.performTransaction(statements, paths: paths)
     }
 
     func resendTextMessage(messageID: MessageID) async throws -> StoredMessage {
@@ -221,6 +247,136 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
                         .text(userID.rawValue)
                     ]
                 )
+            ],
+            paths: paths
+        )
+    }
+
+    func upsertPendingJob(_ input: PendingJobInput) async throws -> PendingJob {
+        let now = Self.currentTimestamp()
+        let statement = Self.upsertPendingJobStatement(input, status: .pending, retryCount: 0, updatedAt: now, createdAt: now)
+        try await database.execute(
+            statement.sql,
+            parameters: statement.parameters,
+            paths: paths
+        )
+
+        guard let job = try await pendingJob(id: input.id) else {
+            throw ChatStoreError.missingColumn("pending_job")
+        }
+
+        return job
+    }
+
+    func pendingJob(id: String) async throws -> PendingJob? {
+        let rows = try await database.query(
+            """
+            SELECT
+                job_id,
+                user_id,
+                job_type,
+                biz_key,
+                payload_json,
+                status,
+                retry_count,
+                max_retry_count,
+                next_retry_at,
+                updated_at,
+                created_at
+            FROM pending_job
+            WHERE job_id = ?
+            LIMIT 1;
+            """,
+            parameters: [.text(id)],
+            paths: paths
+        )
+
+        guard let row = rows.first else {
+            return nil
+        }
+
+        return try Self.pendingJob(from: row)
+    }
+
+    func recoverablePendingJobs(userID: UserID, now: Int64) async throws -> [PendingJob] {
+        let rows = try await database.query(
+            """
+            SELECT
+                job_id,
+                user_id,
+                job_type,
+                biz_key,
+                payload_json,
+                status,
+                retry_count,
+                max_retry_count,
+                next_retry_at,
+                updated_at,
+                created_at
+            FROM pending_job
+            WHERE user_id = ?
+            AND status IN (?, ?)
+            AND retry_count < max_retry_count
+            AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            ORDER BY COALESCE(next_retry_at, created_at), created_at;
+            """,
+            parameters: [
+                .text(userID.rawValue),
+                .integer(Int64(PendingJobStatus.pending.rawValue)),
+                .integer(Int64(PendingJobStatus.running.rawValue)),
+                .integer(now)
+            ],
+            paths: paths
+        )
+
+        return try rows.map(Self.pendingJob(from:))
+    }
+
+    func schedulePendingJobRetry(jobID: String, nextRetryAt: Int64) async throws {
+        let now = Self.currentTimestamp()
+        try await database.execute(
+            """
+            UPDATE pending_job
+            SET
+                status = ?,
+                retry_count = retry_count + 1,
+                next_retry_at = ?,
+                updated_at = ?
+            WHERE job_id = ?
+            AND retry_count < max_retry_count;
+            """,
+            parameters: [
+                .integer(Int64(PendingJobStatus.pending.rawValue)),
+                .integer(nextRetryAt),
+                .integer(now),
+                .text(jobID)
+            ],
+            paths: paths
+        )
+    }
+
+    func updatePendingJobStatus(jobID: String, status: PendingJobStatus, nextRetryAt: Int64?) async throws {
+        let now = Self.currentTimestamp()
+        try await database.execute(
+            """
+            UPDATE pending_job
+            SET
+                status = ?,
+                retry_count = CASE
+                    WHEN ? = ? THEN retry_count + 1
+                    ELSE retry_count
+                END,
+                next_retry_at = ?,
+                updated_at = ?
+            WHERE job_id = ?;
+            """,
+            parameters: [
+                .integer(Int64(status.rawValue)),
+                .integer(Int64(status.rawValue)),
+                .integer(Int64(PendingJobStatus.failed.rawValue)),
+                .optionalInteger(nextRetryAt),
+                .integer(now),
+                .text(jobID)
             ],
             paths: paths
         )
@@ -420,6 +576,119 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
 
     private static func currentTimestamp() -> Int64 {
         Int64(Date().timeIntervalSince1970)
+    }
+
+    private static func pendingJob(from row: SQLiteRow) throws -> PendingJob {
+        let typeRawValue = try row.requiredInt("job_type")
+        let statusRawValue = try row.requiredInt("status")
+
+        guard let type = PendingJobType(rawValue: typeRawValue) else {
+            throw ChatStoreError.invalidPendingJobType(typeRawValue)
+        }
+
+        guard let status = PendingJobStatus(rawValue: statusRawValue) else {
+            throw ChatStoreError.invalidPendingJobStatus(statusRawValue)
+        }
+
+        return PendingJob(
+            id: try row.requiredString("job_id"),
+            userID: UserID(rawValue: try row.requiredString("user_id")),
+            type: type,
+            bizKey: row.string("biz_key"),
+            payloadJSON: try row.requiredString("payload_json"),
+            status: status,
+            retryCount: try row.requiredInt("retry_count"),
+            maxRetryCount: try row.requiredInt("max_retry_count"),
+            nextRetryAt: row.int64("next_retry_at"),
+            updatedAt: try row.requiredInt64("updated_at"),
+            createdAt: try row.requiredInt64("created_at")
+        )
+    }
+
+    private static func updateMessageSendStatusStatement(
+        messageID: MessageID,
+        status: MessageSendStatus,
+        ack: MessageSendAck?
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            UPDATE message
+            SET
+                send_status = ?,
+                server_msg_id = ?,
+                seq = ?,
+                server_time = ?
+            WHERE message_id = ?;
+            """,
+            parameters: [
+                .integer(Int64(status.rawValue)),
+                .optionalText(ack?.serverMessageID),
+                .optionalInteger(ack?.sequence),
+                .optionalInteger(ack?.serverTime),
+                .text(messageID.rawValue)
+            ]
+        )
+    }
+
+    private static func upsertPendingJobStatement(
+        _ input: PendingJobInput,
+        status: PendingJobStatus,
+        retryCount: Int,
+        updatedAt: Int64,
+        createdAt: Int64
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            INSERT INTO pending_job (
+                job_id,
+                user_id,
+                job_type,
+                biz_key,
+                payload_json,
+                status,
+                retry_count,
+                max_retry_count,
+                next_retry_at,
+                updated_at,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                status = CASE
+                    WHEN pending_job.status IN (?, ?) THEN pending_job.status
+                    ELSE excluded.status
+                END,
+                retry_count = CASE
+                    WHEN pending_job.status IN (?, ?) THEN pending_job.retry_count
+                    ELSE excluded.retry_count
+                END,
+                max_retry_count = excluded.max_retry_count,
+                next_retry_at = CASE
+                    WHEN pending_job.status IN (?, ?) THEN pending_job.next_retry_at
+                    ELSE excluded.next_retry_at
+                END,
+                updated_at = excluded.updated_at;
+            """,
+            parameters: [
+                .text(input.id),
+                .text(input.userID.rawValue),
+                .integer(Int64(input.type.rawValue)),
+                .optionalText(input.bizKey),
+                .text(input.payloadJSON),
+                .integer(Int64(status.rawValue)),
+                .integer(Int64(retryCount)),
+                .integer(Int64(input.maxRetryCount)),
+                .optionalInteger(input.nextRetryAt),
+                .integer(updatedAt),
+                .integer(createdAt),
+                .integer(Int64(PendingJobStatus.success.rawValue)),
+                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
+                .integer(Int64(PendingJobStatus.success.rawValue)),
+                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
+                .integer(Int64(PendingJobStatus.success.rawValue)),
+                .integer(Int64(PendingJobStatus.cancelled.rawValue))
+            ]
+        )
     }
 
     private func containsDuplicateIncomingMessage(_ message: IncomingSyncMessage) async throws -> Bool {

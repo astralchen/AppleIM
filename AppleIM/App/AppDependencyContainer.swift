@@ -10,6 +10,7 @@ final class AppDependencyContainer {
     private let storeProvider: ChatStoreProvider
     private let messageSendService: any MessageSendService
     private let demoUserID: UserID
+    private let networkRecoveryCoordinator: NetworkRecoveryCoordinator
 
     init(
         demoUserID: UserID = "demo_user",
@@ -25,6 +26,19 @@ final class AppDependencyContainer {
             storageService: storageService,
             database: database
         )
+        self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
+            userID: demoUserID,
+            storeProvider: storeProvider,
+            sendService: messageSendService
+        )
+    }
+
+    func startNetworkRecovery() {
+        networkRecoveryCoordinator.start()
+    }
+
+    func runDueJobsWhenNetworkIsReachable() {
+        networkRecoveryCoordinator.runDueJobsWhenReachable()
     }
 
     func makeConversationListViewController() -> ConversationListViewController {

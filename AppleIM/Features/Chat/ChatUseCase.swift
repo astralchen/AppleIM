@@ -11,6 +11,21 @@ nonisolated struct ChatMessagePage: Equatable, Sendable {
     let nextBeforeSortSequence: Int64?
 }
 
+nonisolated private struct MessageResendPendingJobPayload: Codable, Equatable, Sendable {
+    let messageID: String
+    let conversationID: String
+    let clientMessageID: String
+    let lastFailureReason: MessageSendFailureReason?
+}
+
+nonisolated struct PendingMessageRetryRunResult: Equatable, Sendable {
+    let scannedJobCount: Int
+    let attemptedCount: Int
+    let successCount: Int
+    let rescheduledCount: Int
+    let exhaustedCount: Int
+}
+
 protocol ChatUseCase: Sendable {
     func loadInitialMessages() async throws -> ChatMessagePage
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage
@@ -29,20 +44,26 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private let conversationID: ConversationID
     private let repository: any MessageRepository
     private let conversationRepository: (any ConversationRepository)?
+    private let pendingJobRepository: (any PendingJobRepository)?
     private let sendService: any MessageSendService
+    private let retryPolicy: MessageRetryPolicy
 
     init(
         userID: UserID,
         conversationID: ConversationID,
         repository: any MessageRepository,
         conversationRepository: (any ConversationRepository)? = nil,
-        sendService: any MessageSendService
+        pendingJobRepository: (any PendingJobRepository)? = nil,
+        sendService: any MessageSendService,
+        retryPolicy: MessageRetryPolicy = MessageRetryPolicy()
     ) {
         self.userID = userID
         self.conversationID = conversationID
         self.repository = repository
         self.conversationRepository = conversationRepository
+        self.pendingJobRepository = pendingJobRepository
         self.sendService = sendService
+        self.retryPolicy = retryPolicy
     }
 
     func loadInitialMessages() async throws -> ChatMessagePage {
@@ -122,10 +143,11 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         ack = nil
                     }
 
-                    try await repository.updateMessageSendStatus(
+                    try await updateSendStatus(
                         messageID: insertedMessage.id,
                         status: finalStatus,
-                        ack: ack
+                        ack: ack,
+                        pendingJob: finalStatus == .failed ? try makeResendJobInput(for: insertedMessage, failureReason: result.failureReason) : nil
                     )
 
                     if let updatedMessage = try await repository.message(messageID: insertedMessage.id) {
@@ -159,15 +181,17 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     case let .success(successAck):
                         finalStatus = .success
                         ack = successAck
+                        try await markResendJobSuccess(for: sendingMessage)
                     case .failure:
                         finalStatus = .failed
                         ack = nil
                     }
 
-                    try await repository.updateMessageSendStatus(
+                    try await updateSendStatus(
                         messageID: sendingMessage.id,
                         status: finalStatus,
-                        ack: ack
+                        ack: ack,
+                        pendingJob: finalStatus == .failed ? try makeResendJobInput(for: sendingMessage, failureReason: result.failureReason) : nil
                     )
 
                     if let updatedMessage = try await repository.message(messageID: sendingMessage.id) {
@@ -196,6 +220,79 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             userID: userID,
             replacementText: "你撤回了一条消息"
         )
+    }
+
+    private func updateSendStatus(
+        messageID: MessageID,
+        status: MessageSendStatus,
+        ack: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws {
+        if let recoveryRepository = repository as? any MessageSendRecoveryRepository {
+            try await recoveryRepository.updateMessageSendStatus(
+                messageID: messageID,
+                status: status,
+                ack: ack,
+                pendingJob: pendingJob
+            )
+        } else {
+            try await repository.updateMessageSendStatus(messageID: messageID, status: status, ack: ack)
+
+            if let pendingJob, let pendingJobRepository {
+                _ = try await pendingJobRepository.upsertPendingJob(pendingJob)
+            }
+        }
+    }
+
+    private func makeResendJobInput(
+        for message: StoredMessage,
+        failureReason: MessageSendFailureReason?
+    ) throws -> PendingJobInput? {
+        guard pendingJobRepository != nil, let clientMessageID = message.clientMessageID else {
+            return nil
+        }
+
+        let payload = MessageResendPendingJobPayload(
+            messageID: message.id.rawValue,
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            lastFailureReason: failureReason
+        )
+        let payloadData = try JSONEncoder().encode(payload)
+
+        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
+            return nil
+        }
+
+        return PendingJobInput(
+            id: Self.resendJobID(clientMessageID: clientMessageID),
+            userID: userID,
+            type: .messageResend,
+            bizKey: clientMessageID,
+            payloadJSON: payloadJSON,
+            maxRetryCount: retryPolicy.maxRetryCount,
+            nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
+        )
+    }
+
+    private func markResendJobSuccess(for message: StoredMessage) async throws {
+        guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
+            return
+        }
+
+        try await pendingJobRepository.updatePendingJobStatus(
+            jobID: Self.resendJobID(clientMessageID: clientMessageID),
+            status: .success,
+            nextRetryAt: nil
+        )
+    }
+
+    private static func resendJobID(clientMessageID: String) -> String {
+        "message_resend_\(clientMessageID)"
+    }
+
+    private static func currentTimestamp() -> Int64 {
+        Int64(Date().timeIntervalSince1970)
     }
 
     nonisolated private static func row(from message: StoredMessage, currentUserID: UserID) -> ChatMessageRowState {
@@ -242,6 +339,94 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     }
 }
 
+nonisolated struct PendingMessageRetryRunner: Sendable {
+    private let userID: UserID
+    private let messageRepository: any MessageRepository
+    private let pendingJobRepository: any PendingJobRepository
+    private let sendService: any MessageSendService
+    private let retryPolicy: MessageRetryPolicy
+
+    init(
+        userID: UserID,
+        messageRepository: any MessageRepository,
+        pendingJobRepository: any PendingJobRepository,
+        sendService: any MessageSendService,
+        retryPolicy: MessageRetryPolicy = MessageRetryPolicy()
+    ) {
+        self.userID = userID
+        self.messageRepository = messageRepository
+        self.pendingJobRepository = pendingJobRepository
+        self.sendService = sendService
+        self.retryPolicy = retryPolicy
+    }
+
+    func runDueJobs(now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingMessageRetryRunResult {
+        let jobs = try await pendingJobRepository.recoverablePendingJobs(userID: userID, now: now)
+        var attemptedCount = 0
+        var successCount = 0
+        var rescheduledCount = 0
+        var exhaustedCount = 0
+
+        for job in jobs where job.type == .messageResend {
+            guard job.retryCount < job.maxRetryCount else {
+                exhaustedCount += 1
+                try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .failed, nextRetryAt: nil)
+                continue
+            }
+
+            let payload = try JSONDecoder().decode(MessageResendPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
+            let messageID = MessageID(rawValue: payload.messageID)
+
+            guard let message = try await messageRepository.message(messageID: messageID) else {
+                exhaustedCount += 1
+                try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .cancelled, nextRetryAt: nil)
+                continue
+            }
+
+            attemptedCount += 1
+            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .running, nextRetryAt: nil)
+            try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .sending, ack: nil)
+
+            let result = await sendService.sendText(message: message)
+            switch result {
+            case let .success(ack):
+                successCount += 1
+                try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .success, ack: ack)
+                try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .success, nextRetryAt: nil)
+            case .failure:
+                try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .failed, ack: nil)
+
+                if job.retryCount + 1 >= job.maxRetryCount {
+                    exhaustedCount += 1
+                    try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .failed, nextRetryAt: nil)
+                } else {
+                    rescheduledCount += 1
+                    let nextRetryAt = retryPolicy.nextRetryAt(now: now, retryCount: job.retryCount + 1)
+                    try await pendingJobRepository.schedulePendingJobRetry(jobID: job.id, nextRetryAt: nextRetryAt)
+                }
+            }
+        }
+
+        return PendingMessageRetryRunResult(
+            scannedJobCount: jobs.count,
+            attemptedCount: attemptedCount,
+            successCount: successCount,
+            rescheduledCount: rescheduledCount,
+            exhaustedCount: exhaustedCount
+        )
+    }
+}
+
+private extension MessageSendResult {
+    var failureReason: MessageSendFailureReason? {
+        guard case let .failure(reason) = self else {
+            return nil
+        }
+
+        return reason
+    }
+}
+
 nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     private let userID: UserID
     private let conversationID: ConversationID
@@ -267,6 +452,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationID: conversationID,
             repository: repository,
             conversationRepository: repository,
+            pendingJobRepository: repository,
             sendService: sendService
         )
         return try await useCase.loadInitialMessages()
@@ -279,6 +465,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationID: conversationID,
             repository: repository,
             conversationRepository: repository,
+            pendingJobRepository: repository,
             sendService: sendService
         )
         return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
@@ -291,6 +478,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationID: conversationID,
             repository: repository,
             conversationRepository: repository,
+            pendingJobRepository: repository,
             sendService: sendService
         )
         return try await useCase.loadDraft()
@@ -303,6 +491,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationID: conversationID,
             repository: repository,
             conversationRepository: repository,
+            pendingJobRepository: repository,
             sendService: sendService
         )
         try await useCase.saveDraft(text)
@@ -318,6 +507,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         conversationID: conversationID,
                         repository: repository,
                         conversationRepository: repository,
+                        pendingJobRepository: repository,
                         sendService: sendService
                     )
 
@@ -347,6 +537,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         conversationID: conversationID,
                         repository: repository,
                         conversationRepository: repository,
+                        pendingJobRepository: repository,
                         sendService: sendService
                     )
 
@@ -373,6 +564,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationID: conversationID,
             repository: repository,
             conversationRepository: repository,
+            pendingJobRepository: repository,
             sendService: sendService
         )
         try await useCase.delete(messageID: messageID)
@@ -385,6 +577,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationID: conversationID,
             repository: repository,
             conversationRepository: repository,
+            pendingJobRepository: repository,
             sendService: sendService
         )
         try await useCase.revoke(messageID: messageID)

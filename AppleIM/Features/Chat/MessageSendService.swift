@@ -11,9 +11,42 @@ nonisolated struct MessageSendAck: Equatable, Sendable {
     let serverTime: Int64
 }
 
+nonisolated enum MessageSendFailureReason: String, Codable, Equatable, Sendable {
+    case unknown
+    case timeout
+    case offline
+    case ackMissing
+}
+
 nonisolated enum MessageSendResult: Equatable, Sendable {
     case success(MessageSendAck)
-    case failure
+    case failure(MessageSendFailureReason = .unknown)
+}
+
+nonisolated struct MessageRetryPolicy: Equatable, Sendable {
+    let initialDelaySeconds: Int64
+    let maxDelaySeconds: Int64
+    let maxRetryCount: Int
+
+    init(
+        initialDelaySeconds: Int64 = 2,
+        maxDelaySeconds: Int64 = 60,
+        maxRetryCount: Int = 5
+    ) {
+        self.initialDelaySeconds = max(1, initialDelaySeconds)
+        self.maxDelaySeconds = max(self.initialDelaySeconds, maxDelaySeconds)
+        self.maxRetryCount = max(1, maxRetryCount)
+    }
+
+    func delaySeconds(after retryCount: Int) -> Int64 {
+        let boundedRetryCount = max(0, retryCount)
+        let multiplier = Int64(1) << min(boundedRetryCount, 30)
+        return min(maxDelaySeconds, initialDelaySeconds * multiplier)
+    }
+
+    func nextRetryAt(now: Int64, retryCount: Int) -> Int64 {
+        now + delaySeconds(after: retryCount)
+    }
 }
 
 protocol MessageSendService: Sendable {
@@ -36,7 +69,7 @@ nonisolated struct MockMessageSendService: MessageSendService {
         do {
             try await Task.sleep(nanoseconds: delayNanoseconds)
         } catch {
-            return .failure
+            return .failure()
         }
 
         switch result {
@@ -48,8 +81,8 @@ nonisolated struct MockMessageSendService: MessageSendService {
                     serverTime: Int64(Date().timeIntervalSince1970)
                 )
             )
-        case .failure:
-            return .failure
+        case let .failure(reason):
+            return .failure(reason)
         }
     }
 }

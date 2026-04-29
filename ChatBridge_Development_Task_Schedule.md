@@ -68,15 +68,15 @@
 | 已完成 | 第 7 周 | SyncEngineActor | 管理 cursor、seq、补拉、去重 | 不出现并发乱序写入 | iOS |
 | 已完成 | 第 7 周 | 增量同步 | `sync_checkpoint` + 批量事务 | 离线后上线可补齐消息 | iOS/Server |
 | 已完成 | 第 7 周 | 消息去重 | `client_msg_id/server_msg_id/seq` | 重复推送不重复显示 | iOS/Server |
-| 下一步 | 第 8 周 | pending_job | pending/running/success/failed/cancelled | App 重启后可恢复任务 | iOS |
-| 待开始 | 第 8 周 | 弱网重试 | 超时、断网、ack 丢失、指数退避 | 弱网不丢消息 | iOS/QA |
-| 待开始 | 第 8 周 | 网络状态桥接 | Combine 监听网络恢复，触发任务 | 恢复网络后自动重试 | iOS |
+| 已完成 | 第 8 周 | pending_job | pending/running/success/failed/cancelled | App 重启后可恢复任务 | iOS |
+| 已完成 | 第 8 周 | 弱网重试 | 超时、断网、ack 丢失、指数退避 | 弱网不丢消息 | iOS/QA |
+| 已完成 | 第 8 周 | 网络状态桥接 | Combine 监听网络恢复，触发任务 | 恢复网络后自动重试 | iOS |
 
 ### Sprint 4：图片与语音消息
 
 | 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
 |---|---|---|---|---|---|
-| 待开始 | 第 9 周 | 图片选择与落盘 | PhotosUI/相册权限，账号目录隔离 | 本地缩略图立即显示 | iOS |
+| 下一步 | 第 9 周 | 图片选择与落盘 | PhotosUI/相册权限，账号目录隔离 | 本地缩略图立即显示 | iOS |
 | 待开始 | 第 9 周 | 图片压缩与缩略图 | MediaFileActor 异步处理 | 大图不阻塞 UI | iOS |
 | 待开始 | 第 9 周 | 图片上传 | 上传进度 Combine 发布 | 失败可重试 | iOS/Server |
 | 待开始 | 第 10 周 | 语音录制 | AVFoundation，权限降级 | 可录制、取消、发送 | iOS |

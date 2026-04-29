@@ -10,6 +10,7 @@ import UIKit
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     var window: UIWindow?
+    private var dependencies: AppDependencyContainer?
 
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
@@ -19,6 +20,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         do {
             let dependencies = try AppDependencyContainer()
+            self.dependencies = dependencies
+            dependencies.startNetworkRecovery()
             window.rootViewController = UINavigationController(
                 rootViewController: dependencies.makeConversationListViewController()
             )
@@ -38,8 +41,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidBecomeActive(_ scene: UIScene) {
-        // Called when the scene has moved from an inactive state to an active state.
-        // Use this method to restart any tasks that were paused (or not yet started) when the scene was inactive.
+        dependencies?.runDueJobsWhenNetworkIsReachable()
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
@@ -48,8 +50,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneWillEnterForeground(_ scene: UIScene) {
-        // Called as the scene transitions from the background to the foreground.
-        // Use this method to undo the changes made on entering the background.
+        dependencies?.runDueJobsWhenNetworkIsReachable()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
