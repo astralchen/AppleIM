@@ -19,6 +19,8 @@ final class AppDependencyContainer {
     private let messageSendService: any MessageSendService
     /// 媒体文件存储
     private let mediaFileStore: any MediaFileStoring
+    /// 媒体上传服务
+    private let mediaUploadService: any MediaUploadService
     /// 演示用户 ID
     private let demoUserID: UserID
     /// 网络恢复协调器
@@ -28,11 +30,13 @@ final class AppDependencyContainer {
         demoUserID: UserID = "demo_user",
         storageService: (any AccountStorageService)? = nil,
         database: DatabaseActor = DatabaseActor(),
-        messageSendService: any MessageSendService = MockMessageSendService()
+        messageSendService: any MessageSendService = MockMessageSendService(),
+        mediaUploadService: any MediaUploadService = MockMediaUploadService()
     ) throws {
         let storageService = try storageService ?? AccountStorageFactory.makeDefaultService()
         self.demoUserID = demoUserID
         self.messageSendService = messageSendService
+        self.mediaUploadService = mediaUploadService
         self.mediaFileStore = AccountMediaFileStore(accountID: demoUserID, storageService: storageService)
         self.storeProvider = ChatStoreProvider(
             accountID: demoUserID,
@@ -42,7 +46,8 @@ final class AppDependencyContainer {
         self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
             userID: demoUserID,
             storeProvider: storeProvider,
-            sendService: messageSendService
+            sendService: messageSendService,
+            mediaUploadService: mediaUploadService
         )
     }
 
@@ -78,7 +83,8 @@ final class AppDependencyContainer {
             conversationID: conversation.id,
             storeProvider: storeProvider,
             sendService: messageSendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         let viewModel = ChatViewModel(useCase: useCase, title: conversation.title)
         return ChatViewController(viewModel: viewModel)

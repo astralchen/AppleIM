@@ -23,6 +23,8 @@ nonisolated enum ChatStoreError: Error, Equatable, Sendable {
     case invalidPendingJobType(Int)
     /// 无效的待处理任务状态
     case invalidPendingJobStatus(Int)
+    /// 无效的媒体上传状态
+    case invalidMediaUploadStatus(Int)
     /// 消息未找到
     case messageNotFound(MessageID)
     /// 消息无法重发
@@ -125,8 +127,50 @@ nonisolated struct StoredImageContent: Equatable, Sendable {
     let height: Int
     /// 文件大小（字节）
     let sizeBytes: Int64
+    /// 远程 CDN URL
+    let remoteURL: String?
+    /// 文件摘要
+    let md5: String?
     /// 图片格式（jpg、png 等）
     let format: String
+    /// 上传状态
+    let uploadStatus: MediaUploadStatus
+
+    init(
+        mediaID: String,
+        localPath: String,
+        thumbnailPath: String,
+        width: Int,
+        height: Int,
+        sizeBytes: Int64,
+        remoteURL: String? = nil,
+        md5: String? = nil,
+        format: String,
+        uploadStatus: MediaUploadStatus = .pending
+    ) {
+        self.mediaID = mediaID
+        self.localPath = localPath
+        self.thumbnailPath = thumbnailPath
+        self.width = width
+        self.height = height
+        self.sizeBytes = sizeBytes
+        self.remoteURL = remoteURL
+        self.md5 = md5
+        self.format = format
+        self.uploadStatus = uploadStatus
+    }
+}
+
+/// 媒体上传状态
+nonisolated enum MediaUploadStatus: Int, Codable, Sendable {
+    /// 待上传
+    case pending = 0
+    /// 上传中
+    case uploading = 1
+    /// 上传成功
+    case success = 2
+    /// 上传失败
+    case failed = 3
 }
 
 /// 发出的图片消息输入参数
@@ -291,6 +335,17 @@ protocol MessageRepository: Sendable {
     func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws
     /// 重发文本消息
     func resendTextMessage(messageID: MessageID) async throws -> StoredMessage
+    /// 重发图片消息
+    func resendImageMessage(messageID: MessageID) async throws -> StoredMessage
+    /// 更新图片上传和消息发送状态
+    func updateImageUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws
     /// 标记消息已删除
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws
     /// 撤回消息

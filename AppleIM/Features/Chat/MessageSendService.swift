@@ -90,6 +90,13 @@ protocol MessageSendService: Sendable {
     /// - Parameter message: 存储的消息
     /// - Returns: 发送结果
     func sendText(message: StoredMessage) async -> MessageSendResult
+    /// 发送图片消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的图片消息
+    ///   - upload: 图片上传确认信息
+    /// - Returns: 发送结果
+    func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
 }
 
 /// 模拟消息发送服务
@@ -110,6 +117,27 @@ nonisolated struct MockMessageSendService: MessageSendService {
     }
 
     func sendText(message: StoredMessage) async -> MessageSendResult {
+        do {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        } catch {
+            return .failure()
+        }
+
+        switch result {
+        case .success:
+            return .success(
+                MessageSendAck(
+                    serverMessageID: "server_\(message.id.rawValue)",
+                    sequence: message.sortSequence,
+                    serverTime: Int64(Date().timeIntervalSince1970)
+                )
+            )
+        case let .failure(reason):
+            return .failure(reason)
+        }
+    }
+
+    func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         do {
             try await Task.sleep(nanoseconds: delayNanoseconds)
         } catch {

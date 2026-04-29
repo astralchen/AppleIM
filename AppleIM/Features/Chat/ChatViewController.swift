@@ -375,6 +375,7 @@ private extension ChatMessageRowState {
             text,
             imageThumbnailPath ?? "",
             statusText ?? "",
+            uploadProgress.map { String(Int($0 * 100)) } ?? "",
             canRetry ? "retry" : "no-retry",
             canRevoke ? "revoke" : "no-revoke",
             isRevoked ? "revoked" : "normal"
@@ -418,7 +419,8 @@ private final class ChatMessageCell: UICollectionViewCell {
             thumbnailImageView.image = nil
         }
 
-        metadataLabel.text = [row.timeText, row.statusText].compactMap { $0 }.joined(separator: " · ")
+        let progressText = row.uploadProgress.map { "Uploading \(Int($0 * 100))%" }
+        metadataLabel.text = [row.timeText, progressText ?? row.statusText].compactMap { $0 }.joined(separator: " · ")
         bubbleView.backgroundColor = row.isRevoked ? .tertiarySystemGroupedBackground : (row.isOutgoing ? .systemBlue : .secondarySystemGroupedBackground)
         messageLabel.textColor = row.isOutgoing && !row.isRevoked ? .white : .label
         metadataLabel.textColor = row.isOutgoing && !row.isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel

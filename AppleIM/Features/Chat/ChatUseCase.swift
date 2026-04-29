@@ -25,6 +25,15 @@ nonisolated private struct MessageResendPendingJobPayload: Codable, Equatable, S
     let lastFailureReason: MessageSendFailureReason?
 }
 
+/// 图片上传待处理任务载荷
+nonisolated private struct ImageUploadPendingJobPayload: Codable, Equatable, Sendable {
+    let messageID: String
+    let conversationID: String
+    let clientMessageID: String
+    let mediaID: String
+    let lastFailureReason: String?
+}
+
 /// 待处理消息重试运行结果
 nonisolated struct PendingMessageRetryRunResult: Equatable, Sendable {
     /// 扫描的任务数
@@ -80,6 +89,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private let sendService: any MessageSendService
     /// 媒体文件存储
     private let mediaFileStore: (any MediaFileStoring)?
+    /// 媒体上传服务
+    private let mediaUploadService: any MediaUploadService
     /// 重试策略
     private let retryPolicy: MessageRetryPolicy
 
@@ -91,6 +102,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         pendingJobRepository: (any PendingJobRepository)? = nil,
         sendService: any MessageSendService,
         mediaFileStore: (any MediaFileStoring)? = nil,
+        mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         retryPolicy: MessageRetryPolicy = MessageRetryPolicy()
     ) {
         self.userID = userID
@@ -100,6 +112,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         self.pendingJobRepository = pendingJobRepository
         self.sendService = sendService
         self.mediaFileStore = mediaFileStore
+        self.mediaUploadService = mediaUploadService
         self.retryPolicy = retryPolicy
     }
 
@@ -236,6 +249,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     )
 
                     continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    try await uploadAndSendImage(insertedMessage, continuation: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -252,6 +266,18 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
+                    guard let existingMessage = try await repository.message(messageID: messageID) else {
+                        throw ChatStoreError.messageNotFound(messageID)
+                    }
+
+                    if existingMessage.type == .image {
+                        let sendingMessage = try await repository.resendImageMessage(messageID: messageID)
+                        continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
+                        try await uploadAndSendImage(sendingMessage, continuation: continuation)
+                        continuation.finish()
+                        return
+                    }
+
                     let sendingMessage = try await repository.resendTextMessage(messageID: messageID)
                     continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
 
@@ -379,15 +405,156 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 上传图片并发送图片消息体
+    ///
+    /// 图片已完成本地落盘和消息入库，这里只负责上传、ack 和失败恢复任务。
+    private func uploadAndSendImage(
+        _ message: StoredMessage,
+        continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
+    ) async throws {
+        try await repository.updateImageUploadStatus(
+            messageID: message.id,
+            uploadStatus: .uploading,
+            uploadAck: nil,
+            sendStatus: .sending,
+            sendAck: nil,
+            pendingJob: nil
+        )
+
+        for await event in mediaUploadService.uploadImage(message: message) {
+            switch event {
+            case let .progress(progress):
+                continuation.yield(Self.row(from: message, currentUserID: userID, uploadProgress: progress))
+            case let .completed(uploadAck):
+                let result = await sendService.sendImage(message: message, upload: uploadAck)
+                let finalStatus: MessageSendStatus
+                let imageUploadStatus: MediaUploadStatus
+                let sendAck: MessageSendAck?
+
+                switch result {
+                case let .success(ack):
+                    finalStatus = .success
+                    imageUploadStatus = .success
+                    sendAck = ack
+                    try await markImageUploadJobSuccess(for: message)
+                case .failure:
+                    finalStatus = .failed
+                    imageUploadStatus = .failed
+                    sendAck = nil
+                }
+
+                try await repository.updateImageUploadStatus(
+                    messageID: message.id,
+                    uploadStatus: imageUploadStatus,
+                    uploadAck: uploadAck,
+                    sendStatus: finalStatus,
+                    sendAck: sendAck,
+                    pendingJob: finalStatus == .failed ? try makeImageUploadJobInput(
+                        for: message,
+                        failureReason: result.failureReason?.rawValue
+                    ) : nil
+                )
+
+                if let updatedMessage = try await repository.message(messageID: message.id) {
+                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                }
+                return
+            case let .failed(reason):
+                try await repository.updateImageUploadStatus(
+                    messageID: message.id,
+                    uploadStatus: .failed,
+                    uploadAck: nil,
+                    sendStatus: .failed,
+                    sendAck: nil,
+                    pendingJob: try makeImageUploadJobInput(for: message, failureReason: reason.rawValue)
+                )
+
+                if let updatedMessage = try await repository.message(messageID: message.id) {
+                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                }
+                return
+            }
+        }
+
+        try await repository.updateImageUploadStatus(
+            messageID: message.id,
+            uploadStatus: .failed,
+            uploadAck: nil,
+            sendStatus: .failed,
+            sendAck: nil,
+            pendingJob: try makeImageUploadJobInput(for: message, failureReason: MediaUploadFailureReason.unknown.rawValue)
+        )
+
+        if let updatedMessage = try await repository.message(messageID: message.id) {
+            continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+        }
+    }
+
+    private func makeImageUploadJobInput(
+        for message: StoredMessage,
+        failureReason: String?
+    ) throws -> PendingJobInput? {
+        guard
+            pendingJobRepository != nil,
+            let clientMessageID = message.clientMessageID,
+            let image = message.image
+        else {
+            return nil
+        }
+
+        let payload = ImageUploadPendingJobPayload(
+            messageID: message.id.rawValue,
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            mediaID: image.mediaID,
+            lastFailureReason: failureReason
+        )
+        let payloadData = try JSONEncoder().encode(payload)
+
+        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
+            return nil
+        }
+
+        return PendingJobInput(
+            id: Self.imageUploadJobID(clientMessageID: clientMessageID),
+            userID: userID,
+            type: .imageUpload,
+            bizKey: clientMessageID,
+            payloadJSON: payloadJSON,
+            maxRetryCount: retryPolicy.maxRetryCount,
+            nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
+        )
+    }
+
+    private func markImageUploadJobSuccess(for message: StoredMessage) async throws {
+        guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
+            return
+        }
+
+        try await pendingJobRepository.updatePendingJobStatus(
+            jobID: Self.imageUploadJobID(clientMessageID: clientMessageID),
+            status: .success,
+            nextRetryAt: nil
+        )
+    }
+
     private static func resendJobID(clientMessageID: String) -> String {
         "message_resend_\(clientMessageID)"
+    }
+
+    private static func imageUploadJobID(clientMessageID: String) -> String {
+        "image_upload_\(clientMessageID)"
     }
 
     private static func currentTimestamp() -> Int64 {
         Int64(Date().timeIntervalSince1970)
     }
 
-    nonisolated private static func row(from message: StoredMessage, currentUserID: UserID) -> ChatMessageRowState {
+    nonisolated private static func row(
+        from message: StoredMessage,
+        currentUserID: UserID,
+        uploadProgress: Double? = nil
+    ) -> ChatMessageRowState {
         let isOutgoing = message.senderID == currentUserID
         let isRevoked = message.isRevoked
 
@@ -398,8 +565,9 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             sortSequence: message.sortSequence,
             timeText: timeText(from: message.localTime),
             statusText: isRevoked ? nil : statusText(for: message),
+            uploadProgress: uploadProgress,
             isOutgoing: isOutgoing,
-            canRetry: isOutgoing && message.type == .text && message.sendStatus == .failed && !isRevoked,
+            canRetry: isOutgoing && (message.type == .text || message.type == .image) && message.sendStatus == .failed && !isRevoked,
             canDelete: !message.isDeleted,
             canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked,
             isRevoked: isRevoked
@@ -437,6 +605,7 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
     private let messageRepository: any MessageRepository
     private let pendingJobRepository: any PendingJobRepository
     private let sendService: any MessageSendService
+    private let mediaUploadService: any MediaUploadService
     private let retryPolicy: MessageRetryPolicy
 
     init(
@@ -444,12 +613,14 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         messageRepository: any MessageRepository,
         pendingJobRepository: any PendingJobRepository,
         sendService: any MessageSendService,
+        mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         retryPolicy: MessageRetryPolicy = MessageRetryPolicy()
     ) {
         self.userID = userID
         self.messageRepository = messageRepository
         self.pendingJobRepository = pendingJobRepository
         self.sendService = sendService
+        self.mediaUploadService = mediaUploadService
         self.retryPolicy = retryPolicy
     }
 
@@ -466,43 +637,28 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         var rescheduledCount = 0
         var exhaustedCount = 0
 
-        for job in jobs where job.type == .messageResend {
+        for job in jobs {
             guard job.retryCount < job.maxRetryCount else {
                 exhaustedCount += 1
                 try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .failed, nextRetryAt: nil)
                 continue
             }
 
-            let payload = try JSONDecoder().decode(MessageResendPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
-            let messageID = MessageID(rawValue: payload.messageID)
-
-            guard let message = try await messageRepository.message(messageID: messageID) else {
-                exhaustedCount += 1
-                try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .cancelled, nextRetryAt: nil)
+            switch job.type {
+            case .messageResend:
+                let result = try await runMessageResendJob(job, now: now)
+                attemptedCount += result.attempted ? 1 : 0
+                successCount += result.succeeded ? 1 : 0
+                rescheduledCount += result.rescheduled ? 1 : 0
+                exhaustedCount += result.exhausted ? 1 : 0
+            case .imageUpload:
+                let result = try await runImageUploadJob(job, now: now)
+                attemptedCount += result.attempted ? 1 : 0
+                successCount += result.succeeded ? 1 : 0
+                rescheduledCount += result.rescheduled ? 1 : 0
+                exhaustedCount += result.exhausted ? 1 : 0
+            default:
                 continue
-            }
-
-            attemptedCount += 1
-            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .running, nextRetryAt: nil)
-            try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .sending, ack: nil)
-
-            let result = await sendService.sendText(message: message)
-            switch result {
-            case let .success(ack):
-                successCount += 1
-                try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .success, ack: ack)
-                try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .success, nextRetryAt: nil)
-            case .failure:
-                try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .failed, ack: nil)
-
-                if job.retryCount + 1 >= job.maxRetryCount {
-                    exhaustedCount += 1
-                    try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .failed, nextRetryAt: nil)
-                } else {
-                    rescheduledCount += 1
-                    let nextRetryAt = retryPolicy.nextRetryAt(now: now, retryCount: job.retryCount + 1)
-                    try await pendingJobRepository.schedulePendingJobRetry(jobID: job.id, nextRetryAt: nextRetryAt)
-                }
             }
         }
 
@@ -514,6 +670,121 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
             exhaustedCount: exhaustedCount
         )
     }
+
+    private func runMessageResendJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
+        let payload = try JSONDecoder().decode(MessageResendPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
+        let messageID = MessageID(rawValue: payload.messageID)
+
+        guard let message = try await messageRepository.message(messageID: messageID) else {
+            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .cancelled, nextRetryAt: nil)
+            return PendingJobAttemptResult(attempted: false, succeeded: false, rescheduled: false, exhausted: true)
+        }
+
+        try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .running, nextRetryAt: nil)
+        try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .sending, ack: nil)
+
+        let result = await sendService.sendText(message: message)
+        switch result {
+        case let .success(ack):
+            try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .success, ack: ack)
+            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .success, nextRetryAt: nil)
+            return PendingJobAttemptResult(attempted: true, succeeded: true, rescheduled: false, exhausted: false)
+        case .failure:
+            try await messageRepository.updateMessageSendStatus(messageID: messageID, status: .failed, ack: nil)
+            return try await retryOrExhaust(job, now: now)
+        }
+    }
+
+    private func runImageUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
+        let payload = try JSONDecoder().decode(ImageUploadPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
+        let messageID = MessageID(rawValue: payload.messageID)
+
+        guard let message = try await messageRepository.message(messageID: messageID) else {
+            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .cancelled, nextRetryAt: nil)
+            return PendingJobAttemptResult(attempted: false, succeeded: false, rescheduled: false, exhausted: true)
+        }
+
+        try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .running, nextRetryAt: nil)
+        try await messageRepository.updateImageUploadStatus(
+            messageID: messageID,
+            uploadStatus: .uploading,
+            uploadAck: nil,
+            sendStatus: .sending,
+            sendAck: nil,
+            pendingJob: nil
+        )
+
+        for await event in mediaUploadService.uploadImage(message: message) {
+            switch event {
+            case .progress:
+                continue
+            case let .completed(uploadAck):
+                let result = await sendService.sendImage(message: message, upload: uploadAck)
+
+                switch result {
+                case let .success(sendAck):
+                    try await messageRepository.updateImageUploadStatus(
+                        messageID: messageID,
+                        uploadStatus: .success,
+                        uploadAck: uploadAck,
+                        sendStatus: .success,
+                        sendAck: sendAck,
+                        pendingJob: nil
+                    )
+                    try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .success, nextRetryAt: nil)
+                    return PendingJobAttemptResult(attempted: true, succeeded: true, rescheduled: false, exhausted: false)
+                case .failure:
+                    try await messageRepository.updateImageUploadStatus(
+                        messageID: messageID,
+                        uploadStatus: .failed,
+                        uploadAck: uploadAck,
+                        sendStatus: .failed,
+                        sendAck: nil,
+                        pendingJob: nil
+                    )
+                    return try await retryOrExhaust(job, now: now)
+                }
+            case .failed:
+                try await messageRepository.updateImageUploadStatus(
+                    messageID: messageID,
+                    uploadStatus: .failed,
+                    uploadAck: nil,
+                    sendStatus: .failed,
+                    sendAck: nil,
+                    pendingJob: nil
+                )
+                return try await retryOrExhaust(job, now: now)
+            }
+        }
+
+        try await messageRepository.updateImageUploadStatus(
+            messageID: messageID,
+            uploadStatus: .failed,
+            uploadAck: nil,
+            sendStatus: .failed,
+            sendAck: nil,
+            pendingJob: nil
+        )
+        return try await retryOrExhaust(job, now: now)
+    }
+
+    private func retryOrExhaust(_ job: PendingJob, now: Int64) async throws -> PendingJobAttemptResult {
+        if job.retryCount + 1 >= job.maxRetryCount {
+            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .failed, nextRetryAt: nil)
+            return PendingJobAttemptResult(attempted: true, succeeded: false, rescheduled: false, exhausted: true)
+        }
+
+        let nextRetryAt = retryPolicy.nextRetryAt(now: now, retryCount: job.retryCount + 1)
+        try await pendingJobRepository.schedulePendingJobRetry(jobID: job.id, nextRetryAt: nextRetryAt)
+        return PendingJobAttemptResult(attempted: true, succeeded: false, rescheduled: true, exhausted: false)
+    }
+}
+
+nonisolated private struct PendingJobAttemptResult: Equatable, Sendable {
+    let attempted: Bool
+    let succeeded: Bool
+    let rescheduled: Bool
+    let exhausted: Bool
 }
 
 /// MessageSendResult 扩展
@@ -533,19 +804,22 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     private let storeProvider: ChatStoreProvider
     private let sendService: any MessageSendService
     private let mediaFileStore: any MediaFileStoring
+    private let mediaUploadService: any MediaUploadService
 
     init(
         userID: UserID,
         conversationID: ConversationID,
         storeProvider: ChatStoreProvider,
         sendService: any MessageSendService,
-        mediaFileStore: any MediaFileStoring
+        mediaFileStore: any MediaFileStoring,
+        mediaUploadService: any MediaUploadService = MockMediaUploadService()
     ) {
         self.userID = userID
         self.conversationID = conversationID
         self.storeProvider = storeProvider
         self.sendService = sendService
         self.mediaFileStore = mediaFileStore
+        self.mediaUploadService = mediaUploadService
     }
 
     func loadInitialMessages() async throws -> ChatMessagePage {
@@ -557,7 +831,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationRepository: repository,
             pendingJobRepository: repository,
             sendService: sendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         return try await useCase.loadInitialMessages()
     }
@@ -571,7 +846,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationRepository: repository,
             pendingJobRepository: repository,
             sendService: sendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
     }
@@ -585,7 +861,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationRepository: repository,
             pendingJobRepository: repository,
             sendService: sendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         return try await useCase.loadDraft()
     }
@@ -599,7 +876,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationRepository: repository,
             pendingJobRepository: repository,
             sendService: sendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         try await useCase.saveDraft(text)
     }
@@ -616,7 +894,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         conversationRepository: repository,
                         pendingJobRepository: repository,
                         sendService: sendService,
-                        mediaFileStore: mediaFileStore
+                        mediaFileStore: mediaFileStore,
+                        mediaUploadService: mediaUploadService
                     )
 
                     for try await row in useCase.sendText(text) {
@@ -647,7 +926,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         conversationRepository: repository,
                         pendingJobRepository: repository,
                         sendService: sendService,
-                        mediaFileStore: mediaFileStore
+                        mediaFileStore: mediaFileStore,
+                        mediaUploadService: mediaUploadService
                     )
 
                     for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
@@ -678,7 +958,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         conversationRepository: repository,
                         pendingJobRepository: repository,
                         sendService: sendService,
-                        mediaFileStore: mediaFileStore
+                        mediaFileStore: mediaFileStore,
+                        mediaUploadService: mediaUploadService
                     )
 
                     for try await row in useCase.resend(messageID: messageID) {
@@ -706,7 +987,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationRepository: repository,
             pendingJobRepository: repository,
             sendService: sendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         try await useCase.delete(messageID: messageID)
     }
@@ -720,7 +1002,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             conversationRepository: repository,
             pendingJobRepository: repository,
             sendService: sendService,
-            mediaFileStore: mediaFileStore
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
         )
         try await useCase.revoke(messageID: messageID)
     }

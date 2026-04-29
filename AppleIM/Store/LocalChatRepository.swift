@@ -105,6 +105,72 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         try await messageDAO.prepareTextMessageForResend(messageID: messageID)
     }
 
+    func resendImageMessage(messageID: MessageID) async throws -> StoredMessage {
+        guard let existingMessage = try await messageDAO.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        guard
+            existingMessage.type == .image,
+            existingMessage.sendStatus == .failed,
+            !existingMessage.isRevoked,
+            !existingMessage.isDeleted
+        else {
+            throw ChatStoreError.messageCannotBeResent(messageID)
+        }
+
+        try await database.performTransaction(
+            [Self.updateMessageSendStatusStatement(messageID: messageID, status: .sending, ack: nil)]
+                + Self.updateImageUploadStatusStatements(
+                    messageID: messageID,
+                    status: .uploading,
+                    uploadAck: nil,
+                    updatedAt: Self.currentTimestamp()
+                ),
+            paths: paths
+        )
+
+        guard let updatedMessage = try await messageDAO.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        return updatedMessage
+    }
+
+    func updateImageUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws {
+        let now = Self.currentTimestamp()
+        var statements = [
+            Self.updateMessageSendStatusStatement(messageID: messageID, status: sendStatus, ack: sendAck)
+        ]
+        statements += Self.updateImageUploadStatusStatements(
+            messageID: messageID,
+            status: uploadStatus,
+            uploadAck: uploadAck,
+            updatedAt: now
+        )
+
+        if let pendingJob {
+            statements.append(
+                Self.upsertPendingJobStatement(
+                    pendingJob,
+                    status: .pending,
+                    retryCount: 0,
+                    updatedAt: now,
+                    createdAt: now
+                )
+            )
+        }
+
+        try await database.performTransaction(statements, paths: paths)
+    }
+
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws {
         guard let storedMessage = try await messageDAO.message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)
@@ -658,6 +724,55 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
                 .text(messageID.rawValue)
             ]
         )
+    }
+
+    private static func updateImageUploadStatusStatements(
+        messageID: MessageID,
+        status: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        updatedAt: Int64
+    ) -> [SQLiteStatement] {
+        [
+            SQLiteStatement(
+                """
+                UPDATE message_image
+                SET
+                    upload_status = ?,
+                    cdn_url = COALESCE(?, cdn_url),
+                    md5 = COALESCE(?, md5)
+                WHERE content_id = (
+                    SELECT content_id
+                    FROM message
+                    WHERE message_id = ?
+                    LIMIT 1
+                );
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
+                    .text(messageID.rawValue)
+                ]
+            ),
+            SQLiteStatement(
+                """
+                UPDATE media_resource
+                SET
+                    upload_status = ?,
+                    remote_url = COALESCE(?, remote_url),
+                    md5 = COALESCE(?, md5),
+                    updated_at = ?
+                WHERE owner_message_id = ?;
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
+                    .integer(updatedAt),
+                    .text(messageID.rawValue)
+                ]
+            )
+        ]
     }
 
     private static func upsertPendingJobStatement(

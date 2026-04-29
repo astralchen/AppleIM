@@ -79,6 +79,7 @@ final class NetworkRecoveryCoordinator {
     private let userID: UserID
     private let storeProvider: ChatStoreProvider
     private let sendService: any MessageSendService
+    private let mediaUploadService: any MediaUploadService
     private let monitor: any NetworkConnectivityMonitoring
     private let retryPolicy: MessageRetryPolicy
     private var cancellables: Set<AnyCancellable> = []
@@ -91,12 +92,14 @@ final class NetworkRecoveryCoordinator {
         userID: UserID,
         storeProvider: ChatStoreProvider,
         sendService: any MessageSendService,
+        mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         monitor: any NetworkConnectivityMonitoring = NWPathConnectivityMonitor(),
         retryPolicy: MessageRetryPolicy = MessageRetryPolicy()
     ) {
         self.userID = userID
         self.storeProvider = storeProvider
         self.sendService = sendService
+        self.mediaUploadService = mediaUploadService
         self.monitor = monitor
         self.retryPolicy = retryPolicy
     }
@@ -143,7 +146,7 @@ final class NetworkRecoveryCoordinator {
     private func runDueJobs() {
         guard recoveryTask == nil else { return }
 
-        recoveryTask = Task { [userID, storeProvider, sendService, retryPolicy, weak self] in
+        recoveryTask = Task { [userID, storeProvider, sendService, mediaUploadService, retryPolicy, weak self] in
             do {
                 let repository = try await storeProvider.repository()
                 let runner = PendingMessageRetryRunner(
@@ -151,6 +154,7 @@ final class NetworkRecoveryCoordinator {
                     messageRepository: repository,
                     pendingJobRepository: repository,
                     sendService: sendService,
+                    mediaUploadService: mediaUploadService,
                     retryPolicy: retryPolicy
                 )
                 let result = try await runner.runDueJobs()

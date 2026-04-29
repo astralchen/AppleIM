@@ -254,10 +254,110 @@ struct AppleIMTests {
         let conversations = try await repository.listConversations(for: "image_user")
 
         #expect(message.type == .image)
+        #expect(message.sendStatus == .sending)
         #expect(message.image == image)
         #expect(messages.first?.image == image)
         #expect(contentRows.first?.int("content_count") == 1)
         #expect(conversations.first?.lastMessageDigest == "[图片]")
+    }
+
+    @Test func chatUseCaseSendImageYieldsProgressThenSuccess() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "image_send_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "image_send_conversation", userID: "image_send_user", title: "Image Send", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let useCase = LocalChatUseCase(
+            userID: "image_send_user",
+            conversationID: "image_send_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [0.25, 0.75, 1.0], delayNanoseconds: 0)
+        )
+
+        let rows = try await collectRows(from: useCase.sendImage(data: samplePNGData(), preferredFileExtension: "png"))
+        let messageID = try #require(rows.first?.id)
+        let storedMessage = try await repository.message(messageID: messageID)
+        let imageRows = try await databaseContext.databaseActor.query(
+            "SELECT cdn_url, upload_status FROM message_image WHERE content_id = ?;",
+            parameters: [.text("image_\(messageID.rawValue)")],
+            paths: databaseContext.paths
+        )
+        let resourceRows = try await databaseContext.databaseActor.query(
+            "SELECT remote_url, upload_status FROM media_resource WHERE owner_message_id = ?;",
+            parameters: [.text(messageID.rawValue)],
+            paths: databaseContext.paths
+        )
+
+        #expect(rows.first?.statusText == "Sending")
+        #expect(rows.compactMap(\.uploadProgress) == [0.25, 0.75, 1.0])
+        #expect(rows.last?.statusText == nil)
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
+        #expect(imageRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
+        #expect(imageRows.first?.string("cdn_url") == storedMessage?.image?.remoteURL)
+        #expect(resourceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
+        #expect(resourceRows.first?.string("remote_url") == storedMessage?.image?.remoteURL)
+    }
+
+    @Test func chatUseCaseQueuesImageUploadJobWhenUploadFailsAndResendsWithoutDuplication() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "image_retry_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "image_retry_conversation", userID: "image_retry_user", title: "Image Retry", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let failingUseCase = LocalChatUseCase(
+            userID: "image_retry_user",
+            conversationID: "image_retry_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(result: .failed(.timeout), progressSteps: [0.4], delayNanoseconds: 0)
+        )
+
+        let failedRows = try await collectRows(from: failingUseCase.sendImage(data: samplePNGData(), preferredFileExtension: "png"))
+        let failedMessageID = try #require(failedRows.first?.id)
+        let failedMessage = try await repository.message(messageID: failedMessageID)
+        let recoverableJobs = try await repository.recoverablePendingJobs(userID: "image_retry_user", now: Int64.max)
+
+        let retryingUseCase = LocalChatUseCase(
+            userID: "image_retry_user",
+            conversationID: "image_retry_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+        let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
+        let storedMessages = try await repository.listMessages(conversationID: "image_retry_conversation", limit: 20, beforeSortSeq: nil)
+        let resentMessage = try await repository.message(messageID: failedMessageID)
+        let retryJob = try await repository.pendingJob(id: "image_upload_\(failedMessage?.clientMessageID ?? "")")
+
+        #expect(failedRows.last?.statusText == "Failed")
+        #expect(failedRows.last?.canRetry == true)
+        #expect(failedMessage?.sendStatus == .failed)
+        #expect(failedMessage?.image?.uploadStatus == .failed)
+        #expect(recoverableJobs.count == 1)
+        #expect(recoverableJobs.first?.type == .imageUpload)
+        #expect(recoverableJobs.first?.payloadJSON.contains("timeout") == true)
+        #expect(retryRows.last?.statusText == nil)
+        #expect(storedMessages.count == 1)
+        #expect(resentMessage?.sendStatus == .success)
+        #expect(retryJob?.status == .success)
     }
 
     @Test func localChatRepositoryRollsBackWhenMessageInsertFails() async throws {
@@ -862,6 +962,144 @@ struct AppleIMTests {
         #expect(result.exhaustedCount == 1)
         #expect(job?.status == .failed)
         #expect(job?.retryCount == 1)
+    }
+
+    @Test func pendingMessageRetryRunnerRecoversImageUploadJob() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "image_runner_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "image_runner_conversation", userID: "image_runner_user", title: "Image Runner", sortTimestamp: 1)
+        )
+        let image = StoredImageContent(
+            mediaID: "image_runner_media",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image_runner.png").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image_runner_thumb.jpg").path,
+            width: 64,
+            height: 64,
+            sizeBytes: 256,
+            format: "png"
+        )
+        let message = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "image_runner_user",
+                conversationID: "image_runner_conversation",
+                senderID: "image_runner_user",
+                image: image,
+                localTime: 500,
+                messageID: "image_runner_message",
+                clientMessageID: "image_runner_client",
+                sortSequence: 500
+            )
+        )
+        try await repository.updateImageUploadStatus(
+            messageID: message.id,
+            uploadStatus: .failed,
+            uploadAck: nil,
+            sendStatus: .failed,
+            sendAck: nil,
+            pendingJob: nil
+        )
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "image_upload_image_runner_client",
+                userID: "image_runner_user",
+                type: .imageUpload,
+                bizKey: "image_runner_client",
+                payloadJSON: #"{"messageID":"image_runner_message","conversationID":"image_runner_conversation","clientMessageID":"image_runner_client","mediaID":"image_runner_media","lastFailureReason":"offline"}"#,
+                maxRetryCount: 3,
+                nextRetryAt: 100
+            )
+        )
+        let runner = PendingMessageRetryRunner(
+            userID: "image_runner_user",
+            messageRepository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+
+        let result = try await runner.runDueJobs(now: 100)
+        let job = try await repository.pendingJob(id: "image_upload_image_runner_client")
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(result.successCount == 1)
+        #expect(job?.status == .success)
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.image?.uploadStatus == .success)
+        #expect(storedMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
+    }
+
+    @Test func pendingMessageRetryRunnerStopsImageUploadAtRetryLimit() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "image_limit_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "image_limit_conversation", userID: "image_limit_user", title: "Image Limit", sortTimestamp: 1)
+        )
+        let image = StoredImageContent(
+            mediaID: "image_limit_media",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image_limit.png").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image_limit_thumb.jpg").path,
+            width: 64,
+            height: 64,
+            sizeBytes: 256,
+            format: "png"
+        )
+        let message = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "image_limit_user",
+                conversationID: "image_limit_conversation",
+                senderID: "image_limit_user",
+                image: image,
+                localTime: 600,
+                messageID: "image_limit_message",
+                clientMessageID: "image_limit_client",
+                sortSequence: 600
+            )
+        )
+        try await repository.updateImageUploadStatus(
+            messageID: message.id,
+            uploadStatus: .failed,
+            uploadAck: nil,
+            sendStatus: .failed,
+            sendAck: nil,
+            pendingJob: nil
+        )
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "image_upload_image_limit_client",
+                userID: "image_limit_user",
+                type: .imageUpload,
+                bizKey: "image_limit_client",
+                payloadJSON: #"{"messageID":"image_limit_message","conversationID":"image_limit_conversation","clientMessageID":"image_limit_client","mediaID":"image_limit_media","lastFailureReason":"timeout"}"#,
+                maxRetryCount: 1,
+                nextRetryAt: 100
+            )
+        )
+        let runner = PendingMessageRetryRunner(
+            userID: "image_limit_user",
+            messageRepository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaUploadService: MockMediaUploadService(result: .failed(.timeout), progressSteps: [0.5], delayNanoseconds: 0)
+        )
+
+        let result = try await runner.runDueJobs(now: 100)
+        let job = try await repository.pendingJob(id: "image_upload_image_limit_client")
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(result.exhaustedCount == 1)
+        #expect(job?.status == .failed)
+        #expect(job?.retryCount == 1)
+        #expect(storedMessage?.sendStatus == .failed)
+        #expect(storedMessage?.image?.uploadStatus == .failed)
     }
 
     @MainActor
@@ -1929,6 +2167,7 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
                     sortSequence: 1,
                     timeText: "Now",
                     statusText: nil,
+                    uploadProgress: nil,
                     isOutgoing: true,
                     canRetry: false,
                     canDelete: true,
@@ -1963,6 +2202,7 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
+        uploadProgress: nil,
         isOutgoing: true,
         canRetry: false,
         canDelete: true,

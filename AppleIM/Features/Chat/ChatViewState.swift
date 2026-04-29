@@ -23,6 +23,8 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let timeText: String
     /// 状态文本（发送中、失败等）
     let statusText: String?
+    /// 上传进度（0.0-1.0）
+    let uploadProgress: Double?
     /// 是否为发出的消息
     let isOutgoing: Bool
     /// 是否可以重试

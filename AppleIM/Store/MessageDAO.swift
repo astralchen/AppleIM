@@ -47,7 +47,10 @@ nonisolated struct MessageDAO: Sendable {
                 message_image.size_bytes,
                 message_image.local_path,
                 message_image.thumb_path,
-                message_image.format
+                message_image.cdn_url,
+                message_image.md5,
+                message_image.format,
+                message_image.upload_status
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
             LEFT JOIN message_image ON message_image.content_id = message.content_id
@@ -96,7 +99,10 @@ nonisolated struct MessageDAO: Sendable {
                 message_image.size_bytes,
                 message_image.local_path,
                 message_image.thumb_path,
-                message_image.format
+                message_image.cdn_url,
+                message_image.md5,
+                message_image.format,
+                message_image.upload_status
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
             LEFT JOIN message_image ON message_image.content_id = message.content_id
@@ -305,7 +311,7 @@ nonisolated struct MessageDAO: Sendable {
             sequence: nil,
             type: .image,
             direction: .outgoing,
-            sendStatus: .success,
+            sendStatus: .sending,
             serverTime: nil,
             isRevoked: false,
             isDeleted: false,
@@ -334,7 +340,7 @@ nonisolated struct MessageDAO: Sendable {
                         format,
                         upload_status,
                         download_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 0, 0);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 0);
                     """,
                     parameters: [
                         .text(contentID),
@@ -344,7 +350,8 @@ nonisolated struct MessageDAO: Sendable {
                         .integer(input.image.sizeBytes),
                         .text(input.image.localPath),
                         .text(input.image.thumbnailPath),
-                        .text(input.image.format)
+                        .text(input.image.format),
+                        .integer(Int64(MediaUploadStatus.pending.rawValue))
                     ]
                 ),
                 SQLiteStatement(
@@ -374,10 +381,46 @@ nonisolated struct MessageDAO: Sendable {
                         .text(clientMessageID),
                         .integer(Int64(MessageType.image.rawValue)),
                         .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.success.rawValue)),
+                        .integer(Int64(MessageSendStatus.sending.rawValue)),
                         .text("message_image"),
                         .text(contentID),
                         .integer(sortSequence),
+                        .integer(input.localTime)
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO media_resource (
+                        media_id,
+                        user_id,
+                        owner_message_id,
+                        local_path,
+                        remote_url,
+                        thumb_path,
+                        size_bytes,
+                        md5,
+                        upload_status,
+                        download_status,
+                        updated_at,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, ?, 0, ?, ?)
+                    ON CONFLICT(media_id) DO UPDATE SET
+                        owner_message_id = excluded.owner_message_id,
+                        local_path = excluded.local_path,
+                        thumb_path = excluded.thumb_path,
+                        size_bytes = excluded.size_bytes,
+                        upload_status = excluded.upload_status,
+                        updated_at = excluded.updated_at;
+                    """,
+                    parameters: [
+                        .text(input.image.mediaID),
+                        .text(input.userID.rawValue),
+                        .text(message.id.rawValue),
+                        .text(input.image.localPath),
+                        .text(input.image.thumbnailPath),
+                        .integer(input.image.sizeBytes),
+                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
+                        .integer(input.localTime),
                         .integer(input.localTime)
                     ]
                 ),
@@ -443,7 +486,7 @@ nonisolated struct MessageDAO: Sendable {
             isDeleted: row.bool("is_deleted"),
             revokeReplacementText: row.string("replace_text"),
             text: row.string("text"),
-            image: image(from: row),
+            image: try image(from: row),
             sortSequence: try row.requiredInt64("sort_seq"),
             localTime: try row.requiredInt64("local_time")
         )
@@ -453,13 +496,18 @@ nonisolated struct MessageDAO: Sendable {
     ///
     /// - Parameter row: 数据库查询结果行
     /// - Returns: 图片内容，如果不是图片消息则返回 nil
-    private static func image(from row: SQLiteRow) -> StoredImageContent? {
+    private static func image(from row: SQLiteRow) throws -> StoredImageContent? {
         guard
             let mediaID = row.string("media_id"),
             let localPath = row.string("local_path"),
             let thumbnailPath = row.string("thumb_path")
         else {
             return nil
+        }
+
+        let uploadStatusRawValue = row.int("upload_status") ?? MediaUploadStatus.pending.rawValue
+        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
+            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
         }
 
         return StoredImageContent(
@@ -469,7 +517,10 @@ nonisolated struct MessageDAO: Sendable {
             width: row.int("width") ?? 0,
             height: row.int("height") ?? 0,
             sizeBytes: row.int64("size_bytes") ?? 0,
-            format: row.string("format") ?? "jpg"
+            remoteURL: row.string("cdn_url"),
+            md5: row.string("md5"),
+            format: row.string("format") ?? "jpg",
+            uploadStatus: uploadStatus
         )
     }
 }
