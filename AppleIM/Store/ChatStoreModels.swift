@@ -68,6 +68,47 @@ nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
     }
 }
 
+nonisolated struct StoredImageContent: Equatable, Sendable {
+    let mediaID: String
+    let localPath: String
+    let thumbnailPath: String
+    let width: Int
+    let height: Int
+    let sizeBytes: Int64
+    let format: String
+}
+
+nonisolated struct OutgoingImageMessageInput: Equatable, Sendable {
+    let userID: UserID
+    let conversationID: ConversationID
+    let senderID: UserID
+    let image: StoredImageContent
+    let localTime: Int64
+    let messageID: MessageID?
+    let clientMessageID: String?
+    let sortSequence: Int64?
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        image: StoredImageContent,
+        localTime: Int64,
+        messageID: MessageID? = nil,
+        clientMessageID: String? = nil,
+        sortSequence: Int64? = nil
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.image = image
+        self.localTime = localTime
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.sortSequence = sortSequence
+    }
+}
+
 nonisolated enum PendingJobType: Int, Codable, Sendable {
     case messageResend = 1
     case imageUpload = 2
@@ -137,6 +178,7 @@ protocol ConversationRepository: Sendable {
 
 protocol MessageRepository: Sendable {
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage
+    func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
     func message(messageID: MessageID) async throws -> StoredMessage?
     func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws

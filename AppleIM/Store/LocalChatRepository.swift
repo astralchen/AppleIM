@@ -37,6 +37,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         return result.message
     }
 
+    func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage {
+        let result = MessageDAO.insertOutgoingImageStatements(input)
+        try await database.performTransaction(result.statements, paths: paths)
+        return result.message
+    }
+
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
         try await messageDAO.listMessages(
             conversationID: conversationID,
@@ -545,6 +551,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
                     SELECT
                         CASE
                             WHEN message.revoke_status = 1 THEN COALESCE(message_revoke.replace_text, '')
+                            WHEN message.msg_type = ? THEN '[图片]'
                             ELSE COALESCE(message_text.text, '')
                         END
                     FROM message
@@ -567,6 +574,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             WHERE conversation_id = ? AND user_id = ?;
             """,
             parameters: [
+                .integer(Int64(MessageType.image.rawValue)),
                 .integer(updatedAt),
                 .text(conversationID.rawValue),
                 .text(userID.rawValue)

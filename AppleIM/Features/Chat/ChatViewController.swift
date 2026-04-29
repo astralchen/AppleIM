@@ -4,7 +4,9 @@
 //
 
 import Combine
+import PhotosUI
 import UIKit
+import UniformTypeIdentifiers
 
 private let chatSection = "messages"
 
@@ -23,6 +25,7 @@ final class ChatViewController: UIViewController {
     private let emptyLabel = UILabel()
     private let inputContainerView = UIView()
     private let inputStackView = UIStackView()
+    private let photoButton = UIButton(type: .system)
     private let textField = UITextField()
     private let sendButton = UIButton(type: .system)
 
@@ -80,6 +83,21 @@ final class ChatViewController: UIViewController {
         inputStackView.spacing = 12
         inputStackView.distribution = .fill
 
+        photoButton.translatesAutoresizingMaskIntoConstraints = false
+        var photoButtonConfiguration = UIButton.Configuration.plain()
+        photoButtonConfiguration.image = UIImage(systemName: "photo")
+        photoButtonConfiguration.contentInsets = NSDirectionalEdgeInsets(
+            top: 8,
+            leading: 8,
+            bottom: 8,
+            trailing: 8
+        )
+        photoButton.configuration = photoButtonConfiguration
+        photoButton.accessibilityLabel = "Choose Photo"
+        photoButton.setContentHuggingPriority(.required, for: .horizontal)
+        photoButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        photoButton.addTarget(self, action: #selector(photoButtonTapped), for: .touchUpInside)
+
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.borderStyle = .roundedRect
         textField.placeholder = "Message"
@@ -112,6 +130,7 @@ final class ChatViewController: UIViewController {
         view.addSubview(emptyLabel)
         view.addSubview(inputContainerView)
         inputContainerView.addSubview(inputStackView)
+        inputStackView.addArrangedSubview(photoButton)
         inputStackView.addArrangedSubview(textField)
         inputStackView.addArrangedSubview(sendButton)
 
@@ -135,6 +154,8 @@ final class ChatViewController: UIViewController {
             inputStackView.topAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.topAnchor),
             inputStackView.bottomAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.bottomAnchor),
 
+            photoButton.widthAnchor.constraint(equalToConstant: 44),
+            photoButton.heightAnchor.constraint(equalToConstant: 44),
             textField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             sendButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
@@ -233,6 +254,17 @@ final class ChatViewController: UIViewController {
         sendCurrentText()
     }
 
+    @objc private func photoButtonTapped() {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.filter = .images
+        configuration.selectionLimit = 1
+        configuration.preferredAssetRepresentationMode = .current
+
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = self
+        present(picker, animated: true)
+    }
+
     @objc private func textFieldEditingChanged() {
         viewModel.saveDraft(textField.text ?? "")
     }
@@ -264,6 +296,29 @@ extension ChatViewController: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         sendCurrentText()
         return false
+    }
+}
+
+extension ChatViewController: PHPickerViewControllerDelegate {
+    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+        picker.dismiss(animated: true)
+
+        guard let provider = results.first?.itemProvider else {
+            return
+        }
+
+        let typeIdentifier = provider.registeredTypeIdentifiers.first { identifier in
+            UTType(identifier)?.conforms(to: .image) == true
+        } ?? UTType.image.identifier
+        let fileExtension = UTType(typeIdentifier)?.preferredFilenameExtension
+
+        provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, _ in
+            guard let data else { return }
+
+            Task { @MainActor in
+                self?.viewModel.sendImage(data: data, preferredFileExtension: fileExtension)
+            }
+        }
     }
 }
 
@@ -318,6 +373,7 @@ private extension ChatMessageRowState {
         [
             id.rawValue,
             text,
+            imageThumbnailPath ?? "",
             statusText ?? "",
             canRetry ? "retry" : "no-retry",
             canRevoke ? "revoke" : "no-revoke",
@@ -329,6 +385,7 @@ private extension ChatMessageRowState {
 private final class ChatMessageCell: UICollectionViewCell {
     private let bubbleView = UIView()
     private let stackView = UIStackView()
+    private let thumbnailImageView = UIImageView()
     private let messageLabel = UILabel()
     private let metadataLabel = UILabel()
     private let retryButton = UIButton(type: .system)
@@ -350,7 +407,17 @@ private final class ChatMessageCell: UICollectionViewCell {
     func configure(row: ChatMessageRowState, onRetry: @escaping (MessageID) -> Void) {
         retryMessageID = row.id
         self.onRetry = onRetry
-        messageLabel.text = row.text
+        messageLabel.text = row.isImage ? "Image unavailable" : row.text
+        messageLabel.isHidden = row.isImage && row.imageThumbnailPath != nil
+        thumbnailImageView.isHidden = !row.isImage
+
+        if let thumbnailPath = row.imageThumbnailPath {
+            thumbnailImageView.image = UIImage(contentsOfFile: thumbnailPath)
+            messageLabel.isHidden = thumbnailImageView.image != nil
+        } else {
+            thumbnailImageView.image = nil
+        }
+
         metadataLabel.text = [row.timeText, row.statusText].compactMap { $0 }.joined(separator: " · ")
         bubbleView.backgroundColor = row.isRevoked ? .tertiarySystemGroupedBackground : (row.isOutgoing ? .systemBlue : .secondarySystemGroupedBackground)
         messageLabel.textColor = row.isOutgoing && !row.isRevoked ? .white : .label
@@ -373,6 +440,11 @@ private final class ChatMessageCell: UICollectionViewCell {
         stackView.axis = .vertical
         stackView.spacing = 4
 
+        thumbnailImageView.translatesAutoresizingMaskIntoConstraints = false
+        thumbnailImageView.contentMode = .scaleAspectFill
+        thumbnailImageView.clipsToBounds = true
+        thumbnailImageView.layer.cornerRadius = 10
+
         messageLabel.font = .preferredFont(forTextStyle: .body)
         messageLabel.adjustsFontForContentSizeCategory = true
         messageLabel.numberOfLines = 0
@@ -388,6 +460,7 @@ private final class ChatMessageCell: UICollectionViewCell {
 
         contentView.addSubview(bubbleView)
         bubbleView.addSubview(stackView)
+        stackView.addArrangedSubview(thumbnailImageView)
         stackView.addArrangedSubview(messageLabel)
         stackView.addArrangedSubview(metadataLabel)
         stackView.addArrangedSubview(retryButton)
@@ -403,7 +476,10 @@ private final class ChatMessageCell: UICollectionViewCell {
             stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10),
             stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 12),
             stackView.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -12),
-            stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8)
+            stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8),
+
+            thumbnailImageView.widthAnchor.constraint(equalToConstant: 180),
+            thumbnailImageView.heightAnchor.constraint(equalToConstant: 180)
         ])
     }
 

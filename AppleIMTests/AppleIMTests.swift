@@ -8,6 +8,9 @@
 import Testing
 import Combine
 import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 @testable import AppleIM
 
 struct AppleIMTests {
@@ -162,6 +165,99 @@ struct AppleIMTests {
         #expect(messages.count == 1)
         #expect(messages.first?.text == "Hello from the repository")
         #expect(conversations.first?.lastMessageDigest == "Hello from the repository")
+    }
+
+    @Test func mediaFileActorStoresOriginalAndThumbnailInsideAccountDirectory() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (_, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "media_user")
+        let mediaFileActor = await MediaFileActor(paths: paths)
+        let storedFile = try await mediaFileActor.saveImage(data: samplePNGData(), preferredFileExtension: "png")
+
+        #expect(storedFile.content.localPath.hasPrefix(paths.mediaDirectory.path))
+        #expect(storedFile.content.thumbnailPath.hasPrefix(paths.mediaDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: storedFile.content.localPath))
+        #expect(FileManager.default.fileExists(atPath: storedFile.content.thumbnailPath))
+        #expect(storedFile.content.width == 1)
+        #expect(storedFile.content.height == 1)
+        #expect(storedFile.content.format == "png")
+    }
+
+    @Test func mediaFileActorDownsamplesOriginalAndThumbnailForLargeImages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (_, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "large_media_user")
+        let processingOptions = MediaImageProcessingOptions(
+            originalMaxPixelSize: 256,
+            originalCompressionQuality: 0.68,
+            thumbnailMaxPixelSize: 64,
+            thumbnailCompressionQuality: 0.62
+        )
+        let mediaFileActor = await MediaFileActor(paths: paths, processingOptions: processingOptions)
+        let sourceData = makeJPEGData(width: 1_024, height: 768, quality: 0.98)
+        let storedFile = try await mediaFileActor.saveImage(data: sourceData, preferredFileExtension: "jpg")
+
+        let originalDimensions = imageDimensions(atPath: storedFile.content.localPath)
+        let thumbnailDimensions = imageDimensions(atPath: storedFile.content.thumbnailPath)
+
+        #expect(max(storedFile.content.width, storedFile.content.height) <= 256)
+        #expect(max(originalDimensions.width, originalDimensions.height) <= 256)
+        #expect(max(thumbnailDimensions.width, thumbnailDimensions.height) <= 64)
+        #expect(storedFile.content.sizeBytes < Int64(sourceData.count))
+        #expect(storedFile.content.format == "jpg")
+    }
+
+    @Test func localChatRepositoryInsertsOutgoingImageMessageInTransaction() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "image_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "image_conversation", userID: "image_user", title: "Image Target", sortTimestamp: 1)
+        )
+
+        let image = StoredImageContent(
+            mediaID: "media_image_1",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image/original/media_image_1.png").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/media_image_1.jpg").path,
+            width: 120,
+            height: 80,
+            sizeBytes: 512,
+            format: "png"
+        )
+        let message = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "image_user",
+                conversationID: "image_conversation",
+                senderID: "image_user",
+                image: image,
+                localTime: 500,
+                messageID: "image_message_1",
+                clientMessageID: "image_client_1",
+                sortSequence: 500
+            )
+        )
+        let messages = try await repository.listMessages(conversationID: "image_conversation", limit: 20, beforeSortSeq: nil)
+        let contentRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS content_count FROM message_image WHERE content_id = ?;",
+            parameters: [.text("image_image_message_1")],
+            paths: databaseContext.paths
+        )
+        let conversations = try await repository.listConversations(for: "image_user")
+
+        #expect(message.type == .image)
+        #expect(message.image == image)
+        #expect(messages.first?.image == image)
+        #expect(contentRows.first?.int("content_count") == 1)
+        #expect(conversations.first?.lastMessageDigest == "[图片]")
     }
 
     @Test func localChatRepositoryRollsBackWhenMessageInsertFails() async throws {
@@ -1062,12 +1158,30 @@ struct AppleIMTests {
         viewModel.load()
         try await Task.sleep(nanoseconds: 50_000_000)
         viewModel.loadOlderMessagesIfNeeded()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.paginationErrorMessage == "Unable to load older messages"
+            }
+        }
 
         #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["current_message"])
         #expect(viewModel.currentState.phase == .loaded)
         #expect(viewModel.currentState.isLoadingOlderMessages == false)
         #expect(viewModel.currentState.paginationErrorMessage == "Unable to load older messages")
+    }
+
+    @MainActor
+    @Test func chatViewModelAppendsImageRowAfterSendingImage() async throws {
+        let useCase = ImageSendingStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Images")
+
+        viewModel.sendImage(data: samplePNGData(), preferredFileExtension: "png")
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(viewModel.currentState.rows.count == 1)
+        #expect(viewModel.currentState.rows.first?.imageThumbnailPath == "/tmp/chat-thumb.jpg")
+        #expect(viewModel.currentState.rows.first?.isImage == true)
+        #expect(useCase.sentImageCount == 1)
     }
 
     @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {
@@ -1708,6 +1822,12 @@ private struct SlowChatUseCase: ChatUseCase {
         }
     }
 
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
@@ -1757,6 +1877,69 @@ private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
         }
     }
 
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private(set) var sentImageCount = 0
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sentImageCount += 1
+
+        return AsyncThrowingStream { continuation in
+            continuation.yield(
+                ChatMessageRowState(
+                    id: "image_stub_message",
+                    text: "",
+                    imageThumbnailPath: "/tmp/chat-thumb.jpg",
+                    sortSequence: 1,
+                    timeText: "Now",
+                    statusText: nil,
+                    isOutgoing: true,
+                    canRetry: false,
+                    canDelete: true,
+                    canRevoke: false,
+                    isRevoked: false
+                )
+            )
+            continuation.finish()
+        }
+    }
+
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
@@ -1776,6 +1959,7 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
     ChatMessageRowState(
         id: id,
         text: text,
+        imageThumbnailPath: nil,
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -1790,6 +1974,75 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
 private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("AppleIMTests-\(UUID().uuidString)", isDirectory: true)
+}
+
+private func samplePNGData() -> Data {
+    Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")!
+}
+
+private func makeJPEGData(width: Int, height: Int, quality: Double) -> Data {
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+
+    for y in 0..<height {
+        for x in 0..<width {
+            let offset = y * bytesPerRow + x * bytesPerPixel
+            pixels[offset] = UInt8(x % 256)
+            pixels[offset + 1] = UInt8(y % 256)
+            pixels[offset + 2] = UInt8((x + y) % 256)
+            pixels[offset + 3] = 255
+        }
+    }
+
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    guard
+        let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ),
+        let image = context.makeImage()
+    else {
+        Issue.record("Unable to create JPEG test image")
+        return Data()
+    }
+
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
+        Issue.record("Unable to create JPEG destination")
+        return Data()
+    }
+
+    CGImageDestinationAddImage(destination, image, [
+        kCGImageDestinationLossyCompressionQuality: quality
+    ] as CFDictionary)
+
+    guard CGImageDestinationFinalize(destination) else {
+        Issue.record("Unable to finalize JPEG test image")
+        return Data()
+    }
+
+    return data as Data
+}
+
+private func imageDimensions(atPath path: String) -> (width: Int, height: Int) {
+    guard
+        let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+    else {
+        Issue.record("Unable to read image dimensions at \(path)")
+        return (0, 0)
+    }
+
+    return (
+        properties[kCGImagePropertyPixelWidth] as? Int ?? 0,
+        properties[kCGImagePropertyPixelHeight] as? Int ?? 0
+    )
 }
 
 private nonisolated struct DatabaseTestContext: Sendable {

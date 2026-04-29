@@ -8,6 +8,7 @@ import Foundation
 nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let id: MessageID
     let text: String
+    let imageThumbnailPath: String?
     let sortSequence: Int64
     let timeText: String
     let statusText: String?
@@ -16,6 +17,10 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let canDelete: Bool
     let canRevoke: Bool
     let isRevoked: Bool
+
+    var isImage: Bool {
+        imageThumbnailPath != nil
+    }
 }
 
 nonisolated struct ChatViewState: Equatable, Sendable {

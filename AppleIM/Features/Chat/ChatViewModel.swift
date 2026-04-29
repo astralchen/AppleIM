@@ -145,6 +145,30 @@ final class ChatViewModel {
         }
     }
 
+    func sendImage(data: Data, preferredFileExtension: String?) {
+        sendTask?.cancel()
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                publish { state in
+                    state.draftText = ""
+                }
+
+                for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
+                    guard !Task.isCancelled else { return }
+                    upsert(row)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to send image")
+                }
+            }
+        }
+    }
+
     func saveDraft(_ text: String) {
         publish { state in
             state.draftText = text

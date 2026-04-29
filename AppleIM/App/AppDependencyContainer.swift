@@ -9,6 +9,7 @@ import UIKit
 final class AppDependencyContainer {
     private let storeProvider: ChatStoreProvider
     private let messageSendService: any MessageSendService
+    private let mediaFileStore: any MediaFileStoring
     private let demoUserID: UserID
     private let networkRecoveryCoordinator: NetworkRecoveryCoordinator
 
@@ -21,6 +22,7 @@ final class AppDependencyContainer {
         let storageService = try storageService ?? AccountStorageFactory.makeDefaultService()
         self.demoUserID = demoUserID
         self.messageSendService = messageSendService
+        self.mediaFileStore = AccountMediaFileStore(accountID: demoUserID, storageService: storageService)
         self.storeProvider = ChatStoreProvider(
             accountID: demoUserID,
             storageService: storageService,
@@ -64,7 +66,8 @@ final class AppDependencyContainer {
             userID: demoUserID,
             conversationID: conversation.id,
             storeProvider: storeProvider,
-            sendService: messageSendService
+            sendService: messageSendService,
+            mediaFileStore: mediaFileStore
         )
         let viewModel = ChatViewModel(useCase: useCase, title: conversation.title)
         return ChatViewController(viewModel: viewModel)

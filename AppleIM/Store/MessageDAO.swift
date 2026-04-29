@@ -33,9 +33,17 @@ nonisolated struct MessageDAO: Sendable {
                 message_revoke.replace_text,
                 message.sort_seq,
                 message.local_time,
-                message_text.text
+                message_text.text,
+                message_image.media_id,
+                message_image.width,
+                message_image.height,
+                message_image.size_bytes,
+                message_image.local_path,
+                message_image.thumb_path,
+                message_image.format
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
+            LEFT JOIN message_image ON message_image.content_id = message.content_id
             LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
             WHERE message.conversation_id = ?
             AND (? IS NULL OR message.sort_seq < ?)
@@ -74,9 +82,17 @@ nonisolated struct MessageDAO: Sendable {
                 message_revoke.replace_text,
                 message.sort_seq,
                 message.local_time,
-                message_text.text
+                message_text.text,
+                message_image.media_id,
+                message_image.width,
+                message_image.height,
+                message_image.size_bytes,
+                message_image.local_path,
+                message_image.thumb_path,
+                message_image.format
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
+            LEFT JOIN message_image ON message_image.content_id = message.content_id
             LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
             WHERE message.message_id = ?
             AND message.is_deleted = 0
@@ -159,6 +175,7 @@ nonisolated struct MessageDAO: Sendable {
             isDeleted: false,
             revokeReplacementText: nil,
             text: input.text,
+            image: nil,
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -240,6 +257,122 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    static func insertOutgoingImageStatements(_ input: OutgoingImageMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
+        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
+        let clientMessageID = input.clientMessageID ?? messageID.rawValue
+        let contentID = "image_\(messageID.rawValue)"
+        let sortSequence = input.sortSequence ?? input.localTime
+
+        let message = StoredMessage(
+            id: messageID,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            clientMessageID: clientMessageID,
+            serverMessageID: nil,
+            sequence: nil,
+            type: .image,
+            direction: .outgoing,
+            sendStatus: .success,
+            serverTime: nil,
+            isRevoked: false,
+            isDeleted: false,
+            revokeReplacementText: nil,
+            text: nil,
+            image: input.image,
+            sortSequence: sortSequence,
+            localTime: input.localTime
+        )
+
+        return (
+            message,
+            [
+                SQLiteStatement(
+                    """
+                    INSERT INTO message_image (
+                        content_id,
+                        media_id,
+                        width,
+                        height,
+                        size_bytes,
+                        local_path,
+                        thumb_path,
+                        cdn_url,
+                        md5,
+                        format,
+                        upload_status,
+                        download_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 0, 0);
+                    """,
+                    parameters: [
+                        .text(contentID),
+                        .text(input.image.mediaID),
+                        .integer(Int64(input.image.width)),
+                        .integer(Int64(input.image.height)),
+                        .integer(input.image.sizeBytes),
+                        .text(input.image.localPath),
+                        .text(input.image.thumbnailPath),
+                        .text(input.image.format)
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO message (
+                        message_id,
+                        conversation_id,
+                        sender_id,
+                        client_msg_id,
+                        msg_type,
+                        direction,
+                        send_status,
+                        delivery_status,
+                        read_status,
+                        revoke_status,
+                        is_deleted,
+                        content_table,
+                        content_id,
+                        sort_seq,
+                        local_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?);
+                    """,
+                    parameters: [
+                        .text(message.id.rawValue),
+                        .text(input.conversationID.rawValue),
+                        .text(input.senderID.rawValue),
+                        .text(clientMessageID),
+                        .integer(Int64(MessageType.image.rawValue)),
+                        .integer(Int64(MessageDirection.outgoing.rawValue)),
+                        .integer(Int64(MessageSendStatus.success.rawValue)),
+                        .text("message_image"),
+                        .text(contentID),
+                        .integer(sortSequence),
+                        .integer(input.localTime)
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    UPDATE conversation
+                    SET
+                        last_message_id = ?,
+                        last_message_time = ?,
+                        last_message_digest = ?,
+                        sort_ts = ?,
+                        updated_at = ?
+                    WHERE conversation_id = ? AND user_id = ?;
+                    """,
+                    parameters: [
+                        .text(message.id.rawValue),
+                        .integer(input.localTime),
+                        .text("[图片]"),
+                        .integer(sortSequence),
+                        .integer(input.localTime),
+                        .text(input.conversationID.rawValue),
+                        .text(input.userID.rawValue)
+                    ]
+                )
+            ]
+        )
+    }
+
     private static func message(from row: SQLiteRow) throws -> StoredMessage {
         let typeRawValue = try row.requiredInt("msg_type")
         let directionRawValue = try row.requiredInt("direction")
@@ -272,8 +405,29 @@ nonisolated struct MessageDAO: Sendable {
             isDeleted: row.bool("is_deleted"),
             revokeReplacementText: row.string("replace_text"),
             text: row.string("text"),
+            image: image(from: row),
             sortSequence: try row.requiredInt64("sort_seq"),
             localTime: try row.requiredInt64("local_time")
+        )
+    }
+
+    private static func image(from row: SQLiteRow) -> StoredImageContent? {
+        guard
+            let mediaID = row.string("media_id"),
+            let localPath = row.string("local_path"),
+            let thumbnailPath = row.string("thumb_path")
+        else {
+            return nil
+        }
+
+        return StoredImageContent(
+            mediaID: mediaID,
+            localPath: localPath,
+            thumbnailPath: thumbnailPath,
+            width: row.int("width") ?? 0,
+            height: row.int("height") ?? 0,
+            sizeBytes: row.int64("size_bytes") ?? 0,
+            format: row.string("format") ?? "jpg"
         )
     }
 }

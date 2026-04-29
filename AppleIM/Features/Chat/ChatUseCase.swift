@@ -32,6 +32,7 @@ protocol ChatUseCase: Sendable {
     func loadDraft() async throws -> String?
     func saveDraft(_ text: String) async throws
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error>
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
     func delete(messageID: MessageID) async throws
     func revoke(messageID: MessageID) async throws
@@ -46,6 +47,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private let conversationRepository: (any ConversationRepository)?
     private let pendingJobRepository: (any PendingJobRepository)?
     private let sendService: any MessageSendService
+    private let mediaFileStore: (any MediaFileStoring)?
     private let retryPolicy: MessageRetryPolicy
 
     init(
@@ -55,6 +57,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         conversationRepository: (any ConversationRepository)? = nil,
         pendingJobRepository: (any PendingJobRepository)? = nil,
         sendService: any MessageSendService,
+        mediaFileStore: (any MediaFileStoring)? = nil,
         retryPolicy: MessageRetryPolicy = MessageRetryPolicy()
     ) {
         self.userID = userID
@@ -63,6 +66,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         self.conversationRepository = conversationRepository
         self.pendingJobRepository = pendingJobRepository
         self.sendService = sendService
+        self.mediaFileStore = mediaFileStore
         self.retryPolicy = retryPolicy
     }
 
@@ -154,6 +158,45 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
                     }
 
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    guard let mediaFileStore else {
+                        continuation.finish()
+                        return
+                    }
+
+                    let now = Int64(Date().timeIntervalSince1970)
+                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
+                    let storedImage = try await mediaFileStore.saveImage(
+                        data: data,
+                        preferredFileExtension: preferredFileExtension
+                    )
+                    let insertedMessage = try await repository.insertOutgoingImageMessage(
+                        OutgoingImageMessageInput(
+                            userID: userID,
+                            conversationID: conversationID,
+                            senderID: userID,
+                            image: storedImage.content,
+                            localTime: now,
+                            sortSequence: now
+                        )
+                    )
+
+                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -302,6 +345,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         return ChatMessageRowState(
             id: message.id,
             text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : (message.text ?? ""),
+            imageThumbnailPath: isRevoked ? nil : message.image?.thumbnailPath,
             sortSequence: message.sortSequence,
             timeText: timeText(from: message.localTime),
             statusText: isRevoked ? nil : statusText(for: message),
@@ -432,17 +476,20 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     private let conversationID: ConversationID
     private let storeProvider: ChatStoreProvider
     private let sendService: any MessageSendService
+    private let mediaFileStore: any MediaFileStoring
 
     init(
         userID: UserID,
         conversationID: ConversationID,
         storeProvider: ChatStoreProvider,
-        sendService: any MessageSendService
+        sendService: any MessageSendService,
+        mediaFileStore: any MediaFileStoring
     ) {
         self.userID = userID
         self.conversationID = conversationID
         self.storeProvider = storeProvider
         self.sendService = sendService
+        self.mediaFileStore = mediaFileStore
     }
 
     func loadInitialMessages() async throws -> ChatMessagePage {
@@ -453,7 +500,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
-            sendService: sendService
+            sendService: sendService,
+            mediaFileStore: mediaFileStore
         )
         return try await useCase.loadInitialMessages()
     }
@@ -466,7 +514,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
-            sendService: sendService
+            sendService: sendService,
+            mediaFileStore: mediaFileStore
         )
         return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
     }
@@ -479,7 +528,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
-            sendService: sendService
+            sendService: sendService,
+            mediaFileStore: mediaFileStore
         )
         return try await useCase.loadDraft()
     }
@@ -492,7 +542,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
-            sendService: sendService
+            sendService: sendService,
+            mediaFileStore: mediaFileStore
         )
         try await useCase.saveDraft(text)
     }
@@ -508,10 +559,42 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         repository: repository,
                         conversationRepository: repository,
                         pendingJobRepository: repository,
-                        sendService: sendService
+                        sendService: sendService,
+                        mediaFileStore: mediaFileStore
                     )
 
                     for try await row in useCase.sendText(text) {
+                        continuation.yield(row)
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let repository = try await storeProvider.repository()
+                    let useCase = LocalChatUseCase(
+                        userID: userID,
+                        conversationID: conversationID,
+                        repository: repository,
+                        conversationRepository: repository,
+                        pendingJobRepository: repository,
+                        sendService: sendService,
+                        mediaFileStore: mediaFileStore
+                    )
+
+                    for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
                         continuation.yield(row)
                     }
 
@@ -538,7 +621,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                         repository: repository,
                         conversationRepository: repository,
                         pendingJobRepository: repository,
-                        sendService: sendService
+                        sendService: sendService,
+                        mediaFileStore: mediaFileStore
                     )
 
                     for try await row in useCase.resend(messageID: messageID) {
@@ -565,7 +649,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
-            sendService: sendService
+            sendService: sendService,
+            mediaFileStore: mediaFileStore
         )
         try await useCase.delete(messageID: messageID)
     }
@@ -578,7 +663,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
-            sendService: sendService
+            sendService: sendService,
+            mediaFileStore: mediaFileStore
         )
         try await useCase.revoke(messageID: messageID)
     }

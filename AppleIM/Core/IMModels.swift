@@ -63,6 +63,7 @@ nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let isDeleted: Bool
     let revokeReplacementText: String?
     let text: String?
+    let image: StoredImageContent?
     let sortSequence: Int64
     let localTime: Int64
 }
