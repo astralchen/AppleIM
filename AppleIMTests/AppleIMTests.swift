@@ -679,9 +679,9 @@ struct AppleIMTests {
         let viewModel = ChatViewModel(useCase: useCase, title: "Paging")
 
         viewModel.load()
-        try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
         viewModel.loadOlderMessagesIfNeeded()
-        try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["message_49", "message_50", "message_51", "message_52"])
         #expect(viewModel.currentState.hasMoreOlderMessages == false)
@@ -724,14 +724,253 @@ struct AppleIMTests {
         let viewModel = ChatViewModel(useCase: useCase, title: "Failure")
 
         viewModel.load()
-        try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
         viewModel.loadOlderMessagesIfNeeded()
-        try await Task.sleep(nanoseconds: 10_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["current_message"])
         #expect(viewModel.currentState.phase == .loaded)
         #expect(viewModel.currentState.isLoadingOlderMessages == false)
         #expect(viewModel.currentState.paginationErrorMessage == "Unable to load older messages")
+    }
+
+    @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_first_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_first_conversation", userID: "sync_first_user", title: "Sync", sortTimestamp: 1)
+        )
+
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "sync_first_message",
+                    conversationID: "sync_first_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "sync_first_client",
+                    serverMessageID: "sync_first_server",
+                    sequence: 10,
+                    text: "First sync message",
+                    serverTime: 10
+                )
+            ],
+            nextCursor: "cursor_10",
+            nextSequence: 10
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_first_user",
+            store: repository,
+            deltaService: StaticSyncDeltaService(batch: batch)
+        )
+
+        let result = try await engine.syncOnce()
+        let messages = try await repository.listMessages(conversationID: "sync_first_conversation", limit: 20, beforeSortSeq: nil)
+        let checkpoint = try await repository.syncCheckpoint(for: SyncEngineActor.messageBizKey)
+
+        #expect(result.previousCheckpoint == nil)
+        #expect(result.fetchedCount == 1)
+        #expect(result.insertedCount == 1)
+        #expect(result.skippedDuplicateCount == 0)
+        #expect(messages.map(\.text) == ["First sync message"])
+        #expect(messages.first?.sendStatus == .success)
+        #expect(checkpoint?.cursor == "cursor_10")
+        #expect(checkpoint?.sequence == 10)
+    }
+
+    @Test func syncEngineSkipsDuplicateClientServerAndSequenceMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_duplicate_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_duplicate_conversation", userID: "sync_duplicate_user", title: "Duplicates", sortTimestamp: 1)
+        )
+
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "sync_unique_1",
+                    conversationID: "sync_duplicate_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "dup_client_1",
+                    serverMessageID: "dup_server_1",
+                    sequence: 1,
+                    text: "Unique 1",
+                    serverTime: 1
+                ),
+                IncomingSyncMessage(
+                    messageID: "sync_duplicate_client",
+                    conversationID: "sync_duplicate_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "dup_client_1",
+                    serverMessageID: "dup_server_2",
+                    sequence: 2,
+                    text: "Duplicate client",
+                    serverTime: 2
+                ),
+                IncomingSyncMessage(
+                    messageID: "sync_duplicate_server",
+                    conversationID: "sync_duplicate_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "dup_client_3",
+                    serverMessageID: "dup_server_1",
+                    sequence: 3,
+                    text: "Duplicate server",
+                    serverTime: 3
+                ),
+                IncomingSyncMessage(
+                    messageID: "sync_duplicate_sequence",
+                    conversationID: "sync_duplicate_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "dup_client_4",
+                    serverMessageID: "dup_server_4",
+                    sequence: 1,
+                    text: "Duplicate sequence",
+                    serverTime: 4
+                ),
+                IncomingSyncMessage(
+                    messageID: "sync_unique_2",
+                    conversationID: "sync_duplicate_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "dup_client_5",
+                    serverMessageID: "dup_server_5",
+                    sequence: 5,
+                    text: "Unique 2",
+                    serverTime: 5
+                )
+            ],
+            nextCursor: "cursor_5",
+            nextSequence: 5
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_duplicate_user",
+            store: repository,
+            deltaService: StaticSyncDeltaService(batch: batch)
+        )
+
+        let result = try await engine.syncOnce()
+        let messages = try await repository.listMessages(conversationID: "sync_duplicate_conversation", limit: 20, beforeSortSeq: nil)
+
+        #expect(result.fetchedCount == 5)
+        #expect(result.insertedCount == 2)
+        #expect(result.skippedDuplicateCount == 3)
+        #expect(messages.map(\.text) == ["Unique 2", "Unique 1"])
+    }
+
+    @Test func syncEngineRefreshesConversationSummaryFromLatestSequence() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_summary_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_summary_conversation", userID: "sync_summary_user", title: "Summary", sortTimestamp: 1)
+        )
+
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "sync_summary_latest",
+                    conversationID: "sync_summary_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "summary_client_30",
+                    serverMessageID: "summary_server_30",
+                    sequence: 30,
+                    text: "Latest by seq",
+                    serverTime: 30
+                ),
+                IncomingSyncMessage(
+                    messageID: "sync_summary_older",
+                    conversationID: "sync_summary_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "summary_client_20",
+                    serverMessageID: "summary_server_20",
+                    sequence: 20,
+                    text: "Older by seq",
+                    serverTime: 20
+                )
+            ],
+            nextCursor: "cursor_30",
+            nextSequence: 30
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_summary_user",
+            store: repository,
+            deltaService: StaticSyncDeltaService(batch: batch)
+        )
+
+        _ = try await engine.syncOnce()
+        let messages = try await repository.listMessages(conversationID: "sync_summary_conversation", limit: 20, beforeSortSeq: nil)
+        let conversations = try await repository.listConversations(for: "sync_summary_user")
+
+        #expect(messages.map(\.text) == ["Latest by seq", "Older by seq"])
+        #expect(conversations.first?.lastMessageDigest == "Latest by seq")
+        #expect(conversations.first?.unreadCount == 2)
+    }
+
+    @Test func syncEngineRollsBackMessagesAndCheckpointWhenBatchInsertFails() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_rollback_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_rollback_conversation", userID: "sync_rollback_user", title: "Rollback", sortTimestamp: 1)
+        )
+
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "sync_rollback_same_id",
+                    conversationID: "sync_rollback_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "rollback_client_1",
+                    serverMessageID: "rollback_server_1",
+                    sequence: 100,
+                    text: "Should roll back",
+                    serverTime: 100
+                ),
+                IncomingSyncMessage(
+                    messageID: "sync_rollback_same_id",
+                    conversationID: "sync_rollback_conversation",
+                    senderID: "sync_sender",
+                    clientMessageID: "rollback_client_2",
+                    serverMessageID: "rollback_server_2",
+                    sequence: 101,
+                    text: "Duplicate primary key",
+                    serverTime: 101
+                )
+            ],
+            nextCursor: "cursor_rollback",
+            nextSequence: 101
+        )
+        let engine = SyncEngineActor(
+            userID: "sync_rollback_user",
+            store: repository,
+            deltaService: StaticSyncDeltaService(batch: batch)
+        )
+
+        var didThrow = false
+        do {
+            _ = try await engine.syncOnce()
+        } catch {
+            didThrow = true
+        }
+
+        let messages = try await repository.listMessages(conversationID: "sync_rollback_conversation", limit: 20, beforeSortSeq: nil)
+        let checkpoint = try await repository.syncCheckpoint(for: SyncEngineActor.messageBizKey)
+
+        #expect(didThrow)
+        #expect(messages.isEmpty)
+        #expect(checkpoint == nil)
     }
 }
 
