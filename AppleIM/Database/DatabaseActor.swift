@@ -2,34 +2,63 @@
 //  DatabaseActor.swift
 //  AppleIM
 //
+//  数据库 Actor：串行化所有数据库操作，保证线程安全
+//  使用 actor 隔离确保数据库连接、事务、迁移不会并发执行
+//  满足 Swift 6 严格并发检查要求
 
 import Foundation
 import SQLite3
 
+/// 数据库操作错误类型
+/// 所有错误都包含路径和详细错误信息，便于调试
 nonisolated enum DatabaseActorError: Error, Equatable, Sendable {
-    case openFailed(path: String, message: String)
-    case executeFailed(path: String, statement: String, message: String)
-    case prepareFailed(path: String, statement: String, message: String)
-    case bindFailed(path: String, statement: String, message: String)
-    case readFailed(path: String, statement: String, message: String)
-    case closeFailed(path: String, message: String)
+    case openFailed(path: String, message: String)        // 打开数据库失败
+    case executeFailed(path: String, statement: String, message: String)  // 执行 SQL 失败
+    case prepareFailed(path: String, statement: String, message: String)  // 预编译 SQL 失败
+    case bindFailed(path: String, statement: String, message: String)     // 绑定参数失败
+    case readFailed(path: String, statement: String, message: String)     // 读取数据失败
+    case closeFailed(path: String, message: String)       // 关闭数据库失败
 }
 
+/// 数据库迁移元数据
+/// 记录当前数据库版本、迁移历史、维护时间等信息
+/// 存储在 migration_meta 表和 migration_meta.json 文件中
 nonisolated struct MigrationMetadata: Codable, Equatable, Sendable {
-    let schemaVersion: Int
-    let lastMigrationID: String
-    let lastVacuumAt: Int?
-    let lastIntegrityCheckAt: Int?
-    let ftsRebuildVersion: Int
-    let appliedScriptIDs: [String]
+    let schemaVersion: Int           // 当前 schema 版本号
+    let lastMigrationID: String      // 最后执行的迁移脚本 ID
+    let lastVacuumAt: Int?           // 最近一次 VACUUM 压缩时间
+    let lastIntegrityCheckAt: Int?   // 最近一次完整性检查时间
+    let ftsRebuildVersion: Int       // FTS 索引重建版本
+    let appliedScriptIDs: [String]   // 已应用的迁移脚本 ID 列表
 }
 
+/// 数据库初始化结果
+/// 包含账号存储路径和迁移元数据
 nonisolated struct DatabaseBootstrapResult: Equatable, Sendable {
-    let paths: AccountStoragePaths
-    let metadata: MigrationMetadata
+    let paths: AccountStoragePaths   // 账号存储路径
+    let metadata: MigrationMetadata  // 迁移元数据
 }
 
+/// 数据库 Actor
+///
+/// 核心职责：
+/// 1. 串行化所有数据库操作，避免并发写入冲突
+/// 2. 管理数据库连接的打开和关闭
+/// 3. 执行事务，保证原子性
+/// 4. 处理数据库迁移和版本管理
+///
+/// 重要说明：
+/// - 所有公开方法都是 async，调用时会自动切换到 actor 的串行执行队列
+/// - 数据库连接在每次操作时打开，操作完成后立即关闭，避免长时间持有连接
+/// - 事务使用 BEGIN/COMMIT/ROLLBACK 手动管理，失败时自动回滚
+/// - 参数绑定使用预编译语句，防止 SQL 注入
 actor DatabaseActor {
+    /// 初始化数据库
+    /// 执行初始建表脚本，创建 migration_meta 表和元数据文件
+    ///
+    /// - Parameter paths: 账号存储路径
+    /// - Returns: 初始化结果，包含路径和元数据
+    /// - Throws: 数据库操作失败时抛出错误
     func bootstrap(paths: AccountStoragePaths) async throws -> DatabaseBootstrapResult {
         let metadata = MigrationMetadata(
             schemaVersion: DatabaseSchema.currentVersion,
@@ -47,11 +76,25 @@ actor DatabaseActor {
         return DatabaseBootstrapResult(paths: paths, metadata: metadata)
     }
 
+    /// 加载迁移元数据
+    /// 从 migration_meta.json 文件读取元数据
+    ///
+    /// - Parameter paths: 账号存储路径
+    /// - Returns: 迁移元数据
+    /// - Throws: 文件读取或解码失败时抛出错误
     func loadMigrationMetadata(paths: AccountStoragePaths) async throws -> MigrationMetadata {
         let data = try Data(contentsOf: metadataURL(in: paths))
         return try JSONDecoder().decode(MigrationMetadata.self, from: data)
     }
 
+    /// 获取数据库中的所有表名
+    /// 用于验证数据库结构或调试
+    ///
+    /// - Parameters:
+    ///   - database: 数据库类型（main/search/fileIndex）
+    ///   - paths: 账号存储路径
+    /// - Returns: 表名集合
+    /// - Throws: 查询失败时抛出错误
     func tableNames(in database: DatabaseFileKind, paths: AccountStoragePaths) async throws -> Set<String> {
         let statement = """
         SELECT name FROM sqlite_master
@@ -64,6 +107,15 @@ actor DatabaseActor {
         return Set(rows.compactMap { $0.string("name") })
     }
 
+    /// 执行单条 SQL 语句（不返回结果）
+    /// 用于 INSERT、UPDATE、DELETE 等操作
+    ///
+    /// - Parameters:
+    ///   - statement: SQL 语句
+    ///   - parameters: 绑定参数
+    ///   - database: 数据库类型，默认为 main
+    ///   - paths: 账号存储路径
+    /// - Throws: 执行失败时抛出错误
     func execute(
         _ statement: String,
         parameters: [SQLiteValue] = [],
@@ -73,6 +125,16 @@ actor DatabaseActor {
         try executePrepared(statement, parameters: parameters, at: url(for: database, in: paths))
     }
 
+    /// 执行查询语句（返回结果集）
+    /// 用于 SELECT 操作
+    ///
+    /// - Parameters:
+    ///   - statement: SQL 查询语句
+    ///   - parameters: 绑定参数
+    ///   - database: 数据库类型，默认为 main
+    ///   - paths: 账号存储路径
+    /// - Returns: 查询结果行数组
+    /// - Throws: 查询失败时抛出错误
     func query(
         _ statement: String,
         parameters: [SQLiteValue] = [],
@@ -82,6 +144,19 @@ actor DatabaseActor {
         try query(statement, parameters: parameters, at: url(for: database, in: paths))
     }
 
+    /// 执行事务
+    /// 将多条 SQL 语句包装在一个事务中，保证原子性
+    ///
+    /// 重要说明：
+    /// - 所有语句要么全部成功，要么全部回滚
+    /// - 失败时自动执行 ROLLBACK
+    /// - 适用于消息入库 + 会话摘要更新等需要原子性的操作
+    ///
+    /// - Parameters:
+    ///   - statements: SQL 语句数组
+    ///   - database: 数据库类型，默认为 main
+    ///   - paths: 账号存储路径
+    /// - Throws: 任何语句执行失败时抛出错误并回滚
     func performTransaction(
         _ statements: [SQLiteStatement],
         in database: DatabaseFileKind = .main,
@@ -107,6 +182,12 @@ actor DatabaseActor {
         }
     }
 
+    /// 应用初始化脚本
+    ///
+    /// 在事务中执行所有初始化脚本，创建表结构
+    ///
+    /// - Parameter paths: 账号存储路径
+    /// - Throws: 脚本执行失败时抛出错误
     private func applyInitialScripts(to paths: AccountStoragePaths) throws {
         for script in DatabaseSchema.initialScripts {
             let databaseURL = url(for: script.database, in: paths)
@@ -130,6 +211,12 @@ actor DatabaseActor {
         }
     }
 
+    /// 持久化迁移元数据到数据库
+    ///
+    /// - Parameters:
+    ///   - metadata: 迁移元数据
+    ///   - paths: 账号存储路径
+    /// - Throws: 数据库操作失败时抛出错误
     private func persistMigrationMetadata(_ metadata: MigrationMetadata, in paths: AccountStoragePaths) async throws {
         try await performTransaction(
             [
@@ -157,15 +244,23 @@ actor DatabaseActor {
         )
     }
 
+    /// 持久化迁移元数据到 JSON 文件
+    ///
+    /// - Parameters:
+    ///   - metadata: 迁移元数据
+    ///   - paths: 账号存储路径
+    /// - Throws: 文件写入失败时抛出错误
     private func persist(metadata: MigrationMetadata, in paths: AccountStoragePaths) throws {
         let data = try JSONEncoder().encode(metadata)
         try data.write(to: metadataURL(in: paths), options: [.atomic])
     }
 
+    /// 获取元数据文件 URL
     private func metadataURL(in paths: AccountStoragePaths) -> URL {
         paths.cacheDirectory.appendingPathComponent("migration_meta.json")
     }
 
+    /// 获取数据库文件 URL
     private func url(for database: DatabaseFileKind, in paths: AccountStoragePaths) -> URL {
         switch database {
         case .main:
@@ -177,6 +272,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 执行预编译语句（打开连接、执行、关闭连接）
     private func executePrepared(_ statement: String, parameters: [SQLiteValue], at url: URL) throws {
         let handle = try openDatabase(at: url)
         defer {
@@ -186,6 +282,9 @@ actor DatabaseActor {
         try executePrepared(statement, parameters: parameters, using: handle, at: url)
     }
 
+    /// 执行原始 SQL 语句（不使用预编译）
+    ///
+    /// 用于执行 BEGIN、COMMIT、ROLLBACK 等事务控制语句
     private func executeRaw(_ statement: String, using handle: OpaquePointer, at url: URL) throws {
         var errorMessage: UnsafeMutablePointer<Int8>?
         let status = sqlite3_exec(handle, statement, nil, nil, &errorMessage)
@@ -197,6 +296,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 执行预编译语句（使用已有连接）
     private func executePrepared(
         _ statement: String,
         parameters: [SQLiteValue],
@@ -221,6 +321,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 执行查询（打开连接、查询、关闭连接）
     private func query(_ statement: String, parameters: [SQLiteValue], at url: URL) throws -> [SQLiteRow] {
         let handle = try openDatabase(at: url)
         defer {
@@ -230,6 +331,7 @@ actor DatabaseActor {
         return try query(statement, parameters: parameters, using: handle, at: url)
     }
 
+    /// 执行查询（使用已有连接）
     private func query(
         _ statement: String,
         parameters: [SQLiteValue],
@@ -278,6 +380,7 @@ actor DatabaseActor {
         return preparedStatement
     }
 
+    /// 绑定参数到预编译语句
     private func bind(
         _ parameters: [SQLiteValue],
         to preparedStatement: OpaquePointer,
@@ -320,6 +423,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 从预编译语句提取当前行数据
     private func row(from preparedStatement: OpaquePointer) -> SQLiteRow {
         let columnCount = sqlite3_column_count(preparedStatement)
         var values: [String: SQLiteValue] = [:]
@@ -358,6 +462,7 @@ actor DatabaseActor {
         return SQLiteRow(values: values)
     }
 
+    /// 打开数据库连接
     private func openDatabase(at url: URL) throws -> OpaquePointer {
         var handle: OpaquePointer?
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
@@ -376,6 +481,7 @@ actor DatabaseActor {
         return handle
     }
 
+    /// 关闭数据库连接
     private func closeDatabase(_ handle: OpaquePointer, at url: URL) throws {
         let status = sqlite3_close(handle)
 
@@ -384,6 +490,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 获取当前错误消息
     nonisolated private static func currentErrorMessage(for handle: OpaquePointer) -> String {
         guard let message = sqlite3_errmsg(handle) else {
             return "Unknown SQLite error."
@@ -404,6 +511,7 @@ actor DatabaseActor {
         unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     }
 
+    /// 将可选整数转换为 SQLiteValue
     nonisolated private static func optionalIntegerValue(_ value: Int?) -> SQLiteValue {
         guard let value else {
             return .null

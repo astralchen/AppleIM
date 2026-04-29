@@ -2,15 +2,22 @@
 //  ConversationListUseCase.swift
 //  AppleIM
 //
+//  会话列表用例
+//  封装会话列表的业务逻辑
 
 import Foundation
 
+/// 会话列表用例协议
 protocol ConversationListUseCase: Sendable {
+    /// 加载会话列表
     func loadConversations() async throws -> [ConversationListRowState]
 }
 
+/// 本地会话列表用例实现
 nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
+    /// 用户 ID
     private let userID: UserID
+    /// 存储提供者
     private let storeProvider: ChatStoreProvider
 
     init(userID: UserID, storeProvider: ChatStoreProvider) {

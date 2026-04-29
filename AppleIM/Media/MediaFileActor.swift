@@ -2,25 +2,37 @@
 //  MediaFileActor.swift
 //  AppleIM
 //
+//  媒体文件 Actor
+//  负责图片的压缩、缩略图生成、文件落盘等操作
 
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
+/// 媒体文件错误
 nonisolated enum MediaFileError: Error, Equatable, Sendable {
+    /// 无效的图片数据
     case invalidImageData
+    /// 图片压缩失败
     case imageCompressionFailed
+    /// 缩略图生成失败
     case thumbnailGenerationFailed
 }
 
+/// 存储的媒体图片文件
 nonisolated struct StoredMediaImageFile: Equatable, Sendable {
     let content: StoredImageContent
 }
 
+/// 媒体图片处理选项
 nonisolated struct MediaImageProcessingOptions: Equatable, Sendable {
+    /// 原图最大像素尺寸
     let originalMaxPixelSize: Int
+    /// 原图压缩质量（0.0-1.0）
     let originalCompressionQuality: Double
+    /// 缩略图最大像素尺寸
     let thumbnailMaxPixelSize: Int
+    /// 缩略图压缩质量（0.0-1.0）
     let thumbnailCompressionQuality: Double
 
     init(
@@ -44,10 +56,20 @@ nonisolated private struct ProcessedMediaImage: Sendable {
     let format: String
 }
 
+/// 媒体文件存储协议
 protocol MediaFileStoring: Sendable {
+    /// 保存图片
+    ///
+    /// - Parameters:
+    ///   - data: 图片数据
+    ///   - preferredFileExtension: 首选文件扩展名
+    /// - Returns: 存储的图片文件信息
     func saveImage(data: Data, preferredFileExtension: String?) async throws -> StoredMediaImageFile
 }
 
+/// 账号媒体文件存储
+///
+/// 为指定账号提供媒体文件存储服务
 actor AccountMediaFileStore: MediaFileStoring {
     private let accountID: UserID
     private let storageService: any AccountStorageService
@@ -70,6 +92,10 @@ actor AccountMediaFileStore: MediaFileStoring {
     }
 }
 
+/// 媒体文件 Actor
+///
+/// 负责图片的压缩、缩略图生成和文件落盘
+/// 使用 actor 隔离确保文件操作的线程安全
 actor MediaFileActor: MediaFileStoring {
     private let paths: AccountStoragePaths
     private let processingOptions: MediaImageProcessingOptions

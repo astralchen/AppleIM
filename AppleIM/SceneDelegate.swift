@@ -2,16 +2,20 @@
 //  SceneDelegate.swift
 //  AppleIM
 //
-//  Created by Sondra on 2026/4/28.
-//
+//  场景委托
+//  管理 UI 场景的生命周期和依赖注入
 
 import UIKit
 
+/// 场景委托
+///
+/// 负责创建和管理应用的 UI 窗口和依赖容器
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
+    /// 主窗口
     var window: UIWindow?
+    /// 依赖容器
     private var dependencies: AppDependencyContainer?
-
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
@@ -34,34 +38,30 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
-        // Called as the scene is being released by the system.
-        // This occurs shortly after the scene enters the background, or when its session is discarded.
-        // Release any resources associated with this scene that can be re-created the next time the scene connects.
-        // The scene may re-connect later, as its session was not necessarily discarded (see `application:didDiscardSceneSessions` instead).
     }
 
+    /// 场景变为活跃状态
+    ///
+    /// 触发待处理任务的重试
     func sceneDidBecomeActive(_ scene: UIScene) {
         dependencies?.runDueJobsWhenNetworkIsReachable()
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
-        // Called when the scene will move from an active state to an inactive state.
-        // This may occur due to temporary interruptions (ex. an incoming phone call).
     }
 
+    /// 场景即将进入前台
+    ///
+    /// 触发待处理任务的重试
     func sceneWillEnterForeground(_ scene: UIScene) {
         dependencies?.runDueJobsWhenNetworkIsReachable()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
-        // Called as the scene transitions from the foreground to the background.
-        // Use this method to save data, release shared resources, and store enough scene-specific state information
-        // to restore the scene back to its current state.
     }
-
-
 }
 
+/// 创建启动错误页面
 private func makeStartupErrorViewController() -> UIViewController {
     let viewController = UIViewController()
     viewController.view.backgroundColor = .systemBackground

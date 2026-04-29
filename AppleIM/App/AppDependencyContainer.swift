@@ -2,15 +2,26 @@
 //  AppDependencyContainer.swift
 //  AppleIM
 //
+//  应用依赖容器
+//  管理全局依赖的创建和注入
 
 import UIKit
 
+/// 应用依赖容器
+///
+/// 负责创建和管理应用级别的依赖对象
+/// 提供工厂方法创建各个页面的 ViewController
 @MainActor
 final class AppDependencyContainer {
+    /// 聊天存储提供者
     private let storeProvider: ChatStoreProvider
+    /// 消息发送服务
     private let messageSendService: any MessageSendService
+    /// 媒体文件存储
     private let mediaFileStore: any MediaFileStoring
+    /// 演示用户 ID
     private let demoUserID: UserID
+    /// 网络恢复协调器
     private let networkRecoveryCoordinator: NetworkRecoveryCoordinator
 
     init(

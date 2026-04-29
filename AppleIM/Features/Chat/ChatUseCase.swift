@@ -2,15 +2,22 @@
 //  ChatUseCase.swift
 //  AppleIM
 //
+//  聊天用例
+//  封装聊天页的业务逻辑，包括消息加载、发送、重试等
 
 import Foundation
 
+/// 聊天消息分页结果
 nonisolated struct ChatMessagePage: Equatable, Sendable {
+    /// 消息行数组
     let rows: [ChatMessageRowState]
+    /// 是否还有更多消息
     let hasMore: Bool
+    /// 下一页的游标
     let nextBeforeSortSequence: Int64?
 }
 
+/// 消息重发待处理任务载荷
 nonisolated private struct MessageResendPendingJobPayload: Codable, Equatable, Sendable {
     let messageID: String
     let conversationID: String
@@ -18,36 +25,62 @@ nonisolated private struct MessageResendPendingJobPayload: Codable, Equatable, S
     let lastFailureReason: MessageSendFailureReason?
 }
 
+/// 待处理消息重试运行结果
 nonisolated struct PendingMessageRetryRunResult: Equatable, Sendable {
+    /// 扫描的任务数
     let scannedJobCount: Int
+    /// 尝试重试的任务数
     let attemptedCount: Int
+    /// 成功的任务数
     let successCount: Int
+    /// 重新调度的任务数
     let rescheduledCount: Int
+    /// 耗尽重试次数的任务数
     let exhaustedCount: Int
 }
 
+/// 聊天用例协议
 protocol ChatUseCase: Sendable {
+    /// 加载首屏消息
     func loadInitialMessages() async throws -> ChatMessagePage
+    /// 加载更早的消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage
+    /// 加载草稿
     func loadDraft() async throws -> String?
+    /// 保存草稿
     func saveDraft(_ text: String) async throws
+    /// 发送文本消息
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 发送图片消息
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 重发消息
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 删除消息
     func delete(messageID: MessageID) async throws
+    /// 撤回消息
     func revoke(messageID: MessageID) async throws
 }
 
+/// 本地聊天用例实现
 nonisolated struct LocalChatUseCase: ChatUseCase {
+    /// 首屏消息加载数量
     private static let initialMessageLimit = 50
 
+    /// 用户 ID
     private let userID: UserID
+    /// 会话 ID
     private let conversationID: ConversationID
+    /// 消息仓储
     private let repository: any MessageRepository
+    /// 会话仓储
     private let conversationRepository: (any ConversationRepository)?
+    /// 待处理任务仓储
     private let pendingJobRepository: (any PendingJobRepository)?
+    /// 消息发送服务
     private let sendService: any MessageSendService
+    /// 媒体文件存储
     private let mediaFileStore: (any MediaFileStoring)?
+    /// 重试策略
     private let retryPolicy: MessageRetryPolicy
 
     init(
@@ -80,6 +113,12 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         try await loadMessagePage(limit: limit, beforeSortSequence: beforeSortSequence)
     }
 
+    /// 加载消息分页
+    ///
+    /// - Parameters:
+    ///   - limit: 每页数量
+    ///   - beforeSortSequence: 游标（在此序号之前的消息）
+    /// - Returns: 消息分页结果
     private func loadMessagePage(limit: Int, beforeSortSequence: Int64?) async throws -> ChatMessagePage {
         let boundedLimit = max(1, limit)
         let messages = try await repository.listMessages(
@@ -287,6 +326,13 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 创建重发任务输入参数
+    ///
+    /// - Parameters:
+    ///   - message: 消息对象
+    ///   - reason: 失败原因
+    ///   - retryCount: 重试次数
+    /// - Returns: 待处理任务输入参数
     private func makeResendJobInput(
         for message: StoredMessage,
         failureReason: MessageSendFailureReason?
@@ -318,6 +364,9 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 标记重发任务成功
+    ///
+    /// - Parameter message: 消息对象
     private func markResendJobSuccess(for message: StoredMessage) async throws {
         guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
             return
@@ -404,6 +453,12 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         self.retryPolicy = retryPolicy
     }
 
+    /// 运行到期的待处理任务
+    ///
+    /// 扫描所有到期的重发任务并尝试重试
+    ///
+    /// - Parameter now: 当前时间戳
+    /// - Returns: 运行结果统计
     func runDueJobs(now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingMessageRetryRunResult {
         let jobs = try await pendingJobRepository.recoverablePendingJobs(userID: userID, now: now)
         var attemptedCount = 0
@@ -461,6 +516,7 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
     }
 }
 
+/// MessageSendResult 扩展
 private extension MessageSendResult {
     var failureReason: MessageSendFailureReason? {
         guard case let .failure(reason) = self else {

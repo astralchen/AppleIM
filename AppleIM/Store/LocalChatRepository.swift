@@ -2,13 +2,23 @@
 //  LocalChatRepository.swift
 //  AppleIM
 //
+//  本地聊天仓储
+//  实现多个仓储协议，统一管理会话、消息、同步等数据操作
 
 import Foundation
 
+/// 本地聊天仓储
+///
+/// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
+/// 所有操作通过 DatabaseActor 串行化执行
 nonisolated struct LocalChatRepository: ConversationRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, SyncStore {
+    /// 数据库 Actor
     private let database: DatabaseActor
+    /// 账号存储路径
     private let paths: AccountStoragePaths
+    /// 会话 DAO
     private let conversationDAO: ConversationDAO
+    /// 消息 DAO
     private let messageDAO: MessageDAO
 
     init(database: DatabaseActor, paths: AccountStoragePaths) {
@@ -17,6 +27,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         self.conversationDAO = ConversationDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
     }
+
+    // MARK: - ConversationRepository
 
     func listConversations(for userID: UserID) async throws -> [Conversation] {
         let records = try await conversationDAO.listConversations(for: userID)
@@ -30,6 +42,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
         try await conversationDAO.markRead(conversationID: conversationID, userID: userID)
     }
+
+    // MARK: - MessageRepository
 
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage {
         let result = MessageDAO.insertOutgoingTextStatements(input)
@@ -58,6 +72,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
     func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws {
         try await updateMessageSendStatus(messageID: messageID, status: status, ack: ack, pendingJob: nil)
     }
+
+    // MARK: - MessageSendRecoveryRepository
 
     func updateMessageSendStatus(
         messageID: MessageID,
@@ -258,6 +274,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         )
     }
 
+    // MARK: - PendingJobRepository
+
     func upsertPendingJob(_ input: PendingJobInput) async throws -> PendingJob {
         let now = Self.currentTimestamp()
         let statement = Self.upsertPendingJobStatement(input, status: .pending, retryCount: 0, updatedAt: now, createdAt: now)
@@ -392,6 +410,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         try await conversationDAO.countConversations(for: userID) > 0
     }
 
+    // MARK: - SyncStore
+
     func syncCheckpoint(for bizKey: String) async throws -> SyncCheckpoint? {
         let rows = try await database.query(
             """
@@ -495,6 +515,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             )
         )
     }
+
+    // MARK: - Private Helpers
 
     private static func conversation(from record: ConversationRecord) -> Conversation {
         Conversation(

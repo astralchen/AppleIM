@@ -2,34 +2,75 @@
 //  ChatViewModel.swift
 //  AppleIM
 //
+//  聊天页 ViewModel
+//  负责聊天页的 UI 状态管理、用户输入处理、消息加载和发送
+//  必须在 MainActor 上运行，保证 UI 更新的线程安全
 
 import Combine
 import Foundation
 
+/// 聊天页 ViewModel
+///
+/// ## 职责
+///
+/// 1. 管理聊天页 UI 状态（加载中、已加载、失败）
+/// 2. 处理用户输入（发送文本、发送图片、保存草稿）
+/// 3. 加载消息列表（首屏加载、上拉加载历史）
+/// 4. 处理消息操作（重发、删除、撤回）
+/// 5. 通过 Combine 发布状态变化给 UI
+///
+/// ## 并发安全
+///
+/// - 标记为 `@MainActor`，所有方法和属性访问都在主线程
+/// - 使用 `Task` 管理异步操作，页面离开时可取消
+/// - 通过 `CurrentValueSubject` 发布状态，UI 订阅后自动刷新
+///
+/// ## 生命周期管理
+///
+/// - `load()`: 页面出现时调用，加载首屏消息
+/// - `cancel()`: 页面消失时调用，取消所有进行中的任务
 @MainActor
 final class ChatViewModel {
+    /// UseCase 依赖，处理业务逻辑
     private let useCase: any ChatUseCase
+    /// 状态发布器，用于向 UI 发布状态变化
     private let stateSubject: CurrentValueSubject<ChatViewState, Never>
+    /// 加载任务
     private var loadTask: Task<Void, Never>?
+    /// 发送任务
     private var sendTask: Task<Void, Never>?
+    /// 草稿保存任务
     private var draftTask: Task<Void, Never>?
+    /// 消息操作任务（重发、删除、撤回）
     private var mutationTask: Task<Void, Never>?
+    /// 分页加载任务
     private var paginationTask: Task<Void, Never>?
+    /// 每页加载的消息数量
     private let pageSize = 50
 
+    /// 状态发布器，UI 订阅此 Publisher 以接收状态更新
     var statePublisher: AnyPublisher<ChatViewState, Never> {
         stateSubject.eraseToAnyPublisher()
     }
 
+    /// 当前状态快照
     var currentState: ChatViewState {
         stateSubject.value
     }
 
+    /// 初始化 ViewModel
+    ///
+    /// - Parameters:
+    ///   - useCase: 聊天业务逻辑处理器
+    ///   - title: 聊天页标题
     init(useCase: any ChatUseCase, title: String) {
         self.useCase = useCase
         self.stateSubject = CurrentValueSubject(ChatViewState(title: title))
     }
 
+    /// 加载首屏消息
+    ///
+    /// 取消之前的加载任务，重置分页状态，并行加载消息和草稿
     func load() {
         loadTask?.cancel()
         paginationTask?.cancel()
@@ -69,6 +110,10 @@ final class ChatViewModel {
         }
     }
 
+    /// 加载更早的消息（上拉加载历史）
+    ///
+    /// 使用游标分页，基于当前最早消息的 `sortSequence` 向前加载
+    /// 防止重复加载：检查是否已有加载任务、是否还有更多消息
     func loadOlderMessagesIfNeeded() {
         guard paginationTask == nil else { return }
         let state = stateSubject.value
@@ -118,6 +163,15 @@ final class ChatViewModel {
         }
     }
 
+    /// 发送文本消息
+    ///
+    /// 流程：
+    /// 1. 清空草稿
+    /// 2. 调用 UseCase 发送消息
+    /// 3. 通过 AsyncSequence 接收消息状态更新（sending -> success/failed）
+    /// 4. 实时更新 UI
+    ///
+    /// - Parameter text: 要发送的文本内容
     func sendText(_ text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
@@ -145,6 +199,17 @@ final class ChatViewModel {
         }
     }
 
+    /// 发送图片消息
+    ///
+    /// 流程：
+    /// 1. 清空草稿
+    /// 2. 调用 UseCase 处理图片（压缩、生成缩略图、落盘）
+    /// 3. 通过 AsyncSequence 接收消息状态更新
+    /// 4. 实时更新 UI
+    ///
+    /// - Parameters:
+    ///   - data: 图片数据
+    ///   - preferredFileExtension: 首选文件扩展名
     func sendImage(data: Data, preferredFileExtension: String?) {
         sendTask?.cancel()
         sendTask = Task { [weak self] in
@@ -169,6 +234,11 @@ final class ChatViewModel {
         }
     }
 
+    /// 保存草稿（防抖）
+    ///
+    /// 用户输入时调用，延迟 250ms 后保存，避免频繁写入数据库
+    ///
+    /// - Parameter text: 草稿文本
     func saveDraft(_ text: String) {
         publish { state in
             state.draftText = text
@@ -191,6 +261,11 @@ final class ChatViewModel {
         }
     }
 
+    /// 立即保存草稿（无防抖）
+    ///
+    /// 页面离开时调用，立即保存当前草稿
+    ///
+    /// - Parameter text: 草稿文本
     func flushDraft(_ text: String) {
         publish { state in
             state.draftText = text
@@ -203,6 +278,9 @@ final class ChatViewModel {
         }
     }
 
+    /// 重发失败的消息
+    ///
+    /// - Parameter messageID: 要重发的消息 ID
     func resend(messageID: MessageID) {
         mutationTask?.cancel()
         mutationTask = Task { [weak self] in
@@ -223,6 +301,9 @@ final class ChatViewModel {
         }
     }
 
+    /// 删除消息（本地逻辑删除）
+    ///
+    /// - Parameter messageID: 要删除的消息 ID
     func delete(messageID: MessageID) {
         mutationTask?.cancel()
         mutationTask = Task { [weak self] in
@@ -246,6 +327,11 @@ final class ChatViewModel {
         }
     }
 
+    /// 撤回消息
+    ///
+    /// 撤回后重新加载消息列表，因为撤回会改变消息内容
+    ///
+    /// - Parameter messageID: 要撤回的消息 ID
     func revoke(messageID: MessageID) {
         mutationTask?.cancel()
         mutationTask = Task { [weak self] in
@@ -273,6 +359,9 @@ final class ChatViewModel {
         }
     }
 
+    /// 取消所有进行中的任务
+    ///
+    /// 页面消失时调用，释放资源
     func cancel() {
         loadTask?.cancel()
         sendTask?.cancel()
@@ -286,6 +375,11 @@ final class ChatViewModel {
         paginationTask = nil
     }
 
+    /// 更新或插入消息行
+    ///
+    /// 如果消息已存在则更新，否则追加到末尾
+    ///
+    /// - Parameter row: 消息行状态
     private func upsert(_ row: ChatMessageRowState) {
         publish { state in
             if let index = state.rows.firstIndex(where: { $0.id == row.id }) {
@@ -298,6 +392,9 @@ final class ChatViewModel {
         }
     }
 
+    /// 发布状态更新
+    ///
+    /// - Parameter update: 状态更新闭包
     private func publish(_ update: (inout ChatViewState) -> Void) {
         var state = stateSubject.value
         update(&state)

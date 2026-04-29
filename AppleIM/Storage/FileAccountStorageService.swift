@@ -2,21 +2,41 @@
 //  FileAccountStorageService.swift
 //  AppleIM
 //
+//  基于文件系统的账号存储服务
+//  为每个账号创建独立的目录结构
 
 import Foundation
 
+/// 账号存储服务协议
 protocol AccountStorageService: Sendable {
+    /// 准备账号存储
+    ///
+    /// 创建账号目录和数据库文件
     func prepareStorage(for accountID: UserID) async throws -> AccountStoragePaths
+
+    /// 删除账号存储
     func deleteStorage(for accountID: UserID) async throws
 }
 
+/// 基于文件系统的账号存储服务
+///
+/// 使用 actor 隔离确保文件操作的线程安全
+/// 每个账号拥有独立的目录：account_<sanitized_id>/
 actor FileAccountStorageService: AccountStorageService {
+    /// 根目录
     private let rootDirectory: URL
 
     init(rootDirectory: URL) {
         self.rootDirectory = rootDirectory
     }
 
+    /// 准备账号存储
+    ///
+    /// 创建账号目录结构和数据库文件
+    ///
+    /// - Parameter accountID: 账号 ID
+    /// - Returns: 账号存储路径
+    /// - Throws: 目录或文件创建失败时抛出错误
     func prepareStorage(for accountID: UserID) async throws -> AccountStoragePaths {
         let paths = try makePaths(for: accountID)
         let fileManager = FileManager.default
@@ -41,6 +61,10 @@ actor FileAccountStorageService: AccountStorageService {
         return paths
     }
 
+    /// 删除账号存储
+    ///
+    /// - Parameter accountID: 账号 ID
+    /// - Throws: 删除失败时抛出错误
     func deleteStorage(for accountID: UserID) async throws {
         let paths = try makePaths(for: accountID)
         let fileManager = FileManager.default
@@ -50,6 +74,11 @@ actor FileAccountStorageService: AccountStorageService {
         }
     }
 
+    /// 构建账号存储路径
+    ///
+    /// - Parameter accountID: 账号 ID
+    /// - Returns: 账号存储路径
+    /// - Throws: 账号 ID 为空时抛出错误
     private func makePaths(for accountID: UserID) throws -> AccountStoragePaths {
         let rawID = accountID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawID.isEmpty else {
@@ -72,6 +101,10 @@ actor FileAccountStorageService: AccountStorageService {
         )
     }
 
+    /// 如果文件不存在则创建空文件
+    ///
+    /// - Parameter url: 文件 URL
+    /// - Throws: 文件创建失败时抛出错误
     private func createFileIfNeeded(at url: URL) throws {
         let fileManager = FileManager.default
 
@@ -80,6 +113,12 @@ actor FileAccountStorageService: AccountStorageService {
         }
     }
 
+    /// 清理目录名中的非法字符
+    ///
+    /// 只保留字母、数字、连字符和下划线，其他字符替换为下划线
+    ///
+    /// - Parameter rawValue: 原始字符串
+    /// - Returns: 清理后的字符串
     nonisolated private static func sanitizedDirectoryComponent(_ rawValue: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
         return rawValue.unicodeScalars

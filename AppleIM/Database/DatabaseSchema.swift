@@ -2,25 +2,52 @@
 //  DatabaseSchema.swift
 //  AppleIM
 //
+//  数据库 Schema 定义
+//  定义数据库表结构和初始化脚本
 
 import Foundation
 
+/// 数据库文件类型
+///
+/// 项目使用多个 SQLite 数据库文件分离不同类型的数据
 nonisolated enum DatabaseFileKind: String, Codable, CaseIterable, Sendable {
+    /// 主数据库（用户、会话、消息等核心数据）
     case main
+    /// 搜索数据库（FTS 全文搜索索引）
     case search
+    /// 文件索引数据库（媒体文件元数据）
     case fileIndex
 }
 
+/// 数据库迁移脚本
+///
+/// 包含 SQL 语句和版本信息
 nonisolated struct MigrationScript: Equatable, Sendable {
+    /// 脚本 ID
     let id: String
+    /// 目标数据库
     let database: DatabaseFileKind
+    /// Schema 版本号
     let version: Int
+    /// SQL 语句数组
     let statements: [String]
 }
 
+/// 数据库 Schema
+///
+/// 定义当前 Schema 版本和初始化脚本
+///
+/// ## 重要说明
+///
+/// - 所有表都使用 TEXT 类型存储 ID，便于跨平台兼容
+/// - 时间戳统一使用 INTEGER 存储毫秒级 Unix 时间戳
+/// - 消息表和内容表分离，支持多种消息类型扩展
+/// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
+    /// 当前 Schema 版本
     static let currentVersion = 1
 
+    /// 初始化脚本数组
     static let initialScripts: [MigrationScript] = [
         MigrationScript(
             id: "001_main_core_tables",

@@ -2,11 +2,18 @@
 //  MessageDAO.swift
 //  AppleIM
 //
+//  消息数据访问对象（DAO）
+//  负责消息的查询、插入、更新操作
 
 import Foundation
 
+/// 消息 DAO
+///
+/// 负责消息表的数据库操作，使用游标分页，支持消息主表和内容表的聚合查询
 nonisolated struct MessageDAO: Sendable {
+    /// 数据库 Actor
     private let database: DatabaseActor
+    /// 账号存储路径
     private let paths: AccountStoragePaths
 
     init(database: DatabaseActor, paths: AccountStoragePaths) {
@@ -109,6 +116,13 @@ nonisolated struct MessageDAO: Sendable {
         return try Self.message(from: row)
     }
 
+    /// 更新消息发送状态
+    ///
+    /// - Parameters:
+    ///   - messageID: 消息 ID
+    ///   - status: 发送状态
+    ///   - ack: 服务端确认信息（可选）
+    /// - Throws: 数据库操作失败时抛出错误
     func updateSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws {
         try await database.execute(
             """
@@ -131,6 +145,13 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    /// 准备文本消息重发
+    ///
+    /// 检查消息是否可以重发，并将状态更新为 sending
+    ///
+    /// - Parameter messageID: 消息 ID
+    /// - Returns: 更新后的消息
+    /// - Throws: 消息不存在或无法重发时抛出错误
     func prepareTextMessageForResend(messageID: MessageID) async throws -> StoredMessage {
         guard let existingMessage = try await message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)
@@ -154,6 +175,12 @@ nonisolated struct MessageDAO: Sendable {
         return updatedMessage
     }
 
+    /// 生成插入发出文本消息的 SQL 语句
+    ///
+    /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
+    ///
+    /// - Parameter input: 发出的文本消息输入参数
+    /// - Returns: 消息对象和 SQL 语句数组
     static func insertOutgoingTextStatements(_ input: OutgoingTextMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
         let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
         let clientMessageID = input.clientMessageID ?? messageID.rawValue
@@ -257,6 +284,12 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    /// 生成插入发出图片消息的 SQL 语句
+    ///
+    /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
+    ///
+    /// - Parameter input: 发出的图片消息输入参数
+    /// - Returns: 消息对象和 SQL 语句数组
     static func insertOutgoingImageStatements(_ input: OutgoingImageMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
         let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
         let clientMessageID = input.clientMessageID ?? messageID.rawValue
@@ -373,6 +406,11 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    /// 从数据库行构建消息对象
+    ///
+    /// - Parameter row: 数据库查询结果行
+    /// - Returns: 消息对象
+    /// - Throws: 数据格式错误时抛出错误
     private static func message(from row: SQLiteRow) throws -> StoredMessage {
         let typeRawValue = try row.requiredInt("msg_type")
         let directionRawValue = try row.requiredInt("direction")
@@ -411,6 +449,10 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    /// 从数据库行提取图片内容
+    ///
+    /// - Parameter row: 数据库查询结果行
+    /// - Returns: 图片内容，如果不是图片消息则返回 nil
     private static func image(from row: SQLiteRow) -> StoredImageContent? {
         guard
             let mediaID = row.string("media_id"),

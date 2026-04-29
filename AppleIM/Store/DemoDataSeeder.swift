@@ -2,10 +2,22 @@
 //  DemoDataSeeder.swift
 //  AppleIM
 //
+//  演示数据填充器
+//  为新账号填充演示会话数据
 
 import Foundation
 
+/// 演示数据填充器
+///
+/// 在首次启动时为空账号填充演示会话，便于测试和演示
 nonisolated enum DemoDataSeeder {
+    /// 如果需要则填充演示数据
+    ///
+    /// 仅在账号没有任何会话时填充
+    ///
+    /// - Parameters:
+    ///   - repository: 聊天仓储
+    ///   - userID: 用户 ID
     static func seedIfNeeded(repository: LocalChatRepository, userID: UserID) async throws {
         guard try await !repository.hasConversations(for: userID) else {
             return

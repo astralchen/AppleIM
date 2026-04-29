@@ -2,11 +2,18 @@
 //  ConversationDAO.swift
 //  AppleIM
 //
+//  会话数据访问对象（DAO）
+//  负责会话的增删改查操作
 
 import Foundation
 
+/// 会话 DAO
+///
+/// 负责会话表的数据库操作，支持 upsert、查询、置顶、免打扰等功能
 nonisolated struct ConversationDAO: Sendable {
+    /// 数据库 Actor
     private let database: DatabaseActor
+    /// 账号存储路径
     private let paths: AccountStoragePaths
 
     init(database: DatabaseActor, paths: AccountStoragePaths) {
@@ -14,6 +21,12 @@ nonisolated struct ConversationDAO: Sendable {
         self.paths = paths
     }
 
+    /// 插入或更新会话
+    ///
+    /// 使用 UPSERT 语法，存在则更新，不存在则插入
+    ///
+    /// - Parameter record: 会话记录
+    /// - Throws: 数据库操作失败时抛出错误
     func upsert(_ record: ConversationRecord) async throws {
         try await database.execute(
             """
@@ -58,6 +71,13 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 查询会话列表
+    ///
+    /// 按置顶和排序时间戳降序排列，不包含隐藏的会话
+    ///
+    /// - Parameter userID: 用户 ID
+    /// - Returns: 会话记录数组
+    /// - Throws: 数据库查询失败时抛出错误
     func listConversations(for userID: UserID) async throws -> [ConversationRecord] {
         let rows = try await database.query(
             """
@@ -90,6 +110,11 @@ nonisolated struct ConversationDAO: Sendable {
         return try rows.map(Self.record(from:))
     }
 
+    /// 统计会话数量
+    ///
+    /// - Parameter userID: 用户 ID
+    /// - Returns: 会话数量
+    /// - Throws: 数据库查询失败时抛出错误
     func countConversations(for userID: UserID) async throws -> Int {
         let rows = try await database.query(
             "SELECT COUNT(*) AS conversation_count FROM conversation WHERE user_id = ?;",
@@ -100,6 +125,14 @@ nonisolated struct ConversationDAO: Sendable {
         return try rows.first?.requiredInt("conversation_count") ?? 0
     }
 
+    /// 标记会话已读
+    ///
+    /// 将未读数清零
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    /// - Throws: 数据库操作失败时抛出错误
     func markRead(conversationID: ConversationID, userID: UserID) async throws {
         try await database.execute(
             """
@@ -116,6 +149,13 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 更新会话置顶状态
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    ///   - isPinned: 是否置顶
+    /// - Throws: 数据库操作失败时抛出错误
     func updatePin(conversationID: ConversationID, userID: UserID, isPinned: Bool) async throws {
         try await updateFlag(
             column: "is_pinned",
@@ -125,6 +165,13 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 更新会话免打扰状态
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    ///   - isMuted: 是否免打扰
+    /// - Throws: 数据库操作失败时抛出错误
     func updateMute(conversationID: ConversationID, userID: UserID, isMuted: Bool) async throws {
         try await updateFlag(
             column: "is_muted",
@@ -134,6 +181,14 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 更新会话标志位（通用方法）
+    ///
+    /// - Parameters:
+    ///   - column: 列名
+    ///   - value: 布尔值
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    /// - Throws: 数据库操作失败时抛出错误
     private func updateFlag(column: String, value: Bool, conversationID: ConversationID, userID: UserID) async throws {
         try await database.execute(
             """
@@ -151,6 +206,12 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 生成插入或更新会话的 SQL 语句
+    ///
+    /// 用于在事务中批量操作
+    ///
+    /// - Parameter record: 会话记录
+    /// - Returns: SQL 语句
     static func insertOrUpdateStatement(for record: ConversationRecord) -> SQLiteStatement {
         SQLiteStatement(
             """
@@ -194,6 +255,10 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 将会话记录转换为 SQL 参数数组
+    ///
+    /// - Parameter record: 会话记录
+    /// - Returns: SQL 参数数组
     private static func parameters(for record: ConversationRecord) -> [SQLiteValue] {
         [
             .text(record.id.rawValue),
@@ -216,6 +281,11 @@ nonisolated struct ConversationDAO: Sendable {
         ]
     }
 
+    /// 从数据库行构建会话记录
+    ///
+    /// - Parameter row: 数据库查询结果行
+    /// - Returns: 会话记录
+    /// - Throws: 数据格式错误时抛出错误
     private static func record(from row: SQLiteRow) throws -> ConversationRecord {
         let typeRawValue = try row.requiredInt("biz_type")
 
@@ -244,6 +314,9 @@ nonisolated struct ConversationDAO: Sendable {
         )
     }
 
+    /// 获取当前时间戳（秒）
+    ///
+    /// - Returns: Unix 时间戳
     private static func currentTimestamp() -> Int64 {
         Int64(Date().timeIntervalSince1970)
     }
