@@ -57,6 +57,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         return result.message
     }
 
+    func insertOutgoingVoiceMessage(_ input: OutgoingVoiceMessageInput) async throws -> StoredMessage {
+        let result = MessageDAO.insertOutgoingVoiceStatements(input)
+        try await database.performTransaction(result.statements, paths: paths)
+        return result.message
+    }
+
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
         try await messageDAO.listMessages(
             conversationID: conversationID,
@@ -167,6 +173,26 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
                 )
             )
         }
+
+        try await database.performTransaction(statements, paths: paths)
+    }
+
+    func updateVoiceUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?
+    ) async throws {
+        let now = Self.currentTimestamp()
+        let statements = [
+            Self.updateMessageSendStatusStatement(messageID: messageID, status: sendStatus, ack: sendAck)
+        ] + Self.updateVoiceUploadStatusStatements(
+            messageID: messageID,
+            status: uploadStatus,
+            uploadAck: uploadAck,
+            updatedAt: now
+        )
 
         try await database.performTransaction(statements, paths: paths)
     }
@@ -640,6 +666,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
                         CASE
                             WHEN message.revoke_status = 1 THEN COALESCE(message_revoke.replace_text, '')
                             WHEN message.msg_type = ? THEN '[图片]'
+                            WHEN message.msg_type = ? THEN '[语音]'
                             ELSE COALESCE(message_text.text, '')
                         END
                     FROM message
@@ -663,6 +690,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             """,
             parameters: [
                 .integer(Int64(MessageType.image.rawValue)),
+                .integer(Int64(MessageType.voice.rawValue)),
                 .integer(updatedAt),
                 .text(conversationID.rawValue),
                 .text(userID.rawValue)
@@ -751,6 +779,53 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
                     .integer(Int64(status.rawValue)),
                     .optionalText(uploadAck?.cdnURL),
                     .optionalText(uploadAck?.md5),
+                    .text(messageID.rawValue)
+                ]
+            ),
+            SQLiteStatement(
+                """
+                UPDATE media_resource
+                SET
+                    upload_status = ?,
+                    remote_url = COALESCE(?, remote_url),
+                    md5 = COALESCE(?, md5),
+                    updated_at = ?
+                WHERE owner_message_id = ?;
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
+                    .integer(updatedAt),
+                    .text(messageID.rawValue)
+                ]
+            )
+        ]
+    }
+
+    private static func updateVoiceUploadStatusStatements(
+        messageID: MessageID,
+        status: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        updatedAt: Int64
+    ) -> [SQLiteStatement] {
+        [
+            SQLiteStatement(
+                """
+                UPDATE message_voice
+                SET
+                    upload_status = ?,
+                    cdn_url = COALESCE(?, cdn_url)
+                WHERE content_id = (
+                    SELECT content_id
+                    FROM message
+                    WHERE message_id = ?
+                    LIMIT 1
+                );
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
                     .text(messageID.rawValue)
                 ]
             ),

@@ -138,6 +138,8 @@ nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let text: String?
     /// 图片内容（仅图片消息）
     let image: StoredImageContent?
+    /// 语音内容（仅语音消息）
+    let voice: StoredVoiceContent?
     /// 排序序号
     let sortSequence: Int64
     /// 本地时间戳（毫秒）

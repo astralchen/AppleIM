@@ -4,6 +4,8 @@
 <dict>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>ChatBridge needs photo library access so you can choose images to send in chats.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ChatBridge needs microphone access so you can record voice messages.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

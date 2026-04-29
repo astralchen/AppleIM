@@ -234,6 +234,33 @@ final class ChatViewModel {
         }
     }
 
+    /// 发送语音消息
+    ///
+    /// - Parameter recording: 已完成的本地录音文件
+    func sendVoice(recording: VoiceRecordingFile) {
+        sendTask?.cancel()
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                publish { state in
+                    state.draftText = ""
+                }
+
+                for try await row in useCase.sendVoice(recording: recording) {
+                    guard !Task.isCancelled else { return }
+                    upsert(row)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to send voice")
+                }
+            }
+        }
+    }
+
     /// 保存草稿（防抖）
     ///
     /// 用户输入时调用，延迟 250ms 后保存，避免频繁写入数据库

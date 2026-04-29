@@ -34,6 +34,22 @@ nonisolated private struct ImageUploadPendingJobPayload: Codable, Equatable, Sen
     let lastFailureReason: String?
 }
 
+/// 语音录制文件
+nonisolated struct VoiceRecordingFile: Equatable, Sendable {
+    /// 临时录音文件 URL
+    let fileURL: URL
+    /// 录音时长（毫秒）
+    let durationMilliseconds: Int
+    /// 文件扩展名
+    let fileExtension: String?
+
+    init(fileURL: URL, durationMilliseconds: Int, fileExtension: String? = "m4a") {
+        self.fileURL = fileURL
+        self.durationMilliseconds = durationMilliseconds
+        self.fileExtension = fileExtension
+    }
+}
+
 /// 待处理消息重试运行结果
 nonisolated struct PendingMessageRetryRunResult: Equatable, Sendable {
     /// 扫描的任务数
@@ -62,6 +78,8 @@ protocol ChatUseCase: Sendable {
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 发送图片消息
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 发送语音消息
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 重发消息
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 删除消息
@@ -74,6 +92,8 @@ protocol ChatUseCase: Sendable {
 nonisolated struct LocalChatUseCase: ChatUseCase {
     /// 首屏消息加载数量
     private static let initialMessageLimit = 50
+    /// 最短语音发送时长
+    private static let minimumVoiceDurationMilliseconds = 1_000
 
     /// 用户 ID
     private let userID: UserID
@@ -250,6 +270,52 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
                     continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
                     try await uploadAndSendImage(insertedMessage, continuation: continuation)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            guard recording.durationMilliseconds >= Self.minimumVoiceDurationMilliseconds else {
+                continuation.finish()
+                return
+            }
+
+            let task = Task {
+                do {
+                    guard let mediaFileStore else {
+                        continuation.finish()
+                        return
+                    }
+
+                    let now = Int64(Date().timeIntervalSince1970)
+                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
+                    let storedVoice = try await mediaFileStore.saveVoice(
+                        recordingURL: recording.fileURL,
+                        durationMilliseconds: recording.durationMilliseconds,
+                        preferredFileExtension: recording.fileExtension
+                    )
+                    let insertedMessage = try await repository.insertOutgoingVoiceMessage(
+                        OutgoingVoiceMessageInput(
+                            userID: userID,
+                            conversationID: conversationID,
+                            senderID: userID,
+                            voice: storedVoice.content,
+                            localTime: now,
+                            sortSequence: now
+                        )
+                    )
+
+                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    try await uploadAndSendVoice(insertedMessage, continuation: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -490,6 +556,83 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 上传语音并发送语音消息体
+    ///
+    /// 语音已完成本地落盘和消息入库，这里只负责上传、ack 和最终状态。
+    private func uploadAndSendVoice(
+        _ message: StoredMessage,
+        continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
+    ) async throws {
+        try await repository.updateVoiceUploadStatus(
+            messageID: message.id,
+            uploadStatus: .uploading,
+            uploadAck: nil,
+            sendStatus: .sending,
+            sendAck: nil
+        )
+
+        for await event in mediaUploadService.uploadVoice(message: message) {
+            switch event {
+            case let .progress(progress):
+                continuation.yield(Self.row(from: message, currentUserID: userID, uploadProgress: progress))
+            case let .completed(uploadAck):
+                let result = await sendService.sendVoice(message: message, upload: uploadAck)
+                let finalStatus: MessageSendStatus
+                let voiceUploadStatus: MediaUploadStatus
+                let sendAck: MessageSendAck?
+
+                switch result {
+                case let .success(ack):
+                    finalStatus = .success
+                    voiceUploadStatus = .success
+                    sendAck = ack
+                case .failure:
+                    finalStatus = .failed
+                    voiceUploadStatus = .failed
+                    sendAck = nil
+                }
+
+                try await repository.updateVoiceUploadStatus(
+                    messageID: message.id,
+                    uploadStatus: voiceUploadStatus,
+                    uploadAck: uploadAck,
+                    sendStatus: finalStatus,
+                    sendAck: sendAck
+                )
+
+                if let updatedMessage = try await repository.message(messageID: message.id) {
+                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                }
+                return
+            case .failed:
+                try await repository.updateVoiceUploadStatus(
+                    messageID: message.id,
+                    uploadStatus: .failed,
+                    uploadAck: nil,
+                    sendStatus: .failed,
+                    sendAck: nil
+                )
+
+                if let updatedMessage = try await repository.message(messageID: message.id) {
+                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                }
+                return
+            }
+        }
+
+        try await repository.updateVoiceUploadStatus(
+            messageID: message.id,
+            uploadStatus: .failed,
+            uploadAck: nil,
+            sendStatus: .failed,
+            sendAck: nil
+        )
+
+        if let updatedMessage = try await repository.message(messageID: message.id) {
+            continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+        }
+    }
+
     private func makeImageUploadJobInput(
         for message: StoredMessage,
         failureReason: String?
@@ -560,8 +703,9 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
         return ChatMessageRowState(
             id: message.id,
-            text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : (message.text ?? ""),
+            text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : rowText(for: message),
             imageThumbnailPath: isRevoked ? nil : message.image?.thumbnailPath,
+            voiceDurationMilliseconds: isRevoked ? nil : message.voice?.durationMilliseconds,
             sortSequence: message.sortSequence,
             timeText: timeText(from: message.localTime),
             statusText: isRevoked ? nil : statusText(for: message),
@@ -572,6 +716,19 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked,
             isRevoked: isRevoked
         )
+    }
+
+    nonisolated private static func rowText(for message: StoredMessage) -> String {
+        if message.type == .voice, let voice = message.voice {
+            return "Voice \(voiceDurationText(milliseconds: voice.durationMilliseconds))"
+        }
+
+        return message.text ?? ""
+    }
+
+    nonisolated private static func voiceDurationText(milliseconds: Int) -> String {
+        let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
+        return "\(seconds)s"
     }
 
     nonisolated private static func statusText(for message: StoredMessage) -> String? {
@@ -931,6 +1088,38 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                     )
 
                     for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
+                        continuation.yield(row)
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let repository = try await storeProvider.repository()
+                    let useCase = LocalChatUseCase(
+                        userID: userID,
+                        conversationID: conversationID,
+                        repository: repository,
+                        conversationRepository: repository,
+                        pendingJobRepository: repository,
+                        sendService: sendService,
+                        mediaFileStore: mediaFileStore,
+                        mediaUploadService: mediaUploadService
+                    )
+
+                    for try await row in useCase.sendVoice(recording: recording) {
                         continuation.yield(row)
                     }
 

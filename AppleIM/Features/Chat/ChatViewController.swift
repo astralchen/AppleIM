@@ -17,6 +17,7 @@ final class ChatViewController: UIViewController {
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ChatMessageRowState] = [:]
     private var lastRenderedRowIDs: [String] = []
+    private var isVoiceTouchActive = false
 
     private lazy var collectionView = UICollectionView(
         frame: .zero,
@@ -24,10 +25,13 @@ final class ChatViewController: UIViewController {
     )
     private let emptyLabel = UILabel()
     private let inputContainerView = UIView()
+    private let recordingStatusLabel = UILabel()
     private let inputStackView = UIStackView()
     private let photoButton = UIButton(type: .system)
+    private let voiceButton = UIButton(type: .system)
     private let textField = UITextField()
     private let sendButton = UIButton(type: .system)
+    private let voiceRecorder = VoiceRecordingController()
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -42,6 +46,7 @@ final class ChatViewController: UIViewController {
         super.viewDidLoad()
         configureView()
         configureDataSource()
+        configureVoiceRecorder()
         bindViewModel()
         viewModel.load()
     }
@@ -98,6 +103,26 @@ final class ChatViewController: UIViewController {
         photoButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         photoButton.addTarget(self, action: #selector(photoButtonTapped), for: .touchUpInside)
 
+        voiceButton.translatesAutoresizingMaskIntoConstraints = false
+        var voiceButtonConfiguration = UIButton.Configuration.plain()
+        voiceButtonConfiguration.image = UIImage(systemName: "mic")
+        voiceButtonConfiguration.contentInsets = NSDirectionalEdgeInsets(
+            top: 8,
+            leading: 8,
+            bottom: 8,
+            trailing: 8
+        )
+        voiceButton.configuration = voiceButtonConfiguration
+        voiceButton.accessibilityLabel = "Hold to Record Voice"
+        voiceButton.setContentHuggingPriority(.required, for: .horizontal)
+        voiceButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        voiceButton.addTarget(self, action: #selector(voiceButtonTouchDown), for: .touchDown)
+        voiceButton.addTarget(self, action: #selector(voiceButtonTouchDragExit), for: .touchDragExit)
+        voiceButton.addTarget(self, action: #selector(voiceButtonTouchDragEnter), for: .touchDragEnter)
+        voiceButton.addTarget(self, action: #selector(voiceButtonTouchUpInside), for: .touchUpInside)
+        voiceButton.addTarget(self, action: #selector(voiceButtonTouchUpOutside), for: .touchUpOutside)
+        voiceButton.addTarget(self, action: #selector(voiceButtonTouchCancel), for: .touchCancel)
+
         textField.translatesAutoresizingMaskIntoConstraints = false
         textField.borderStyle = .roundedRect
         textField.placeholder = "Message"
@@ -126,11 +151,20 @@ final class ChatViewController: UIViewController {
         sendButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         sendButton.addTarget(self, action: #selector(sendButtonTapped), for: .touchUpInside)
 
+        recordingStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        recordingStatusLabel.font = .preferredFont(forTextStyle: .caption1)
+        recordingStatusLabel.adjustsFontForContentSizeCategory = true
+        recordingStatusLabel.textAlignment = .center
+        recordingStatusLabel.textColor = .secondaryLabel
+        recordingStatusLabel.isHidden = true
+
         view.addSubview(collectionView)
         view.addSubview(emptyLabel)
         view.addSubview(inputContainerView)
+        inputContainerView.addSubview(recordingStatusLabel)
         inputContainerView.addSubview(inputStackView)
         inputStackView.addArrangedSubview(photoButton)
+        inputStackView.addArrangedSubview(voiceButton)
         inputStackView.addArrangedSubview(textField)
         inputStackView.addArrangedSubview(sendButton)
 
@@ -149,17 +183,32 @@ final class ChatViewController: UIViewController {
             inputContainerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             inputContainerView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
 
+            recordingStatusLabel.leadingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.leadingAnchor),
+            recordingStatusLabel.trailingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.trailingAnchor),
+            recordingStatusLabel.topAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.topAnchor),
+
             inputStackView.leadingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.leadingAnchor),
             inputStackView.trailingAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.trailingAnchor),
-            inputStackView.topAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.topAnchor),
+            inputStackView.topAnchor.constraint(equalTo: recordingStatusLabel.bottomAnchor, constant: 4),
             inputStackView.bottomAnchor.constraint(equalTo: inputContainerView.layoutMarginsGuide.bottomAnchor),
 
             photoButton.widthAnchor.constraint(equalToConstant: 44),
             photoButton.heightAnchor.constraint(equalToConstant: 44),
+            voiceButton.widthAnchor.constraint(equalToConstant: 44),
+            voiceButton.heightAnchor.constraint(equalToConstant: 44),
             textField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             sendButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             sendButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 64)
         ])
+    }
+
+    private func configureVoiceRecorder() {
+        voiceRecorder.onStateChange = { [weak self] state in
+            self?.renderVoiceRecordingState(state)
+        }
+        voiceRecorder.onCompletion = { [weak self] completion in
+            self?.handleVoiceRecordingCompletion(completion)
+        }
     }
 
     private func configureDataSource() {
@@ -265,6 +314,40 @@ final class ChatViewController: UIViewController {
         present(picker, animated: true)
     }
 
+    @objc private func voiceButtonTouchDown() {
+        isVoiceTouchActive = true
+        Task { [weak self] in
+            await self?.voiceRecorder.beginRecording()
+            guard let self, !self.isVoiceTouchActive, self.voiceRecorder.isRecording else {
+                return
+            }
+            self.voiceRecorder.finishRecording(cancelled: true)
+        }
+    }
+
+    @objc private func voiceButtonTouchDragExit() {
+        voiceRecorder.updateCanceling(true)
+    }
+
+    @objc private func voiceButtonTouchDragEnter() {
+        voiceRecorder.updateCanceling(false)
+    }
+
+    @objc private func voiceButtonTouchUpInside() {
+        isVoiceTouchActive = false
+        voiceRecorder.finishRecording(cancelled: false)
+    }
+
+    @objc private func voiceButtonTouchUpOutside() {
+        isVoiceTouchActive = false
+        voiceRecorder.finishRecording(cancelled: true)
+    }
+
+    @objc private func voiceButtonTouchCancel() {
+        isVoiceTouchActive = false
+        voiceRecorder.finishRecording(cancelled: true)
+    }
+
     @objc private func textFieldEditingChanged() {
         viewModel.saveDraft(textField.text ?? "")
     }
@@ -277,6 +360,54 @@ final class ChatViewController: UIViewController {
         textField.text = nil
         viewModel.saveDraft("")
         viewModel.sendText(trimmedText)
+    }
+
+    private func renderVoiceRecordingState(_ state: VoiceRecordingState) {
+        recordingStatusLabel.isHidden = !state.isRecording && state.hintText == "Hold to talk"
+        recordingStatusLabel.text = state.isRecording
+            ? "\(state.hintText) · \(voiceDurationText(milliseconds: state.elapsedMilliseconds))"
+            : state.hintText
+        recordingStatusLabel.textColor = state.isCanceling ? .systemRed : .secondaryLabel
+
+        let microphoneImageName = state.isRecording ? "mic.fill" : "mic"
+        voiceButton.configuration?.image = UIImage(systemName: microphoneImageName)
+        voiceButton.tintColor = state.isCanceling ? .systemRed : .systemBlue
+        textField.isEnabled = !state.isRecording
+        sendButton.isEnabled = !state.isRecording
+        photoButton.isEnabled = !state.isRecording
+    }
+
+    private func handleVoiceRecordingCompletion(_ completion: VoiceRecordingCompletion) {
+        switch completion {
+        case let .send(recording):
+            viewModel.sendVoice(recording: recording)
+        case .tooShort:
+            showTransientRecordingMessage("Voice too short")
+        case .permissionDenied:
+            showTransientRecordingMessage("Microphone access denied")
+        case .failed:
+            showTransientRecordingMessage("Unable to record")
+        case .cancelled:
+            showTransientRecordingMessage("Voice cancelled")
+        }
+    }
+
+    private func showTransientRecordingMessage(_ message: String) {
+        recordingStatusLabel.isHidden = false
+        recordingStatusLabel.text = message
+        recordingStatusLabel.textColor = .secondaryLabel
+
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_400_000_000)
+            guard !Task.isCancelled else { return }
+            self?.recordingStatusLabel.isHidden = true
+        }
+    }
+
+    private func voiceDurationText(milliseconds: Int) -> String {
+        let seconds = max(0, milliseconds / 1_000)
+        let tenths = max(0, (milliseconds % 1_000) / 100)
+        return "\(seconds).\(tenths)s"
     }
 
     private func isNearBottom() -> Bool {
@@ -370,15 +501,22 @@ extension ChatViewController: UICollectionViewDelegate {
 
 private extension ChatMessageRowState {
     var diffIdentifier: String {
-        [
+        let voiceDurationText = voiceDurationMilliseconds.map { String($0) } ?? ""
+        let progressText = uploadProgress.map { String(Int($0 * 100)) } ?? ""
+        let retryText = canRetry ? "retry" : "no-retry"
+        let revokeText = canRevoke ? "revoke" : "no-revoke"
+        let revokeStatusText = isRevoked ? "revoked" : "normal"
+
+        return [
             id.rawValue,
             text,
             imageThumbnailPath ?? "",
+            voiceDurationText,
             statusText ?? "",
-            uploadProgress.map { String(Int($0 * 100)) } ?? "",
-            canRetry ? "retry" : "no-retry",
-            canRevoke ? "revoke" : "no-revoke",
-            isRevoked ? "revoked" : "normal"
+            progressText,
+            retryText,
+            revokeText,
+            revokeStatusText
         ].joined(separator: "|")
     }
 }
@@ -408,7 +546,7 @@ private final class ChatMessageCell: UICollectionViewCell {
     func configure(row: ChatMessageRowState, onRetry: @escaping (MessageID) -> Void) {
         retryMessageID = row.id
         self.onRetry = onRetry
-        messageLabel.text = row.isImage ? "Image unavailable" : row.text
+        messageLabel.text = row.isVoice ? "Voice \(Self.voiceDurationText(milliseconds: row.voiceDurationMilliseconds ?? 0))" : (row.isImage ? "Image unavailable" : row.text)
         messageLabel.isHidden = row.isImage && row.imageThumbnailPath != nil
         thumbnailImageView.isHidden = !row.isImage
 
@@ -488,5 +626,10 @@ private final class ChatMessageCell: UICollectionViewCell {
     @objc private func retryButtonTapped() {
         guard let retryMessageID else { return }
         onRetry?(retryMessageID)
+    }
+
+    private static func voiceDurationText(milliseconds: Int) -> String {
+        let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
+        return "\(seconds)s"
     }
 }

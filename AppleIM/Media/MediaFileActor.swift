@@ -17,11 +17,18 @@ nonisolated enum MediaFileError: Error, Equatable, Sendable {
     case imageCompressionFailed
     /// 缩略图生成失败
     case thumbnailGenerationFailed
+    /// 无效的语音文件
+    case invalidVoiceFile
 }
 
 /// 存储的媒体图片文件
 nonisolated struct StoredMediaImageFile: Equatable, Sendable {
     let content: StoredImageContent
+}
+
+/// 存储的媒体语音文件
+nonisolated struct StoredMediaVoiceFile: Equatable, Sendable {
+    let content: StoredVoiceContent
 }
 
 /// 媒体图片处理选项
@@ -65,6 +72,14 @@ protocol MediaFileStoring: Sendable {
     ///   - preferredFileExtension: 首选文件扩展名
     /// - Returns: 存储的图片文件信息
     func saveImage(data: Data, preferredFileExtension: String?) async throws -> StoredMediaImageFile
+    /// 保存语音
+    ///
+    /// - Parameters:
+    ///   - recordingURL: 临时录音文件 URL
+    ///   - durationMilliseconds: 录音时长（毫秒）
+    ///   - preferredFileExtension: 首选文件扩展名
+    /// - Returns: 存储的语音文件信息
+    func saveVoice(recordingURL: URL, durationMilliseconds: Int, preferredFileExtension: String?) async throws -> StoredMediaVoiceFile
 }
 
 /// 账号媒体文件存储
@@ -89,6 +104,16 @@ actor AccountMediaFileStore: MediaFileStoring {
         let paths = try await storageService.prepareStorage(for: accountID)
         let fileStore = await MediaFileActor(paths: paths, processingOptions: processingOptions)
         return try await fileStore.saveImage(data: data, preferredFileExtension: preferredFileExtension)
+    }
+
+    func saveVoice(recordingURL: URL, durationMilliseconds: Int, preferredFileExtension: String?) async throws -> StoredMediaVoiceFile {
+        let paths = try await storageService.prepareStorage(for: accountID)
+        let fileStore = await MediaFileActor(paths: paths, processingOptions: processingOptions)
+        return try await fileStore.saveVoice(
+            recordingURL: recordingURL,
+            durationMilliseconds: durationMilliseconds,
+            preferredFileExtension: preferredFileExtension
+        )
     }
 }
 
@@ -137,6 +162,36 @@ actor MediaFileActor: MediaFileStoring {
                 height: processedImage.height,
                 sizeBytes: Int64(processedImage.originalData.count),
                 format: processedImage.format
+            )
+        )
+    }
+
+    func saveVoice(recordingURL: URL, durationMilliseconds: Int, preferredFileExtension: String?) async throws -> StoredMediaVoiceFile {
+        guard FileManager.default.fileExists(atPath: recordingURL.path), durationMilliseconds > 0 else {
+            throw MediaFileError.invalidVoiceFile
+        }
+
+        let mediaID = UUID().uuidString
+        let format = Self.normalizedVoiceFileExtension(preferredFileExtension)
+        let voiceDirectory = paths.mediaDirectory.appendingPathComponent("voice", isDirectory: true)
+        try FileManager.default.createDirectory(at: voiceDirectory, withIntermediateDirectories: true)
+
+        let destinationURL = voiceDirectory.appendingPathComponent(mediaID).appendingPathExtension(format)
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        try FileManager.default.copyItem(at: recordingURL, to: destinationURL)
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: destinationURL.path)
+        let sizeBytes = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+
+        return StoredMediaVoiceFile(
+            content: StoredVoiceContent(
+                mediaID: mediaID,
+                localPath: destinationURL.path,
+                durationMilliseconds: durationMilliseconds,
+                sizeBytes: sizeBytes,
+                format: format
             )
         )
     }
@@ -197,6 +252,18 @@ actor MediaFileActor: MediaFileStoring {
         }
 
         return fileExtension == "jpeg" ? "jpg" : fileExtension
+    }
+
+    nonisolated private static func normalizedVoiceFileExtension(_ preferredFileExtension: String?) -> String {
+        let sanitized = preferredFileExtension?
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespacesAndNewlines))
+            .lowercased()
+
+        guard let sanitized, !sanitized.isEmpty else {
+            return "m4a"
+        }
+
+        return sanitized == "aac" ? "m4a" : sanitized
     }
 
     nonisolated private static func dimensions(from source: CGImageSource) -> (width: Int, height: Int) {

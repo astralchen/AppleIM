@@ -97,6 +97,13 @@ protocol MessageSendService: Sendable {
     ///   - upload: 图片上传确认信息
     /// - Returns: 发送结果
     func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
+    /// 发送语音消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的语音消息
+    ///   - upload: 语音上传确认信息
+    /// - Returns: 发送结果
+    func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
 }
 
 /// 模拟消息发送服务
@@ -138,6 +145,14 @@ nonisolated struct MockMessageSendService: MessageSendService {
     }
 
     func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
+        await sendMedia(message: message)
+    }
+
+    func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
+        await sendMedia(message: message)
+    }
+
+    private func sendMedia(message: StoredMessage) async -> MessageSendResult {
         do {
             try await Task.sleep(nanoseconds: delayNanoseconds)
         } catch {

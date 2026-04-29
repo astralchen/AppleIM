@@ -213,6 +213,28 @@ struct AppleIMTests {
         #expect(storedFile.content.format == "jpg")
     }
 
+    @Test func mediaFileActorStoresVoiceInsideAccountDirectory() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (_, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "voice_media_user")
+        let recordingURL = try makeVoiceRecordingFile(in: rootDirectory)
+        let mediaFileActor = await MediaFileActor(paths: paths)
+        let storedFile = try await mediaFileActor.saveVoice(
+            recordingURL: recordingURL,
+            durationMilliseconds: 1_500,
+            preferredFileExtension: "m4a"
+        )
+
+        #expect(storedFile.content.localPath.hasPrefix(paths.mediaDirectory.appendingPathComponent("voice").path))
+        #expect(FileManager.default.fileExists(atPath: storedFile.content.localPath))
+        #expect(storedFile.content.durationMilliseconds == 1_500)
+        #expect(storedFile.content.sizeBytes > 0)
+        #expect(storedFile.content.format == "m4a")
+    }
+
     @Test func localChatRepositoryInsertsOutgoingImageMessageInTransaction() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -261,6 +283,58 @@ struct AppleIMTests {
         #expect(conversations.first?.lastMessageDigest == "[图片]")
     }
 
+    @Test func localChatRepositoryInsertsOutgoingVoiceMessageInTransaction() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "voice_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "voice_conversation", userID: "voice_user", title: "Voice Target", sortTimestamp: 1)
+        )
+
+        let voice = StoredVoiceContent(
+            mediaID: "media_voice_1",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("voice/media_voice_1.m4a").path,
+            durationMilliseconds: 2_400,
+            sizeBytes: 1_024,
+            format: "m4a"
+        )
+        let message = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: "voice_user",
+                conversationID: "voice_conversation",
+                senderID: "voice_user",
+                voice: voice,
+                localTime: 510,
+                messageID: "voice_message_1",
+                clientMessageID: "voice_client_1",
+                sortSequence: 510
+            )
+        )
+        let messages = try await repository.listMessages(conversationID: "voice_conversation", limit: 20, beforeSortSeq: nil)
+        let contentRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS content_count FROM message_voice WHERE content_id = ?;",
+            parameters: [.text("voice_voice_message_1")],
+            paths: databaseContext.paths
+        )
+        let resourceRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS resource_count FROM media_resource WHERE owner_message_id = ?;",
+            parameters: [.text(message.id.rawValue)],
+            paths: databaseContext.paths
+        )
+        let conversations = try await repository.listConversations(for: "voice_user")
+
+        #expect(message.type == .voice)
+        #expect(message.sendStatus == .sending)
+        #expect(message.voice == voice)
+        #expect(messages.first?.voice == voice)
+        #expect(contentRows.first?.int("content_count") == 1)
+        #expect(resourceRows.first?.int("resource_count") == 1)
+        #expect(conversations.first?.lastMessageDigest == "[语音]")
+    }
+
     @Test func chatUseCaseSendImageYieldsProgressThenSuccess() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -305,6 +379,89 @@ struct AppleIMTests {
         #expect(imageRows.first?.string("cdn_url") == storedMessage?.image?.remoteURL)
         #expect(resourceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
         #expect(resourceRows.first?.string("remote_url") == storedMessage?.image?.remoteURL)
+    }
+
+    @Test func chatUseCaseSendVoiceYieldsProgressThenSuccess() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "voice_send_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "voice_send_conversation", userID: "voice_send_user", title: "Voice Send", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let useCase = LocalChatUseCase(
+            userID: "voice_send_user",
+            conversationID: "voice_send_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [0.3, 0.6, 1.0], delayNanoseconds: 0)
+        )
+
+        let rows = try await collectRows(
+            from: useCase.sendVoice(
+                recording: VoiceRecordingFile(
+                    fileURL: try makeVoiceRecordingFile(in: rootDirectory),
+                    durationMilliseconds: 1_800,
+                    fileExtension: "m4a"
+                )
+            )
+        )
+        let messageID = try #require(rows.first?.id)
+        let storedMessage = try await repository.message(messageID: messageID)
+        let voiceRows = try await databaseContext.databaseActor.query(
+            "SELECT cdn_url, upload_status FROM message_voice WHERE content_id = ?;",
+            parameters: [.text("voice_\(messageID.rawValue)")],
+            paths: databaseContext.paths
+        )
+
+        #expect(rows.first?.statusText == "Sending")
+        #expect(rows.first?.isVoice == true)
+        #expect(rows.compactMap(\.uploadProgress) == [0.3, 0.6, 1.0])
+        #expect(rows.last?.statusText == nil)
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.voice?.remoteURL?.contains("mock-cdn.chatbridge.local/voice") == true)
+        #expect(voiceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
+        #expect(voiceRows.first?.string("cdn_url") == storedMessage?.voice?.remoteURL)
+    }
+
+    @Test func chatUseCaseDoesNotSendTooShortVoice() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "short_voice_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "short_voice_conversation", userID: "short_voice_user", title: "Short Voice", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let useCase = LocalChatUseCase(
+            userID: "short_voice_user",
+            conversationID: "short_voice_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+
+        let rows = try await collectRows(
+            from: useCase.sendVoice(
+                recording: VoiceRecordingFile(
+                    fileURL: try makeVoiceRecordingFile(in: rootDirectory),
+                    durationMilliseconds: 600,
+                    fileExtension: "m4a"
+                )
+            )
+        )
+        let messages = try await repository.listMessages(conversationID: "short_voice_conversation", limit: 20, beforeSortSeq: nil)
+
+        #expect(rows.isEmpty)
+        #expect(messages.isEmpty)
     }
 
     @Test func chatUseCaseQueuesImageUploadJobWhenUploadFailsAndResendsWithoutDuplication() async throws {
@@ -2066,6 +2223,12 @@ private struct SlowChatUseCase: ChatUseCase {
         }
     }
 
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
@@ -2121,6 +2284,12 @@ private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
         }
     }
 
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
@@ -2164,6 +2333,7 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
                     id: "image_stub_message",
                     text: "",
                     imageThumbnailPath: "/tmp/chat-thumb.jpg",
+                    voiceDurationMilliseconds: nil,
                     sortSequence: 1,
                     timeText: "Now",
                     statusText: nil,
@@ -2175,6 +2345,12 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
                     isRevoked: false
                 )
             )
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
             continuation.finish()
         }
     }
@@ -2199,6 +2375,7 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
         id: id,
         text: text,
         imageThumbnailPath: nil,
+        voiceDurationMilliseconds: nil,
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -2218,6 +2395,13 @@ private func temporaryDirectory() -> URL {
 
 private func samplePNGData() -> Data {
     Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")!
+}
+
+private func makeVoiceRecordingFile(in directory: URL) throws -> URL {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("sample-\(UUID().uuidString)").appendingPathExtension("m4a")
+    try Data("mock voice recording".utf8).write(to: url, options: [.atomic])
+    return url
 }
 
 private func makeJPEGData(width: Int, height: Int, quality: Double) -> Data {

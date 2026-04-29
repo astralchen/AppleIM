@@ -44,6 +44,11 @@ protocol MediaUploadService: Sendable {
     /// - Parameter message: 已落盘并入库的图片消息
     /// - Returns: 上传事件流
     nonisolated func uploadImage(message: StoredMessage) -> AsyncStream<MediaUploadEvent>
+    /// 上传语音
+    ///
+    /// - Parameter message: 已落盘并入库的语音消息
+    /// - Returns: 上传事件流
+    nonisolated func uploadVoice(message: StoredMessage) -> AsyncStream<MediaUploadEvent>
 }
 
 /// Mock 媒体上传服务
@@ -71,6 +76,14 @@ nonisolated struct MockMediaUploadService: MediaUploadService {
     }
 
     nonisolated func uploadImage(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
+        upload(kind: "image", message: message, mediaID: message.image?.mediaID)
+    }
+
+    nonisolated func uploadVoice(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
+        upload(kind: "voice", message: message, mediaID: message.voice?.mediaID)
+    }
+
+    private nonisolated func upload(kind: String, message: StoredMessage, mediaID: String?) -> AsyncStream<MediaUploadEvent> {
         AsyncStream { continuation in
             let task = Task {
                 for step in progressSteps {
@@ -99,9 +112,9 @@ nonisolated struct MockMediaUploadService: MediaUploadService {
                     continuation.yield(
                         .completed(
                             MediaUploadAck(
-                                mediaID: ack.mediaID.isEmpty ? (message.image?.mediaID ?? message.id.rawValue) : ack.mediaID,
-                                cdnURL: ack.cdnURL.isEmpty ? "https://mock-cdn.chatbridge.local/image/\(message.id.rawValue)" : ack.cdnURL,
-                                md5: ack.md5 ?? "mock-md5-\(message.image?.mediaID ?? message.id.rawValue)"
+                                mediaID: ack.mediaID.isEmpty ? (mediaID ?? message.id.rawValue) : ack.mediaID,
+                                cdnURL: ack.cdnURL.isEmpty ? "https://mock-cdn.chatbridge.local/\(kind)/\(message.id.rawValue)" : ack.cdnURL,
+                                md5: ack.md5 ?? "mock-md5-\(mediaID ?? message.id.rawValue)"
                             )
                         )
                     )
@@ -112,9 +125,9 @@ nonisolated struct MockMediaUploadService: MediaUploadService {
                     continuation.yield(
                         .completed(
                             MediaUploadAck(
-                                mediaID: message.image?.mediaID ?? message.id.rawValue,
-                                cdnURL: "https://mock-cdn.chatbridge.local/image/\(message.id.rawValue)",
-                                md5: "mock-md5-\(message.image?.mediaID ?? message.id.rawValue)"
+                                mediaID: mediaID ?? message.id.rawValue,
+                                cdnURL: "https://mock-cdn.chatbridge.local/\(kind)/\(message.id.rawValue)",
+                                md5: "mock-md5-\(mediaID ?? message.id.rawValue)"
                             )
                         )
                     )

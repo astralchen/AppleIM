@@ -17,6 +17,8 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let text: String
     /// 图片缩略图路径
     let imageThumbnailPath: String?
+    /// 语音时长（毫秒）
+    let voiceDurationMilliseconds: Int?
     /// 排序序号
     let sortSequence: Int64
     /// 时间文本
@@ -39,6 +41,11 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     /// 是否为图片消息
     var isImage: Bool {
         imageThumbnailPath != nil
+    }
+
+    /// 是否为语音消息
+    var isVoice: Bool {
+        voiceDurationMilliseconds != nil
     }
 }
 

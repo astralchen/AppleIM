@@ -161,6 +161,44 @@ nonisolated struct StoredImageContent: Equatable, Sendable {
     }
 }
 
+/// 存储的语音内容
+///
+/// 包含语音文件元数据和本地路径
+nonisolated struct StoredVoiceContent: Equatable, Sendable {
+    /// 媒体 ID
+    let mediaID: String
+    /// 语音本地路径
+    let localPath: String
+    /// 时长（毫秒）
+    let durationMilliseconds: Int
+    /// 文件大小（字节）
+    let sizeBytes: Int64
+    /// 远程 CDN URL
+    let remoteURL: String?
+    /// 语音格式（m4a、aac 等）
+    let format: String
+    /// 上传状态
+    let uploadStatus: MediaUploadStatus
+
+    init(
+        mediaID: String,
+        localPath: String,
+        durationMilliseconds: Int,
+        sizeBytes: Int64,
+        remoteURL: String? = nil,
+        format: String,
+        uploadStatus: MediaUploadStatus = .pending
+    ) {
+        self.mediaID = mediaID
+        self.localPath = localPath
+        self.durationMilliseconds = durationMilliseconds
+        self.sizeBytes = sizeBytes
+        self.remoteURL = remoteURL
+        self.format = format
+        self.uploadStatus = uploadStatus
+    }
+}
+
 /// 媒体上传状态
 nonisolated enum MediaUploadStatus: Int, Codable, Sendable {
     /// 待上传
@@ -206,6 +244,46 @@ nonisolated struct OutgoingImageMessageInput: Equatable, Sendable {
         self.conversationID = conversationID
         self.senderID = senderID
         self.image = image
+        self.localTime = localTime
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.sortSequence = sortSequence
+    }
+}
+
+/// 发出的语音消息输入参数
+nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable {
+    /// 用户 ID
+    let userID: UserID
+    /// 会话 ID
+    let conversationID: ConversationID
+    /// 发送者 ID
+    let senderID: UserID
+    /// 语音内容
+    let voice: StoredVoiceContent
+    /// 本地时间戳
+    let localTime: Int64
+    /// 消息 ID（可选，不传则自动生成）
+    let messageID: MessageID?
+    /// 客户端消息 ID（可选，不传则使用 messageID）
+    let clientMessageID: String?
+    /// 排序序号（可选，不传则使用 localTime）
+    let sortSequence: Int64?
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        voice: StoredVoiceContent,
+        localTime: Int64,
+        messageID: MessageID? = nil,
+        clientMessageID: String? = nil,
+        sortSequence: Int64? = nil
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.voice = voice
         self.localTime = localTime
         self.messageID = messageID
         self.clientMessageID = clientMessageID
@@ -327,6 +405,8 @@ protocol MessageRepository: Sendable {
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage
     /// 插入发出的图片消息
     func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage
+    /// 插入发出的语音消息
+    func insertOutgoingVoiceMessage(_ input: OutgoingVoiceMessageInput) async throws -> StoredMessage
     /// 查询消息列表
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
     /// 查询单条消息
@@ -345,6 +425,14 @@ protocol MessageRepository: Sendable {
         sendStatus: MessageSendStatus,
         sendAck: MessageSendAck?,
         pendingJob: PendingJobInput?
+    ) async throws
+    /// 更新语音上传和消息发送状态
+    func updateVoiceUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?
     ) async throws
     /// 标记消息已删除
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws
