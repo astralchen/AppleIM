@@ -14,6 +14,8 @@ final class ChatViewModel {
     private var sendTask: Task<Void, Never>?
     private var draftTask: Task<Void, Never>?
     private var mutationTask: Task<Void, Never>?
+    private var paginationTask: Task<Void, Never>?
+    private let pageSize = 50
 
     var statePublisher: AnyPublisher<ChatViewState, Never> {
         stateSubject.eraseToAnyPublisher()
@@ -30,24 +32,32 @@ final class ChatViewModel {
 
     func load() {
         loadTask?.cancel()
+        paginationTask?.cancel()
+        paginationTask = nil
         publish { state in
             state.phase = .loading
+            state.isLoadingOlderMessages = false
+            state.hasMoreOlderMessages = true
+            state.paginationErrorMessage = nil
         }
 
         loadTask = Task { [weak self] in
             guard let self else { return }
 
             do {
-                async let rows = useCase.loadInitialMessages()
+                async let page = useCase.loadInitialMessages()
                 async let draft = useCase.loadDraft()
-                let loadedRows = try await rows
+                let loadedPage = try await page
                 let loadedDraft = try await draft ?? ""
                 guard !Task.isCancelled else { return }
 
                 publish { state in
                     state.phase = .loaded
-                    state.rows = loadedRows
+                    state.rows = loadedPage.rows
                     state.draftText = loadedDraft
+                    state.hasMoreOlderMessages = loadedPage.hasMore
+                    state.isLoadingOlderMessages = false
+                    state.paginationErrorMessage = nil
                 }
             } catch is CancellationError {
                 return
@@ -56,6 +66,55 @@ final class ChatViewModel {
                     state.phase = .failed("Unable to load messages")
                 }
             }
+        }
+    }
+
+    func loadOlderMessagesIfNeeded() {
+        guard paginationTask == nil else { return }
+        let state = stateSubject.value
+        guard
+            state.phase == .loaded,
+            state.hasMoreOlderMessages,
+            !state.isLoadingOlderMessages,
+            let beforeSortSequence = state.rows.first?.sortSequence
+        else {
+            return
+        }
+
+        publish { state in
+            state.isLoadingOlderMessages = true
+            state.paginationErrorMessage = nil
+        }
+
+        paginationTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let page = try await useCase.loadOlderMessages(
+                    beforeSortSequence: beforeSortSequence,
+                    limit: pageSize
+                )
+                guard !Task.isCancelled else { return }
+
+                publish { state in
+                    let existingIDs = Set(state.rows.map(\.id))
+                    let olderRows = page.rows.filter { !existingIDs.contains($0.id) }
+                    state.rows = olderRows + state.rows
+                    state.hasMoreOlderMessages = page.hasMore
+                    state.isLoadingOlderMessages = false
+                    state.paginationErrorMessage = nil
+                    state.phase = .loaded
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.isLoadingOlderMessages = false
+                    state.paginationErrorMessage = "Unable to load older messages"
+                }
+            }
+
+            paginationTask = nil
         }
     }
 
@@ -170,11 +229,14 @@ final class ChatViewModel {
 
             do {
                 try await useCase.revoke(messageID: messageID)
-                let rows = try await useCase.loadInitialMessages()
+                let page = try await useCase.loadInitialMessages()
                 guard !Task.isCancelled else { return }
 
                 publish { state in
-                    state.rows = rows
+                    state.rows = page.rows
+                    state.hasMoreOlderMessages = page.hasMore
+                    state.isLoadingOlderMessages = false
+                    state.paginationErrorMessage = nil
                     state.phase = .loaded
                 }
             } catch is CancellationError {
@@ -192,10 +254,12 @@ final class ChatViewModel {
         sendTask?.cancel()
         draftTask?.cancel()
         mutationTask?.cancel()
+        paginationTask?.cancel()
         loadTask = nil
         sendTask = nil
         draftTask = nil
         mutationTask = nil
+        paginationTask = nil
     }
 
     private func upsert(_ row: ChatMessageRowState) {

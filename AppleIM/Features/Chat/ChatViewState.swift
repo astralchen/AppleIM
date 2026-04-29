@@ -8,6 +8,7 @@ import Foundation
 nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let id: MessageID
     let text: String
+    let sortSequence: Int64
     let timeText: String
     let statusText: String?
     let isOutgoing: Bool
@@ -30,6 +31,9 @@ nonisolated struct ChatViewState: Equatable, Sendable {
     var rows: [ChatMessageRowState] = []
     var draftText = ""
     var emptyMessage = "No messages yet"
+    var isLoadingOlderMessages = false
+    var hasMoreOlderMessages = true
+    var paginationErrorMessage: String?
 
     var isEmpty: Bool {
         rows.isEmpty

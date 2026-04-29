@@ -14,6 +14,7 @@ final class ChatViewController: UIViewController {
     private var cancellables = Set<AnyCancellable>()
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ChatMessageRowState] = [:]
+    private var lastRenderedRowIDs: [String] = []
 
     private lazy var collectionView = UICollectionView(
         frame: .zero,
@@ -175,20 +176,44 @@ final class ChatViewController: UIViewController {
         title = state.title
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
-        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.diffIdentifier, $0) })
 
         if !textField.isFirstResponder, textField.text != state.draftText {
             textField.text = state.draftText
         }
 
+        let previousRowIDs = lastRenderedRowIDs
+        let previousContentHeight = collectionView.contentSize.height
+        let previousContentOffsetY = collectionView.contentOffset.y
+        let wasNearBottom = isNearBottom()
+        let newRowIDs = state.rows.map(\.diffIdentifier)
+        let isInitialMessageRender = previousRowIDs.isEmpty && !newRowIDs.isEmpty
+        let isPrependingOlderMessages = previousRowIDs.first.map { newRowIDs.contains($0) } == true
+            && newRowIDs.first != previousRowIDs.first
+        let didAppendNewMessage = previousRowIDs.last.map { newRowIDs.contains($0) } == true
+            && newRowIDs.last != previousRowIDs.last
+
+        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.diffIdentifier, $0) })
+        lastRenderedRowIDs = newRowIDs
+
         var snapshot = NSDiffableDataSourceSnapshot<String, String>()
         snapshot.appendSections([chatSection])
-        snapshot.appendItems(state.rows.map(\.diffIdentifier), toSection: chatSection)
-        dataSource?.apply(snapshot, animatingDifferences: true)
+        snapshot.appendItems(newRowIDs, toSection: chatSection)
+        dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
+            guard let self else { return }
 
-        guard !state.rows.isEmpty else { return }
-        let lastIndexPath = IndexPath(item: state.rows.count - 1, section: 0)
-        collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: true)
+            self.collectionView.layoutIfNeeded()
+
+            if isPrependingOlderMessages {
+                let heightDelta = self.collectionView.contentSize.height - previousContentHeight
+                let adjustedOffsetY = previousContentOffsetY + heightDelta
+                self.collectionView.setContentOffset(
+                    CGPoint(x: self.collectionView.contentOffset.x, y: adjustedOffsetY),
+                    animated: false
+                )
+            } else if isInitialMessageRender || didAppendNewMessage || wasNearBottom {
+                self.scrollToBottom(animated: !isInitialMessageRender)
+            }
+        }
     }
 
     private func makeLayout() -> UICollectionViewLayout {
@@ -221,6 +246,18 @@ final class ChatViewController: UIViewController {
         viewModel.saveDraft("")
         viewModel.sendText(trimmedText)
     }
+
+    private func isNearBottom() -> Bool {
+        let visibleHeight = collectionView.bounds.height - collectionView.adjustedContentInset.top - collectionView.adjustedContentInset.bottom
+        let maxOffsetY = collectionView.contentSize.height - visibleHeight + collectionView.adjustedContentInset.bottom
+        return collectionView.contentOffset.y >= maxOffsetY - 80
+    }
+
+    private func scrollToBottom(animated: Bool) {
+        guard !lastRenderedRowIDs.isEmpty else { return }
+        let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
+        collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
+    }
 }
 
 extension ChatViewController: UITextFieldDelegate {
@@ -231,6 +268,14 @@ extension ChatViewController: UITextFieldDelegate {
 }
 
 extension ChatViewController: UICollectionViewDelegate {
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let topThreshold = -scrollView.adjustedContentInset.top + 120
+
+        if scrollView.contentOffset.y <= topThreshold {
+            viewModel.loadOlderMessagesIfNeeded()
+        }
+    }
+
     func collectionView(
         _ collectionView: UICollectionView,
         contextMenuConfigurationForItemAt indexPath: IndexPath,

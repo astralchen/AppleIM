@@ -23,92 +23,94 @@
 
 ## 2. Sprint 任务表
 
+状态说明：`已完成` 表示当前仓库已有实现和基础验证；`部分完成` 表示主链路已落地但仍有明确缺口；`待联调` 表示本地/Mock 链路已通但依赖服务端或系统能力验证；`下一步` 表示当前应优先推进；`待开始` 表示尚未进入实现。
+
 ### Sprint 0：工程基线与开发规范
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 1 周 | 统一 Xcode 配置 | `SWIFT_VERSION = 6.0`、`SWIFT_STRICT_CONCURRENCY = complete`、`IPHONEOS_DEPLOYMENT_TARGET = 15.0` | App、Tests、UITests 编译通过 | iOS |
-| 第 1 周 | 建立 MVVM 模板 | `ViewController/View + ViewModel + ViewState + Coordinator` | 新页面可按模板创建 | iOS |
-| 第 1 周 | 建立模块目录 | Core、Store、Sync、Media、Search、Security、UI | 目录结构清晰，依赖方向明确 | iOS |
-| 第 1 周 | 定义基础类型 | ID、时间戳、错误类型、状态枚举满足 `Sendable` | 严格并发检查无警告 | iOS |
-| 第 1 周 | 建立测试基线 | 单元测试、UI 测试、Mock Service | CI/本地测试可运行 | iOS/QA |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 已完成 | 第 1 周 | 统一 Xcode 配置 | `SWIFT_VERSION = 6.0`、`SWIFT_STRICT_CONCURRENCY = complete`、`IPHONEOS_DEPLOYMENT_TARGET = 15.0` | App、Tests、UITests 编译通过 | iOS |
+| 部分完成 | 第 1 周 | 建立 MVVM 模板 | `ViewController/View + ViewModel + ViewState + Coordinator` | 新页面可按模板创建 | iOS |
+| 部分完成 | 第 1 周 | 建立模块目录 | Core、Store、Sync、Media、Search、Security、UI | 目录结构清晰，依赖方向明确 | iOS |
+| 已完成 | 第 1 周 | 定义基础类型 | ID、时间戳、错误类型、状态枚举满足 `Sendable` | 严格并发检查无警告 | iOS |
+| 部分完成 | 第 1 周 | 建立测试基线 | 单元测试、UI 测试、Mock Service | CI/本地测试可运行 | iOS/QA |
 
 ### Sprint 1：账号、存储与数据库骨架
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 2 周 | 账号目录隔离 | `account_xxx/main.db/search.db/file_index.db/media/cache` | 切换账号不串数据 | iOS |
-| 第 2 周 | Keychain 密钥管理 | 密钥与账号绑定，不硬编码 | 登录后可读取当前账号密钥 | iOS |
-| 第 2 周 | DatabaseActor | actor 串行化连接、迁移、事务 | 数据库访问不在主线程 | iOS |
-| 第 2 周 | migration_meta | 记录 schema 版本、迁移 ID、检查时间 | 重启后版本可追踪 | iOS |
-| 第 3 周 | 核心表建表 | user、contact、conversation、message、content tables | 建表和索引完成 | iOS |
-| 第 3 周 | Repository/DAO | UI 不直接访问数据库 | 单元测试覆盖基础 CRUD | iOS |
-| 第 3 周 | 事务封装 | 消息、内容、会话摘要、未读数同事务 | 模拟异常时不产生半写入 | iOS |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 已完成 | 第 2 周 | 账号目录隔离 | `account_xxx/main.db/search.db/file_index.db/media/cache` | 切换账号不串数据 | iOS |
+| 待开始 | 第 2 周 | Keychain 密钥管理 | 密钥与账号绑定，不硬编码 | 登录后可读取当前账号密钥 | iOS |
+| 已完成 | 第 2 周 | DatabaseActor | actor 串行化连接、迁移、事务 | 数据库访问不在主线程 | iOS |
+| 已完成 | 第 2 周 | migration_meta | 记录 schema 版本、迁移 ID、检查时间 | 重启后版本可追踪 | iOS |
+| 已完成 | 第 3 周 | 核心表建表 | user、contact、conversation、message、content tables | 建表和索引完成 | iOS |
+| 已完成 | 第 3 周 | Repository/DAO | UI 不直接访问数据库 | 单元测试覆盖基础 CRUD | iOS |
+| 已完成 | 第 3 周 | 事务封装 | 消息、内容、会话摘要、未读数同事务 | 模拟异常时不产生半写入 | iOS |
 
 ### Sprint 2：会话列表与聊天页
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 4 周 | 会话列表 MVVM | Combine 输出 row state，Diffable 增量刷新 | 首屏可展示会话 | iOS |
-| 第 4 周 | 会话排序 | 置顶优先，`sort_ts` 倒序 | 新消息会话移动到顶部 | iOS |
-| 第 4 周 | 未读数 | 本地准确累加、清零 | 进入会话后未读清零 | iOS |
-| 第 5 周 | 聊天页 MVVM | 游标分页，UI 状态只在 MainActor 更新 | 首屏消息小于 300ms | iOS |
-| 第 5 周 | 文本消息入库 | message + message_text + conversation 同事务 | 发送后立即展示 sending | iOS |
-| 第 5 周 | 文本消息发送 | `async/await` 请求服务端，ack 回写 | success/failed 状态正确 | iOS/Server |
-| 第 6 周 | 消息重发 | 基于 `client_msg_id` 幂等 | 重发不重复插入 | iOS/Server |
-| 第 6 周 | 撤回与删除 | 状态化处理，不物理删除主记录 | UI 展示撤回/删除状态 | iOS/Server |
-| 第 6 周 | 草稿 | 离开保存，回来恢复 | 重启后草稿仍存在 | iOS |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 已完成 | 第 4 周 | 会话列表 MVVM | Combine 输出 row state，Diffable 增量刷新 | 首屏可展示会话 | iOS |
+| 已完成 | 第 4 周 | 会话排序 | 置顶优先，`sort_ts` 倒序 | 新消息会话移动到顶部 | iOS |
+| 部分完成 | 第 4 周 | 未读数 | 本地准确累加、清零 | 进入会话后未读清零 | iOS |
+| 已完成 | 第 5 周 | 聊天页 MVVM | 游标分页，UI 状态只在 MainActor 更新 | 首屏消息小于 300ms | iOS |
+| 已完成 | 第 5 周 | 文本消息入库 | message + message_text + conversation 同事务 | 发送后立即展示 sending | iOS |
+| 待联调 | 第 5 周 | 文本消息发送 | `async/await` 请求服务端，ack 回写 | success/failed 状态正确 | iOS/Server |
+| 待联调 | 第 6 周 | 消息重发 | 基于 `client_msg_id` 幂等 | 重发不重复插入 | iOS/Server |
+| 待联调 | 第 6 周 | 撤回与删除 | 状态化处理，不物理删除主记录 | UI 展示撤回/删除状态 | iOS/Server |
+| 已完成 | 第 6 周 | 草稿 | 离开保存，回来恢复 | 重启后草稿仍存在 | iOS |
 
 ### Sprint 3：同步、弱网与任务队列
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 7 周 | SyncEngineActor | 管理 cursor、seq、补拉、去重 | 不出现并发乱序写入 | iOS |
-| 第 7 周 | 增量同步 | `sync_checkpoint` + 批量事务 | 离线后上线可补齐消息 | iOS/Server |
-| 第 7 周 | 消息去重 | `client_msg_id/server_msg_id/seq` | 重复推送不重复显示 | iOS/Server |
-| 第 8 周 | pending_job | pending/running/success/failed/cancelled | App 重启后可恢复任务 | iOS |
-| 第 8 周 | 弱网重试 | 超时、断网、ack 丢失、指数退避 | 弱网不丢消息 | iOS/QA |
-| 第 8 周 | 网络状态桥接 | Combine 监听网络恢复，触发任务 | 恢复网络后自动重试 | iOS |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 下一步 | 第 7 周 | SyncEngineActor | 管理 cursor、seq、补拉、去重 | 不出现并发乱序写入 | iOS |
+| 待开始 | 第 7 周 | 增量同步 | `sync_checkpoint` + 批量事务 | 离线后上线可补齐消息 | iOS/Server |
+| 待开始 | 第 7 周 | 消息去重 | `client_msg_id/server_msg_id/seq` | 重复推送不重复显示 | iOS/Server |
+| 待开始 | 第 8 周 | pending_job | pending/running/success/failed/cancelled | App 重启后可恢复任务 | iOS |
+| 待开始 | 第 8 周 | 弱网重试 | 超时、断网、ack 丢失、指数退避 | 弱网不丢消息 | iOS/QA |
+| 待开始 | 第 8 周 | 网络状态桥接 | Combine 监听网络恢复，触发任务 | 恢复网络后自动重试 | iOS |
 
 ### Sprint 4：图片与语音消息
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 9 周 | 图片选择与落盘 | PhotosUI/相册权限，账号目录隔离 | 本地缩略图立即显示 | iOS |
-| 第 9 周 | 图片压缩与缩略图 | MediaFileActor 异步处理 | 大图不阻塞 UI | iOS |
-| 第 9 周 | 图片上传 | 上传进度 Combine 发布 | 失败可重试 | iOS/Server |
-| 第 10 周 | 语音录制 | AVFoundation，权限降级 | 可录制、取消、发送 | iOS |
-| 第 10 周 | 语音播放 | 播放状态、未读红点 | 播放后状态更新 | iOS |
-| 第 10 周 | 媒体索引 | `media_resource/file_index.db` | 文件丢失可识别并触发下载 | iOS |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 待开始 | 第 9 周 | 图片选择与落盘 | PhotosUI/相册权限，账号目录隔离 | 本地缩略图立即显示 | iOS |
+| 待开始 | 第 9 周 | 图片压缩与缩略图 | MediaFileActor 异步处理 | 大图不阻塞 UI | iOS |
+| 待开始 | 第 9 周 | 图片上传 | 上传进度 Combine 发布 | 失败可重试 | iOS/Server |
+| 待开始 | 第 10 周 | 语音录制 | AVFoundation，权限降级 | 可录制、取消、发送 | iOS |
+| 待开始 | 第 10 周 | 语音播放 | 播放状态、未读红点 | 播放后状态更新 | iOS |
+| 待开始 | 第 10 周 | 媒体索引 | `media_resource/file_index.db` | 文件丢失可识别并触发下载 | iOS |
 
 ### Sprint 5：搜索、通知与安全
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 11 周 | 基础搜索 | 搜索库独立，输入 Combine 防抖 | 可搜索联系人、会话、文本消息 | iOS |
-| 第 11 周 | 搜索索引任务 | 异步索引，不阻塞消息主链路 | 索引失败不影响聊天 | iOS |
-| 第 11 周 | 索引重建 | SearchIndexActor 支持全量重建 | 删除索引后可恢复 | iOS |
-| 第 12 周 | 本地通知 | 免打扰不弹通知 | 前后台通知行为正确 | iOS |
-| 第 12 周 | 角标管理 | 未读数统一计算 | 多会话未读角标准确 | iOS |
-| 第 12 周 | 安全加固 | 数据库加密、日志脱敏、文件保护 | 不打印 token、消息明文、密钥 | iOS |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 待开始 | 第 11 周 | 基础搜索 | 搜索库独立，输入 Combine 防抖 | 可搜索联系人、会话、文本消息 | iOS |
+| 待开始 | 第 11 周 | 搜索索引任务 | 异步索引，不阻塞消息主链路 | 索引失败不影响聊天 | iOS |
+| 待开始 | 第 11 周 | 索引重建 | SearchIndexActor 支持全量重建 | 删除索引后可恢复 | iOS |
+| 待开始 | 第 12 周 | 本地通知 | 免打扰不弹通知 | 前后台通知行为正确 | iOS |
+| 待开始 | 第 12 周 | 角标管理 | 未读数统一计算 | 多会话未读角标准确 | iOS |
+| 待开始 | 第 12 周 | 安全加固 | 数据库加密、日志脱敏、文件保护 | 不打印 token、消息明文、密钥 | iOS |
 
 ### Sprint 6：性能、稳定性与数据修复
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 13 周 | 会话列表性能 | 1000 会话，首屏小于 500ms | 滚动 60 FPS | iOS/QA |
-| 第 13 周 | 聊天页性能 | 10 万消息，游标分页 | 上拉加载小于 300ms | iOS/QA |
-| 第 13 周 | 崩溃恢复 | 发送中消息恢复为 pending/failed | 重启后消息不丢 | iOS/QA |
-| 第 13 周 | 数据修复 | integrity check、FTS 重建、媒体索引重建 | 修复失败不影响 App 启动 | iOS |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 待开始 | 第 13 周 | 会话列表性能 | 1000 会话，首屏小于 500ms | 滚动 60 FPS | iOS/QA |
+| 部分完成 | 第 13 周 | 聊天页性能 | 10 万消息，游标分页 | 上拉加载小于 300ms | iOS/QA |
+| 待开始 | 第 13 周 | 崩溃恢复 | 发送中消息恢复为 pending/failed | 重启后消息不丢 | iOS/QA |
+| 待开始 | 第 13 周 | 数据修复 | integrity check、FTS 重建、媒体索引重建 | 修复失败不影响 App 启动 | iOS |
 
 ### Sprint 7：验收与发布准备
 
-| 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
-|---|---|---|---|---|
-| 第 14 周 | 单元测试补齐 | ViewModel、Repository、Sync、PendingJob | 核心链路覆盖完成 | iOS/QA |
-| 第 14 周 | UI 测试补齐 | 登录、会话、发送、重发、搜索 | 关键路径自动化通过 | iOS/QA |
-| 第 14 周 | 回归测试 | iOS 15+ 机型和模拟器覆盖 | 无 P0/P1 阻塞问题 | QA |
-| 第 14 周 | MVP 验收报告 | 功能、性能、稳定性、安全项 | 输出可发布结论 | PM/iOS/QA |
+| 状态 | 周期 | 任务 | 技术要求 | 验收标准 | 负责人 |
+|---|---|---|---|---|---|
+| 部分完成 | 第 14 周 | 单元测试补齐 | ViewModel、Repository、Sync、PendingJob | 核心链路覆盖完成 | iOS/QA |
+| 待开始 | 第 14 周 | UI 测试补齐 | 登录、会话、发送、重发、搜索 | 关键路径自动化通过 | iOS/QA |
+| 待开始 | 第 14 周 | 回归测试 | iOS 15+ 机型和模拟器覆盖 | 无 P0/P1 阻塞问题 | QA |
+| 待开始 | 第 14 周 | MVP 验收报告 | 功能、性能、稳定性、安全项 | 输出可发布结论 | PM/iOS/QA |
 
 ---
 

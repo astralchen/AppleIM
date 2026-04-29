@@ -317,9 +317,93 @@ struct AppleIMTests {
             repository: repository,
             sendService: MockMessageSendService(delayNanoseconds: 0)
         )
-        let rows = try await useCase.loadInitialMessages()
+        let page = try await useCase.loadInitialMessages()
 
-        #expect(rows.map(\.text) == ["First", "Second"])
+        #expect(page.rows.map(\.text) == ["First", "Second"])
+        #expect(page.hasMore == false)
+        #expect(page.nextBeforeSortSequence == 100)
+    }
+
+    @Test func chatUseCaseInitialPageReturnsLatestFiftyMessagesAscending() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "chat_page_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "chat_page_conversation", userID: "chat_page_user", title: "Paged", sortTimestamp: 1)
+        )
+
+        for index in 1...60 {
+            _ = try await repository.insertOutgoingTextMessage(
+                OutgoingTextMessageInput(
+                    userID: "chat_page_user",
+                    conversationID: "chat_page_conversation",
+                    senderID: "chat_page_user",
+                    text: "Message \(index)",
+                    localTime: Int64(index),
+                    messageID: MessageID(rawValue: "chat_page_\(index)"),
+                    clientMessageID: "chat_page_client_\(index)",
+                    sortSequence: Int64(index)
+                )
+            )
+        }
+
+        let useCase = LocalChatUseCase(
+            userID: "chat_page_user",
+            conversationID: "chat_page_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let page = try await useCase.loadInitialMessages()
+
+        #expect(page.rows.count == 50)
+        #expect(page.rows.first?.text == "Message 11")
+        #expect(page.rows.last?.text == "Message 60")
+        #expect(page.hasMore == true)
+        #expect(page.nextBeforeSortSequence == 11)
+    }
+
+    @Test func chatUseCaseOlderPageUsesSortSequenceCursor() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "older_page_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "older_page_conversation", userID: "older_page_user", title: "Older", sortTimestamp: 1)
+        )
+
+        for index in 1...60 {
+            _ = try await repository.insertOutgoingTextMessage(
+                OutgoingTextMessageInput(
+                    userID: "older_page_user",
+                    conversationID: "older_page_conversation",
+                    senderID: "older_page_user",
+                    text: "Older \(index)",
+                    localTime: Int64(index),
+                    messageID: MessageID(rawValue: "older_page_\(index)"),
+                    clientMessageID: "older_page_client_\(index)",
+                    sortSequence: Int64(index)
+                )
+            )
+        }
+
+        let useCase = LocalChatUseCase(
+            userID: "older_page_user",
+            conversationID: "older_page_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let olderPage = try await useCase.loadOlderMessages(beforeSortSequence: 11, limit: 50)
+
+        #expect(olderPage.rows.count == 10)
+        #expect(olderPage.rows.first?.text == "Older 1")
+        #expect(olderPage.rows.last?.text == "Older 10")
+        #expect(olderPage.hasMore == false)
+        #expect(olderPage.nextBeforeSortSequence == 1)
     }
 
     @Test func chatUseCaseSendTextYieldsSendingThenSuccess() async throws {
@@ -570,6 +654,85 @@ struct AppleIMTests {
         #expect(viewModel.currentState.phase == .loading)
         #expect(viewModel.currentState.rows.isEmpty)
     }
+
+    @MainActor
+    @Test func chatViewModelPrependsOlderMessagesWithoutDuplicates() async throws {
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [
+                    makeChatRow(id: "message_51", text: "51", sortSequence: 51),
+                    makeChatRow(id: "message_52", text: "52", sortSequence: 52)
+                ],
+                hasMore: true,
+                nextBeforeSortSequence: 51
+            ),
+            olderPage: ChatMessagePage(
+                rows: [
+                    makeChatRow(id: "message_49", text: "49", sortSequence: 49),
+                    makeChatRow(id: "message_50", text: "50", sortSequence: 50),
+                    makeChatRow(id: "message_51", text: "51", sortSequence: 51)
+                ],
+                hasMore: false,
+                nextBeforeSortSequence: 49
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Paging")
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.loadOlderMessagesIfNeeded()
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["message_49", "message_50", "message_51", "message_52"])
+        #expect(viewModel.currentState.hasMoreOlderMessages == false)
+        #expect(viewModel.currentState.isLoadingOlderMessages == false)
+        #expect(useCase.loadOlderCallCount == 1)
+    }
+
+    @MainActor
+    @Test func chatViewModelDoesNotRequestOlderMessagesWhenPageIsExhausted() async throws {
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [makeChatRow(id: "only_message", text: "Only", sortSequence: 1)],
+                hasMore: false,
+                nextBeforeSortSequence: 1
+            ),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "No More")
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.loadOlderMessagesIfNeeded()
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["only_message"])
+        #expect(useCase.loadOlderCallCount == 0)
+    }
+
+    @MainActor
+    @Test func chatViewModelPaginationFailureKeepsCurrentRows() async throws {
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [makeChatRow(id: "current_message", text: "Current", sortSequence: 10)],
+                hasMore: true,
+                nextBeforeSortSequence: 10
+            ),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil),
+            olderError: TestChatError.paginationFailed
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Failure")
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        viewModel.loadOlderMessagesIfNeeded()
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["current_message"])
+        #expect(viewModel.currentState.phase == .loaded)
+        #expect(viewModel.currentState.isLoadingOlderMessages == false)
+        #expect(viewModel.currentState.paginationErrorMessage == "Unable to load older messages")
+    }
 }
 
 private struct StubConversationListUseCase: ConversationListUseCase {
@@ -589,21 +752,19 @@ private struct StubConversationListUseCase: ConversationListUseCase {
 }
 
 private struct SlowChatUseCase: ChatUseCase {
-    func loadInitialMessages() async throws -> [ChatMessageRowState] {
+    func loadInitialMessages() async throws -> ChatMessagePage {
         try await Task.sleep(nanoseconds: 200_000_000)
-        return [
-            ChatMessageRowState(
-                id: "slow_message",
-                text: "Too late",
-                timeText: "Now",
-                statusText: nil,
-                isOutgoing: true,
-                canRetry: false,
-                canDelete: true,
-                canRevoke: false,
-                isRevoked: false
-            )
-        ]
+        return ChatMessagePage(
+            rows: [
+                makeChatRow(id: "slow_message", text: "Too late", sortSequence: 1)
+            ],
+            hasMore: false,
+            nextBeforeSortSequence: 1
+        )
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
     }
 
     func loadDraft() async throws -> String? {
@@ -627,6 +788,74 @@ private struct SlowChatUseCase: ChatUseCase {
     func delete(messageID: MessageID) async throws {}
 
     func revoke(messageID: MessageID) async throws {}
+}
+
+private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialPage: ChatMessagePage
+    private let olderPage: ChatMessagePage
+    private let olderError: TestChatError?
+    private(set) var loadOlderCallCount = 0
+
+    init(initialPage: ChatMessagePage, olderPage: ChatMessagePage, olderError: TestChatError? = nil) {
+        self.initialPage = initialPage
+        self.olderPage = olderPage
+        self.olderError = olderError
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        initialPage
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        loadOlderCallCount += 1
+
+        if let olderError {
+            throw olderError
+        }
+
+        return olderPage
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private enum TestChatError: Error {
+    case paginationFailed
+}
+
+private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        text: text,
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        isOutgoing: true,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false,
+        isRevoked: false
+    )
 }
 
 private func temporaryDirectory() -> URL {

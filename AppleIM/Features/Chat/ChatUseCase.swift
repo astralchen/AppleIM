@@ -5,8 +5,15 @@
 
 import Foundation
 
+nonisolated struct ChatMessagePage: Equatable, Sendable {
+    let rows: [ChatMessageRowState]
+    let hasMore: Bool
+    let nextBeforeSortSequence: Int64?
+}
+
 protocol ChatUseCase: Sendable {
-    func loadInitialMessages() async throws -> [ChatMessageRowState]
+    func loadInitialMessages() async throws -> ChatMessagePage
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage
     func loadDraft() async throws -> String?
     func saveDraft(_ text: String) async throws
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error>
@@ -16,6 +23,8 @@ protocol ChatUseCase: Sendable {
 }
 
 nonisolated struct LocalChatUseCase: ChatUseCase {
+    private static let initialMessageLimit = 50
+
     private let userID: UserID
     private let conversationID: ConversationID
     private let repository: any MessageRepository
@@ -36,18 +45,33 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         self.sendService = sendService
     }
 
-    func loadInitialMessages() async throws -> [ChatMessageRowState] {
+    func loadInitialMessages() async throws -> ChatMessagePage {
         try await conversationRepository?.markConversationRead(conversationID: conversationID, userID: userID)
 
+        return try await loadMessagePage(limit: Self.initialMessageLimit, beforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        try await loadMessagePage(limit: limit, beforeSortSequence: beforeSortSequence)
+    }
+
+    private func loadMessagePage(limit: Int, beforeSortSequence: Int64?) async throws -> ChatMessagePage {
+        let boundedLimit = max(1, limit)
         let messages = try await repository.listMessages(
             conversationID: conversationID,
-            limit: 50,
-            beforeSortSeq: nil
+            limit: boundedLimit + 1,
+            beforeSortSeq: beforeSortSequence
         )
-
-        return messages
+        let visibleMessages = Array(messages.prefix(boundedLimit))
+        let rows = visibleMessages
             .sorted { $0.sortSequence < $1.sortSequence }
             .map { Self.row(from: $0, currentUserID: userID) }
+
+        return ChatMessagePage(
+            rows: rows,
+            hasMore: messages.count > boundedLimit,
+            nextBeforeSortSequence: rows.first?.sortSequence
+        )
     }
 
     func loadDraft() async throws -> String? {
@@ -181,6 +205,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         return ChatMessageRowState(
             id: message.id,
             text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : (message.text ?? ""),
+            sortSequence: message.sortSequence,
             timeText: timeText(from: message.localTime),
             statusText: isRevoked ? nil : statusText(for: message),
             isOutgoing: isOutgoing,
@@ -235,7 +260,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         self.sendService = sendService
     }
 
-    func loadInitialMessages() async throws -> [ChatMessageRowState] {
+    func loadInitialMessages() async throws -> ChatMessagePage {
         let repository = try await storeProvider.repository()
         let useCase = LocalChatUseCase(
             userID: userID,
@@ -245,6 +270,18 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             sendService: sendService
         )
         return try await useCase.loadInitialMessages()
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: repository,
+            sendService: sendService
+        )
+        return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
     }
 
     func loadDraft() async throws -> String? {
