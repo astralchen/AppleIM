@@ -44,6 +44,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
 
     func upsertConversation(_ record: ConversationRecord) async throws {
         try await conversationDAO.upsert(record)
+        scheduleConversationIndex(conversationID: record.id, userID: record.userID)
     }
 
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
@@ -55,6 +56,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage {
         let result = MessageDAO.insertOutgoingTextStatements(input)
         try await database.performTransaction(result.statements, paths: paths)
+        scheduleMessageIndex(messageID: result.message.id, userID: input.userID)
+        scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
         return result.message
     }
 
@@ -62,6 +65,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         let result = MessageDAO.insertOutgoingImageStatements(input)
         try await database.performTransaction(result.statements, paths: paths)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.image, userID: input.userID, createdAt: input.localTime))
+        scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
         return result.message
     }
 
@@ -69,6 +73,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         let result = MessageDAO.insertOutgoingVoiceStatements(input)
         try await database.performTransaction(result.statements, paths: paths)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.voice, userID: input.userID, createdAt: input.localTime))
+        scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
         return result.message
     }
 
@@ -251,6 +256,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             ],
             paths: paths
         )
+        scheduleMessageRemoval(messageID: messageID, userID: userID)
+        scheduleConversationIndex(conversationID: storedMessage.conversationID, userID: userID)
     }
 
     func revokeMessage(messageID: MessageID, userID: UserID, replacementText: String) async throws -> StoredMessage {
@@ -299,6 +306,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             throw ChatStoreError.messageNotFound(messageID)
         }
 
+        scheduleMessageRemoval(messageID: messageID, userID: userID)
+        scheduleConversationIndex(conversationID: storedMessage.conversationID, userID: userID)
         return updatedMessage
     }
 
@@ -355,6 +364,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             ],
             paths: paths
         )
+        scheduleConversationIndex(conversationID: conversationID, userID: userID)
     }
 
     func draft(conversationID: ConversationID, userID: UserID) async throws -> String? {
@@ -398,6 +408,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             ],
             paths: paths
         )
+        scheduleConversationIndex(conversationID: conversationID, userID: userID)
     }
 
     // MARK: - PendingJobRepository
@@ -762,6 +773,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
 
         try await database.performTransaction(statements, paths: paths)
 
+        for message in messagesToInsert {
+            scheduleMessageIndex(messageID: message.messageID, userID: userID)
+        }
+
+        for conversationID in Set(messagesToInsert.map(\.conversationID)) {
+            scheduleConversationIndex(conversationID: conversationID, userID: userID)
+        }
+
         return SyncApplyResult(
             fetchedCount: batch.messages.count,
             insertedCount: messagesToInsert.count,
@@ -881,6 +900,27 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         )
     }
 
+    private func scheduleMessageIndex(messageID: MessageID, userID: UserID) {
+        let searchIndex = SearchIndexActor(database: database, paths: paths)
+        Task {
+            await searchIndex.indexMessageBestEffort(messageID: messageID, userID: userID)
+        }
+    }
+
+    private func scheduleMessageRemoval(messageID: MessageID, userID: UserID) {
+        let searchIndex = SearchIndexActor(database: database, paths: paths)
+        Task {
+            await searchIndex.removeMessageBestEffort(messageID: messageID, userID: userID)
+        }
+    }
+
+    private func scheduleConversationIndex(conversationID: ConversationID, userID: UserID) {
+        let searchIndex = SearchIndexActor(database: database, paths: paths)
+        Task {
+            await searchIndex.indexConversationBestEffort(conversationID: conversationID, userID: userID)
+        }
+    }
+
     private static func mediaIndexRecord(from row: SQLiteRow) throws -> MediaIndexRecord {
         MediaIndexRecord(
             mediaID: try row.requiredString("media_id"),
@@ -994,7 +1034,9 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
             localPath: resource.localPath,
             remoteURL: resource.remoteURL
         )
-        let payloadData = try JSONEncoder().encode(payload)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let payloadData = try encoder.encode(payload)
 
         guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
             throw ChatStoreError.missingColumn("media_download_payload")

@@ -9,28 +9,38 @@ import Combine
 import UIKit
 
 private let conversationListSection = "main"
+private let searchContactsSection = "search_contacts"
+private let searchConversationsSection = "search_conversations"
+private let searchMessagesSection = "search_messages"
 
 @MainActor
 final class ConversationListViewController: UIViewController {
     private let viewModel: ConversationListViewModel
+    private let searchViewModel: SearchViewModel
     private let onSelectConversation: (ConversationListRowState) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ConversationListRowState] = [:]
+    private var searchRowsByID: [String: SearchResultRowState] = [:]
+    private var lastConversationState = ConversationListViewState()
+    private var lastSearchState = SearchViewState()
 
     private lazy var collectionView = UICollectionView(
         frame: .zero,
         collectionViewLayout: makeLayout()
     )
+    private let searchController = UISearchController(searchResultsController: nil)
 
     private let emptyLabel = UILabel()
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
 
     init(
         viewModel: ConversationListViewModel,
+        searchViewModel: SearchViewModel,
         onSelectConversation: @escaping (ConversationListRowState) -> Void
     ) {
         self.viewModel = viewModel
+        self.searchViewModel = searchViewModel
         self.onSelectConversation = onSelectConversation
         super.init(nibName: nil, bundle: nil)
     }
@@ -54,11 +64,18 @@ final class ConversationListViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         viewModel.cancel()
+        searchViewModel.cancel()
     }
 
     private func configureView() {
         title = "ChatBridge"
         view.backgroundColor = .systemBackground
+        navigationItem.searchController = searchController
+        navigationItem.hidesSearchBarWhenScrolling = false
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.placeholder = "Search"
+        definesPresentationContext = true
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .systemGroupedBackground
@@ -95,24 +112,41 @@ final class ConversationListViewController: UIViewController {
 
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, rowID in
-            guard let self, let row = rowsByID[rowID] else { return }
+            guard let self else { return }
 
             var content = cell.defaultContentConfiguration()
-            content.text = row.title
-            content.secondaryText = row.subtitle
-            content.secondaryTextProperties.color = .secondaryLabel
-            cell.contentConfiguration = content
-            cell.accessories = self.accessories(for: row)
+            if let row = rowsByID[rowID] {
+                content.text = row.title
+                content.secondaryText = row.subtitle
+                content.secondaryTextProperties.color = .secondaryLabel
+                cell.accessories = self.accessories(for: row)
 
-            var background = UIBackgroundConfiguration.listGroupedCell()
-            background.backgroundColor = row.isPinned ? .secondarySystemGroupedBackground : .systemBackground
-            cell.backgroundConfiguration = background
+                var background = UIBackgroundConfiguration.listGroupedCell()
+                background.backgroundColor = row.isPinned ? .secondarySystemGroupedBackground : .systemBackground
+                cell.backgroundConfiguration = background
+            } else if let row = searchRowsByID[rowID] {
+                content.text = row.title
+                content.secondaryText = row.subtitle
+                content.secondaryTextProperties.color = .secondaryLabel
+                cell.accessories = row.conversationID == nil ? [] : [.disclosureIndicator()]
+                cell.backgroundConfiguration = UIBackgroundConfiguration.listGroupedCell()
+            }
+
+            cell.contentConfiguration = content
         }
 
         let headerRegistration = UICollectionView.SupplementaryRegistration<ConversationListHeaderView>(
             elementKind: UICollectionView.elementKindSectionHeader
-        ) { supplementaryView, _, _ in
-            supplementaryView.configure(title: "ChatBridge")
+        ) { [weak self] supplementaryView, _, indexPath in
+            guard
+                let self,
+                let sectionID = self.dataSource?.snapshot().sectionIdentifiers[safe: indexPath.section]
+            else {
+                supplementaryView.configure(title: "")
+                return
+            }
+
+            supplementaryView.configure(title: self.title(for: sectionID))
         }
 
         dataSource = UICollectionViewDiffableDataSource<String, String>(
@@ -140,12 +174,25 @@ final class ConversationListViewController: UIViewController {
     private func bindViewModel() {
         viewModel.statePublisher
             .sink { [weak self] state in
-                self?.render(state)
+                self?.lastConversationState = state
+                guard self?.lastSearchState.isSearching != true else { return }
+                self?.renderConversations(state)
+            }
+            .store(in: &cancellables)
+
+        searchViewModel.statePublisher
+            .sink { [weak self] state in
+                self?.lastSearchState = state
+                if state.isSearching {
+                    self?.renderSearch(state)
+                } else {
+                    self?.renderConversations(self?.lastConversationState ?? ConversationListViewState())
+                }
             }
             .store(in: &cancellables)
     }
 
-    private func render(_ state: ConversationListViewState) {
+    private func renderConversations(_ state: ConversationListViewState) {
         title = state.title
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
@@ -157,10 +204,53 @@ final class ConversationListViewController: UIViewController {
         }
 
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
+        searchRowsByID = [:]
 
         var snapshot = NSDiffableDataSourceSnapshot<String, String>()
         snapshot.appendSections([conversationListSection])
         snapshot.appendItems(state.rows.map { $0.id.rawValue }, toSection: conversationListSection)
+        dataSource?.apply(snapshot, animatingDifferences: true)
+    }
+
+    private func renderSearch(_ state: SearchViewState) {
+        title = "Search"
+
+        if state.phase == .loading {
+            loadingIndicator.startAnimating()
+        } else {
+            loadingIndicator.stopAnimating()
+        }
+
+        switch state.phase {
+        case .failed(let message):
+            emptyLabel.text = message
+        default:
+            emptyLabel.text = "No results"
+        }
+
+        emptyLabel.isHidden = state.phase == .loading || !state.isEmpty
+        rowsByID = [:]
+
+        let allRows = state.contacts + state.conversations + state.messages
+        searchRowsByID = Dictionary(uniqueKeysWithValues: allRows.map { ($0.id, $0) })
+
+        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+
+        if !state.contacts.isEmpty {
+            snapshot.appendSections([searchContactsSection])
+            snapshot.appendItems(state.contacts.map(\.id), toSection: searchContactsSection)
+        }
+
+        if !state.conversations.isEmpty {
+            snapshot.appendSections([searchConversationsSection])
+            snapshot.appendItems(state.conversations.map(\.id), toSection: searchConversationsSection)
+        }
+
+        if !state.messages.isEmpty {
+            snapshot.appendSections([searchMessagesSection])
+            snapshot.appendItems(state.messages.map(\.id), toSection: searchMessagesSection)
+        }
+
         dataSource?.apply(snapshot, animatingDifferences: true)
     }
 
@@ -183,6 +273,41 @@ final class ConversationListViewController: UIViewController {
 
         return accessories
     }
+
+    private func title(for sectionID: String) -> String {
+        switch sectionID {
+        case conversationListSection:
+            return "ChatBridge"
+        case searchContactsSection:
+            return "Contacts"
+        case searchConversationsSection:
+            return "Conversations"
+        case searchMessagesSection:
+            return "Messages"
+        default:
+            return ""
+        }
+    }
+
+    private func conversationRow(for searchRow: SearchResultRowState) -> ConversationListRowState? {
+        guard let conversationID = searchRow.conversationID else {
+            return nil
+        }
+
+        if let existingRow = lastConversationState.rows.first(where: { $0.id == conversationID }) {
+            return existingRow
+        }
+
+        return ConversationListRowState(
+            id: conversationID,
+            title: searchRow.kind == .message ? "Search Result" : searchRow.title,
+            subtitle: searchRow.kind == .message ? searchRow.title : searchRow.subtitle,
+            timeText: "",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        )
+    }
 }
 
 extension ConversationListViewController: UICollectionViewDelegate {
@@ -193,10 +318,29 @@ extension ConversationListViewController: UICollectionViewDelegate {
             let rowID = dataSource?.itemIdentifier(for: indexPath),
             let row = rowsByID[rowID]
         else {
+            if
+                let rowID = dataSource?.itemIdentifier(for: indexPath),
+                let searchRow = searchRowsByID[rowID],
+                let conversation = conversationRow(for: searchRow)
+            {
+                onSelectConversation(conversation)
+            }
             return
         }
 
         onSelectConversation(row)
+    }
+}
+
+extension ConversationListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        searchViewModel.setQuery(searchController.searchBar.text ?? "")
+    }
+}
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

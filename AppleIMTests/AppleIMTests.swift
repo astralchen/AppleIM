@@ -69,7 +69,211 @@ struct AppleIMTests {
         #expect(mainTables.contains("conversation"))
         #expect(mainTables.contains("message"))
         #expect(searchTables.contains("message_search"))
+        #expect(searchTables.contains("contact_search"))
+        #expect(searchTables.contains("conversation_search"))
         #expect(fileIndexTables.contains("file_index"))
+    }
+
+    @Test func searchIndexRebuildIndexesContactsConversationsAndMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "search_user")
+        try await databaseContext.databaseActor.execute(
+            """
+            INSERT INTO contact (
+                contact_id,
+                user_id,
+                wxid,
+                nickname,
+                remark,
+                type,
+                is_deleted
+            ) VALUES (?, ?, ?, ?, ?, 0, 0);
+            """,
+            parameters: [
+                .text("contact_sondra"),
+                .text("search_user"),
+                .text("wx_sondra"),
+                .text("Sondra Search"),
+                .text("Index Friend")
+            ],
+            paths: databaseContext.paths
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "search_conversation", userID: "search_user", title: "Bridge Search", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "search_user",
+                conversationID: "search_conversation",
+                senderID: "search_user",
+                text: "Hello full text search",
+                localTime: 100,
+                messageID: "search_message",
+                clientMessageID: "search_client",
+                sortSequence: 100
+            )
+        )
+
+        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        try await searchIndex.rebuildAll(userID: "search_user")
+
+        let contactResults = try await searchIndex.search(query: "Sondra", limit: 10)
+        let conversationResults = try await searchIndex.search(query: "Bridge", limit: 10)
+        let messageResults = try await searchIndex.search(query: "Hello", limit: 10)
+
+        #expect(contactResults.contains { $0.kind == .contact && $0.id == "contact_sondra" })
+        #expect(conversationResults.contains { $0.kind == .conversation && $0.conversationID == "search_conversation" })
+        #expect(messageResults.contains { $0.kind == .message && $0.messageID == "search_message" })
+    }
+
+    @Test func searchIndexRebuildExcludesDeletedAndRevokedMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "search_filter_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "search_filter_conversation", userID: "search_filter_user", title: "Filter", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "search_filter_user",
+                conversationID: "search_filter_conversation",
+                senderID: "search_filter_user",
+                text: "DeleteOnlyTerm",
+                localTime: 100,
+                messageID: "deleted_search_message",
+                clientMessageID: "deleted_search_client",
+                sortSequence: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "search_filter_user",
+                conversationID: "search_filter_conversation",
+                senderID: "search_filter_user",
+                text: "RevokeOnlyTerm",
+                localTime: 101,
+                messageID: "revoked_search_message",
+                clientMessageID: "revoked_search_client",
+                sortSequence: 101
+            )
+        )
+        try await repository.markMessageDeleted(messageID: "deleted_search_message", userID: "search_filter_user")
+        _ = try await repository.revokeMessage(
+            messageID: "revoked_search_message",
+            userID: "search_filter_user",
+            replacementText: "你撤回了一条消息"
+        )
+
+        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        try await searchIndex.rebuildAll(userID: "search_filter_user")
+
+        let deletedResults = try await searchIndex.search(query: "DeleteOnlyTerm", limit: 10)
+        let revokedResults = try await searchIndex.search(query: "RevokeOnlyTerm", limit: 10)
+
+        #expect(deletedResults.isEmpty)
+        #expect(revokedResults.isEmpty)
+    }
+
+    @Test func localSearchUseCaseReturnsGroupedResults() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let databaseActor = DatabaseActor()
+        let storeProvider = ChatStoreProvider(accountID: "search_usecase_user", storageService: storageService, database: databaseActor)
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "usecase_search_conversation", userID: "search_usecase_user", title: "UseCase Bridge", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "search_usecase_user",
+                conversationID: "usecase_search_conversation",
+                senderID: "search_usecase_user",
+                text: "UseCase message body",
+                localTime: 200,
+                messageID: "usecase_search_message",
+                clientMessageID: "usecase_search_client",
+                sortSequence: 200
+            )
+        )
+
+        let useCase = LocalSearchUseCase(userID: "search_usecase_user", storeProvider: storeProvider)
+        try await useCase.rebuildIndex()
+
+        let bridgeResults = try await useCase.search(query: "UseCase")
+        let messageResults = try await useCase.search(query: "body")
+
+        #expect(bridgeResults.conversations.contains { $0.conversationID == "usecase_search_conversation" })
+        #expect(messageResults.messages.contains { $0.messageID == "usecase_search_message" })
+    }
+
+    @MainActor
+    @Test func searchViewModelDebouncesAndIgnoresStaleResults() async throws {
+        let useCase = StaleSearchUseCase()
+        let viewModel = SearchViewModel(useCase: useCase, debounceMilliseconds: 5)
+
+        viewModel.setQuery("old")
+        try await Task.sleep(nanoseconds: 20_000_000)
+        viewModel.setQuery("new")
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        #expect(viewModel.currentState.phase == .loaded)
+        #expect(viewModel.currentState.messages.map(\.title) == ["New Result"])
+    }
+
+    @Test func searchIndexFailureCreatesRepairPendingJob() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "search_failure_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "search_failure_conversation", userID: "search_failure_user", title: "Failure", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "search_failure_user",
+                conversationID: "search_failure_conversation",
+                senderID: "search_failure_user",
+                text: "Repair me",
+                localTime: 100,
+                messageID: "search_failure_message",
+                clientMessageID: "search_failure_client",
+                sortSequence: 100
+            )
+        )
+        try await waitForCondition {
+            let rows = try await databaseContext.databaseActor.query(
+                "SELECT COUNT(*) AS index_count FROM message_search WHERE message_id = ?;",
+                parameters: [.text("search_failure_message")],
+                in: .search,
+                paths: databaseContext.paths
+            )
+
+            return rows.first?.int("index_count") == 1
+        }
+        try FileManager.default.removeItem(at: databaseContext.paths.searchDatabase)
+        try FileManager.default.createDirectory(at: databaseContext.paths.searchDatabase, withIntermediateDirectories: false)
+
+        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        await searchIndex.indexMessageBestEffort(messageID: "search_failure_message", userID: "search_failure_user")
+
+        let repairJobs = try await repository.recoverablePendingJobs(userID: "search_failure_user", now: Int64.max)
+            .filter { $0.type == .searchIndexRepair }
+
+        #expect(repairJobs.count == 1)
+        #expect(repairJobs.first?.bizKey == "message:search_failure_message")
     }
 
     @Test func databaseActorExecutesPreparedInsertAndQuery() async throws {
@@ -1470,7 +1674,7 @@ struct AppleIMTests {
             try? FileManager.default.removeItem(at: rootDirectory)
         }
 
-        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
             accountID: "network_recovery_user",
             storageService: storageService,
@@ -2489,6 +2693,41 @@ private struct StubConversationListUseCase: ConversationListUseCase {
             )
         ]
     }
+}
+
+private struct StaleSearchUseCase: SearchUseCase {
+    func search(query: String) async throws -> SearchResults {
+        if query == "old" {
+            try await Task.sleep(nanoseconds: 80_000_000)
+            return SearchResults(
+                messages: [
+                    SearchResultRecord(
+                        kind: .message,
+                        id: "old_result",
+                        title: "Old Result",
+                        subtitle: "Old",
+                        conversationID: "old_conversation",
+                        messageID: "old_message"
+                    )
+                ]
+            )
+        }
+
+        return SearchResults(
+            messages: [
+                SearchResultRecord(
+                    kind: .message,
+                    id: "new_result",
+                    title: "New Result",
+                    subtitle: "New",
+                    conversationID: "new_conversation",
+                    messageID: "new_message"
+                )
+            ]
+        )
+    }
+
+    func rebuildIndex() async throws {}
 }
 
 private struct SlowChatUseCase: ChatUseCase {

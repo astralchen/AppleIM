@@ -20,6 +20,8 @@ actor ChatStoreProvider {
     private let database: DatabaseActor
     /// 缓存的仓储实例
     private var cachedRepository: LocalChatRepository?
+    /// 缓存的搜索索引 Actor
+    private var cachedSearchIndex: SearchIndexActor?
 
     /// 初始化存储提供者
     ///
@@ -58,5 +60,20 @@ actor ChatStoreProvider {
         try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
         cachedRepository = repository
         return repository
+    }
+
+    /// 获取搜索索引实例
+    ///
+    /// 与仓储共用同一套账号路径和数据库 Actor，确保 search.db 与 main.db 属于同一账号。
+    func searchIndex() async throws -> SearchIndexActor {
+        if let cachedSearchIndex {
+            return cachedSearchIndex
+        }
+
+        let paths = try await storageService.prepareStorage(for: accountID)
+        _ = try await database.bootstrap(paths: paths)
+        let searchIndex = SearchIndexActor(database: database, paths: paths)
+        cachedSearchIndex = searchIndex
+        return searchIndex
     }
 }

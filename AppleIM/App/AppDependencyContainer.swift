@@ -64,8 +64,13 @@ final class AppDependencyContainer {
             userID: demoUserID,
             storeProvider: storeProvider
         )
+        let searchUseCase = LocalSearchUseCase(
+            userID: demoUserID,
+            storeProvider: storeProvider
+        )
         let viewModel = ConversationListViewModel(useCase: useCase)
-        return ConversationListViewController(viewModel: viewModel) { conversation in
+        let searchViewModel = SearchViewModel(useCase: searchUseCase)
+        return ConversationListViewController(viewModel: viewModel, searchViewModel: searchViewModel) { conversation in
             let chatViewController = self.makeChatViewController(conversation: conversation)
             UIApplication.shared.connectedScenes
                 .compactMap { ($0 as? UIWindowScene)?.keyWindow }

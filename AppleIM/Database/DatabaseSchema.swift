@@ -345,6 +345,14 @@ nonisolated enum DatabaseSchema {
                 """
                 CREATE VIRTUAL TABLE IF NOT EXISTS message_search
                 USING fts5(message_id, conversation_id, sender_id, text, tokenize = 'unicode61');
+                """,
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS contact_search
+                USING fts5(contact_id, title, subtitle, tokenize = 'unicode61');
+                """,
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS conversation_search
+                USING fts5(conversation_id, title, subtitle, tokenize = 'unicode61');
                 """
             ]
         ),
