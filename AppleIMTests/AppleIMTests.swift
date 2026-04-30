@@ -335,6 +335,53 @@ struct AppleIMTests {
         #expect(conversations.first?.lastMessageDigest == "[语音]")
     }
 
+    @Test func localChatRepositoryMarksVoiceMessagePlayed() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "voice_play_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "voice_play_conversation", userID: "voice_play_user", title: "Voice Play", sortTimestamp: 1)
+        )
+
+        let voice = StoredVoiceContent(
+            mediaID: "media_voice_play",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("voice/media_voice_play.m4a").path,
+            durationMilliseconds: 2_000,
+            sizeBytes: 512,
+            format: "m4a"
+        )
+        let message = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: "voice_play_user",
+                conversationID: "voice_play_conversation",
+                senderID: "friend_user",
+                voice: voice,
+                localTime: 520,
+                messageID: "voice_play_message",
+                clientMessageID: "voice_play_client",
+                sortSequence: 520
+            )
+        )
+        try await databaseContext.databaseActor.execute(
+            "UPDATE message SET read_status = ? WHERE message_id = ?;",
+            parameters: [
+                .integer(Int64(MessageReadStatus.unread.rawValue)),
+                .text(message.id.rawValue)
+            ],
+            paths: databaseContext.paths
+        )
+
+        let unreadMessage = try await repository.message(messageID: message.id)
+        try await repository.markVoicePlayed(messageID: message.id)
+        let playedMessage = try await repository.message(messageID: message.id)
+
+        #expect(unreadMessage?.readStatus == .unread)
+        #expect(playedMessage?.readStatus == .read)
+    }
+
     @Test func chatUseCaseSendImageYieldsProgressThenSuccess() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -1470,6 +1517,60 @@ struct AppleIMTests {
         #expect(conversations.first?.unreadCount == 0)
     }
 
+    @Test func chatUseCaseMarksIncomingVoicePlayedAndClearsUnreadDot() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "voice_dot_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "voice_dot_conversation", userID: "voice_dot_user", title: "Voice Dot", sortTimestamp: 1)
+        )
+        let voice = StoredVoiceContent(
+            mediaID: "media_voice_dot",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("voice/media_voice_dot.m4a").path,
+            durationMilliseconds: 2_100,
+            sizeBytes: 512,
+            format: "m4a"
+        )
+        let insertedMessage = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: "voice_dot_user",
+                conversationID: "voice_dot_conversation",
+                senderID: "friend_user",
+                voice: voice,
+                localTime: 530,
+                messageID: "voice_dot_message",
+                clientMessageID: "voice_dot_client",
+                sortSequence: 530
+            )
+        )
+        try await databaseContext.databaseActor.execute(
+            "UPDATE message SET read_status = ? WHERE message_id = ?;",
+            parameters: [
+                .integer(Int64(MessageReadStatus.unread.rawValue)),
+                .text(insertedMessage.id.rawValue)
+            ],
+            paths: databaseContext.paths
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "voice_dot_user",
+            conversationID: "voice_dot_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let initialPage = try await useCase.loadInitialMessages()
+        let playedRow = try await useCase.markVoicePlayed(messageID: insertedMessage.id)
+        let storedMessage = try await repository.message(messageID: insertedMessage.id)
+
+        #expect(initialPage.rows.first?.isVoiceUnplayed == true)
+        #expect(initialPage.rows.first?.voiceLocalPath == voice.localPath)
+        #expect(playedRow?.isVoiceUnplayed == false)
+        #expect(storedMessage?.readStatus == .read)
+    }
+
     @MainActor
     @Test func chatViewModelCancelStopsPendingLoadUpdate() async throws {
         let viewModel = ChatViewModel(useCase: SlowChatUseCase(), title: "Cancel")
@@ -1506,9 +1607,17 @@ struct AppleIMTests {
         let viewModel = ChatViewModel(useCase: useCase, title: "Paging")
 
         viewModel.load()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
         viewModel.loadOlderMessagesIfNeeded()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 4
+            }
+        }
 
         #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["message_49", "message_50", "message_51", "message_52"])
         #expect(viewModel.currentState.hasMoreOlderMessages == false)
@@ -1551,7 +1660,11 @@ struct AppleIMTests {
         let viewModel = ChatViewModel(useCase: useCase, title: "Failure")
 
         viewModel.load()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["current_message"]
+            }
+        }
         viewModel.loadOlderMessagesIfNeeded()
         try await waitForCondition {
             await MainActor.run {
@@ -1577,6 +1690,38 @@ struct AppleIMTests {
         #expect(viewModel.currentState.rows.first?.imageThumbnailPath == "/tmp/chat-thumb.jpg")
         #expect(viewModel.currentState.rows.first?.isImage == true)
         #expect(useCase.sentImageCount == 1)
+    }
+
+    @MainActor
+    @Test func chatViewModelTracksOnlyActiveVoicePlaybackRow() async throws {
+        let voiceA = makeVoiceRow(id: "voice_a", sortSequence: 1, isUnplayed: true)
+        let voiceB = makeVoiceRow(id: "voice_b", sortSequence: 2, isUnplayed: true)
+        let useCase = VoicePlaybackStubChatUseCase(rows: [voiceA, voiceB])
+        let viewModel = ChatViewModel(useCase: useCase, title: "Voice")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+        viewModel.voicePlaybackStarted(messageID: "voice_a")
+        try await waitForCondition {
+            await MainActor.run {
+                useCase.markedMessageIDs == ["voice_a"]
+                    && viewModel.currentState.rows.first { $0.id == "voice_a" }?.isVoicePlaying == true
+            }
+        }
+
+        let rowsAfterStart = viewModel.currentState.rows
+        #expect(rowsAfterStart.first { $0.id == "voice_a" }?.isVoicePlaying == true)
+        #expect(rowsAfterStart.first { $0.id == "voice_a" }?.isVoiceUnplayed == false)
+        #expect(rowsAfterStart.first { $0.id == "voice_b" }?.isVoicePlaying == false)
+        #expect(rowsAfterStart.first { $0.id == "voice_b" }?.isVoiceUnplayed == true)
+        #expect(useCase.markedMessageIDs == ["voice_a"])
+
+        viewModel.voicePlaybackStopped(messageID: "voice_a")
+        #expect(viewModel.currentState.rows.first { $0.id == "voice_a" }?.isVoicePlaying == false)
     }
 
     @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {
@@ -2229,6 +2374,10 @@ private struct SlowChatUseCase: ChatUseCase {
         }
     }
 
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
@@ -2288,6 +2437,10 @@ private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
         AsyncThrowingStream { continuation in
             continuation.finish()
         }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -2355,6 +2508,72 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
         }
     }
 
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class VoicePlaybackStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private var rows: [ChatMessageRowState]
+    private(set) var markedMessageIDs: [MessageID] = []
+
+    init(rows: [ChatMessageRowState]) {
+        self.rows = rows
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: rows.first?.sortSequence)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        markedMessageIDs.append(messageID)
+
+        guard let index = rows.firstIndex(where: { $0.id == messageID }) else {
+            return nil
+        }
+
+        rows[index] = rows[index].withVoicePlayback(isPlaying: false, isUnplayed: false)
+        return rows[index]
+    }
+
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
@@ -2385,6 +2604,27 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
         canDelete: true,
         canRevoke: false,
         isRevoked: false
+    )
+}
+
+private func makeVoiceRow(id: MessageID, sortSequence: Int64, isUnplayed: Bool) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        text: "Voice 2s",
+        imageThumbnailPath: nil,
+        voiceDurationMilliseconds: 2_000,
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: false,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false,
+        isRevoked: false,
+        voiceLocalPath: "/tmp/\(id.rawValue).m4a",
+        isVoiceUnplayed: isUnplayed,
+        isVoicePlaying: false
     )
 }
 

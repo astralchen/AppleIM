@@ -34,6 +34,7 @@ nonisolated struct MessageDAO: Sendable {
                 message.msg_type,
                 message.direction,
                 message.send_status,
+                message.read_status,
                 message.server_time,
                 message.revoke_status,
                 message.is_deleted,
@@ -94,6 +95,7 @@ nonisolated struct MessageDAO: Sendable {
                 message.msg_type,
                 message.direction,
                 message.send_status,
+                message.read_status,
                 message.server_time,
                 message.revoke_status,
                 message.is_deleted,
@@ -219,6 +221,7 @@ nonisolated struct MessageDAO: Sendable {
             type: .text,
             direction: .outgoing,
             sendStatus: .sending,
+            readStatus: .read,
             serverTime: nil,
             isRevoked: false,
             isDeleted: false,
@@ -266,7 +269,7 @@ nonisolated struct MessageDAO: Sendable {
                         content_id,
                         sort_seq,
                         local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
                     """,
                     parameters: [
                         .text(message.id.rawValue),
@@ -329,6 +332,7 @@ nonisolated struct MessageDAO: Sendable {
             type: .image,
             direction: .outgoing,
             sendStatus: .sending,
+            readStatus: .read,
             serverTime: nil,
             isRevoked: false,
             isDeleted: false,
@@ -390,7 +394,7 @@ nonisolated struct MessageDAO: Sendable {
                         content_id,
                         sort_seq,
                         local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
                     """,
                     parameters: [
                         .text(message.id.rawValue),
@@ -489,6 +493,7 @@ nonisolated struct MessageDAO: Sendable {
             type: .voice,
             direction: .outgoing,
             sendStatus: .sending,
+            readStatus: .read,
             serverTime: nil,
             isRevoked: false,
             isDeleted: false,
@@ -546,7 +551,7 @@ nonisolated struct MessageDAO: Sendable {
                         content_id,
                         sort_seq,
                         local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
                     """,
                     parameters: [
                         .text(message.id.rawValue),
@@ -630,6 +635,7 @@ nonisolated struct MessageDAO: Sendable {
         let typeRawValue = try row.requiredInt("msg_type")
         let directionRawValue = try row.requiredInt("direction")
         let sendStatusRawValue = try row.requiredInt("send_status")
+        let readStatusRawValue = row.int("read_status") ?? MessageReadStatus.unread.rawValue
 
         guard let type = MessageType(rawValue: typeRawValue) else {
             throw ChatStoreError.invalidMessageType(typeRawValue)
@@ -643,6 +649,10 @@ nonisolated struct MessageDAO: Sendable {
             throw ChatStoreError.invalidMessageSendStatus(sendStatusRawValue)
         }
 
+        guard let readStatus = MessageReadStatus(rawValue: readStatusRawValue) else {
+            throw ChatStoreError.invalidMessageReadStatus(readStatusRawValue)
+        }
+
         return StoredMessage(
             id: MessageID(rawValue: try row.requiredString("message_id")),
             conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
@@ -653,6 +663,7 @@ nonisolated struct MessageDAO: Sendable {
             type: type,
             direction: direction,
             sendStatus: sendStatus,
+            readStatus: readStatus,
             serverTime: row.int64("server_time"),
             isRevoked: row.bool("revoke_status"),
             isDeleted: row.bool("is_deleted"),

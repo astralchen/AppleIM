@@ -43,6 +43,8 @@ final class ChatViewModel {
     private var draftTask: Task<Void, Never>?
     /// 消息操作任务（重发、删除、撤回）
     private var mutationTask: Task<Void, Never>?
+    /// 语音播放状态回写任务
+    private var voicePlaybackTask: Task<Void, Never>?
     /// 分页加载任务
     private var paginationTask: Task<Void, Never>?
     /// 每页加载的消息数量
@@ -261,6 +263,59 @@ final class ChatViewModel {
         }
     }
 
+    /// 标记语音开始播放
+    ///
+    /// 播放启动成功后调用，立即更新播放态和未播放红点，再异步回写已播放状态。
+    ///
+    /// - Parameter messageID: 正在播放的语音消息 ID
+    func voicePlaybackStarted(messageID: MessageID) {
+        publish { state in
+            state.rows = state.rows.map { row in
+                row.withVoicePlayback(
+                    isPlaying: row.id == messageID && row.isVoice,
+                    isUnplayed: row.id == messageID ? false : row.isVoiceUnplayed
+                )
+            }
+            state.phase = .loaded
+        }
+
+        voicePlaybackTask?.cancel()
+        voicePlaybackTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                guard let updatedRow = try await useCase.markVoicePlayed(messageID: messageID) else {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+
+                let isStillPlaying = currentState.rows.first(where: { $0.id == messageID })?.isVoicePlaying == true
+                upsert(updatedRow.withVoicePlayback(isPlaying: isStillPlaying, isUnplayed: false))
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to mark voice played")
+                }
+            }
+        }
+    }
+
+    /// 标记语音停止播放
+    ///
+    /// - Parameter messageID: 停止播放的语音消息 ID；为空时清理全部播放态
+    func voicePlaybackStopped(messageID: MessageID?) {
+        publish { state in
+            state.rows = state.rows.map { row in
+                guard messageID == nil || row.id == messageID else {
+                    return row
+                }
+                return row.withVoicePlayback(isPlaying: false)
+            }
+            state.phase = .loaded
+        }
+    }
+
     /// 保存草稿（防抖）
     ///
     /// 用户输入时调用，延迟 250ms 后保存，避免频繁写入数据库
@@ -395,11 +450,13 @@ final class ChatViewModel {
         draftTask?.cancel()
         mutationTask?.cancel()
         paginationTask?.cancel()
+        voicePlaybackTask?.cancel()
         loadTask = nil
         sendTask = nil
         draftTask = nil
         mutationTask = nil
         paginationTask = nil
+        voicePlaybackTask = nil
     }
 
     /// 更新或插入消息行

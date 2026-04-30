@@ -37,6 +37,48 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let canRevoke: Bool
     /// 是否已撤回
     let isRevoked: Bool
+    /// 语音本地路径
+    let voiceLocalPath: String?
+    /// 收到的语音是否未播放
+    let isVoiceUnplayed: Bool
+    /// 语音是否正在播放
+    let isVoicePlaying: Bool
+
+    init(
+        id: MessageID,
+        text: String,
+        imageThumbnailPath: String?,
+        voiceDurationMilliseconds: Int?,
+        sortSequence: Int64,
+        timeText: String,
+        statusText: String?,
+        uploadProgress: Double?,
+        isOutgoing: Bool,
+        canRetry: Bool,
+        canDelete: Bool,
+        canRevoke: Bool,
+        isRevoked: Bool,
+        voiceLocalPath: String? = nil,
+        isVoiceUnplayed: Bool = false,
+        isVoicePlaying: Bool = false
+    ) {
+        self.id = id
+        self.text = text
+        self.imageThumbnailPath = imageThumbnailPath
+        self.voiceDurationMilliseconds = voiceDurationMilliseconds
+        self.sortSequence = sortSequence
+        self.timeText = timeText
+        self.statusText = statusText
+        self.uploadProgress = uploadProgress
+        self.isOutgoing = isOutgoing
+        self.canRetry = canRetry
+        self.canDelete = canDelete
+        self.canRevoke = canRevoke
+        self.isRevoked = isRevoked
+        self.voiceLocalPath = voiceLocalPath
+        self.isVoiceUnplayed = isVoiceUnplayed
+        self.isVoicePlaying = isVoicePlaying
+    }
 
     /// 是否为图片消息
     var isImage: Bool {
@@ -46,6 +88,27 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     /// 是否为语音消息
     var isVoice: Bool {
         voiceDurationMilliseconds != nil
+    }
+
+    func withVoicePlayback(isPlaying: Bool, isUnplayed: Bool? = nil) -> ChatMessageRowState {
+        ChatMessageRowState(
+            id: id,
+            text: text,
+            imageThumbnailPath: imageThumbnailPath,
+            voiceDurationMilliseconds: voiceDurationMilliseconds,
+            sortSequence: sortSequence,
+            timeText: timeText,
+            statusText: statusText,
+            uploadProgress: uploadProgress,
+            isOutgoing: isOutgoing,
+            canRetry: canRetry,
+            canDelete: canDelete,
+            canRevoke: canRevoke,
+            isRevoked: isRevoked,
+            voiceLocalPath: voiceLocalPath,
+            isVoiceUnplayed: isUnplayed ?? isVoiceUnplayed,
+            isVoicePlaying: isPlaying
+        )
     }
 }
 

@@ -19,6 +19,8 @@ nonisolated enum ChatStoreError: Error, Equatable, Sendable {
     case invalidMessageDirection(Int)
     /// 无效的消息发送状态
     case invalidMessageSendStatus(Int)
+    /// 无效的消息已读状态
+    case invalidMessageReadStatus(Int)
     /// 无效的待处理任务类型
     case invalidPendingJobType(Int)
     /// 无效的待处理任务状态
@@ -434,6 +436,8 @@ protocol MessageRepository: Sendable {
         sendStatus: MessageSendStatus,
         sendAck: MessageSendAck?
     ) async throws
+    /// 标记语音消息已播放
+    func markVoicePlayed(messageID: MessageID) async throws
     /// 标记消息已删除
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws
     /// 撤回消息

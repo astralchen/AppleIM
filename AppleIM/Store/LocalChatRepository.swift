@@ -197,6 +197,31 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         try await database.performTransaction(statements, paths: paths)
     }
 
+    func markVoicePlayed(messageID: MessageID) async throws {
+        guard let storedMessage = try await messageDAO.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        guard storedMessage.type == .voice else {
+            return
+        }
+
+        try await database.execute(
+            """
+            UPDATE message
+            SET read_status = ?
+            WHERE message_id = ?
+            AND msg_type = ?;
+            """,
+            parameters: [
+                .integer(Int64(MessageReadStatus.read.rawValue)),
+                .text(messageID.rawValue),
+                .integer(Int64(MessageType.voice.rawValue))
+            ],
+            paths: paths
+        )
+    }
+
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws {
         guard let storedMessage = try await messageDAO.message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)

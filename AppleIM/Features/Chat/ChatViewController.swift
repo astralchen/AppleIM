@@ -32,6 +32,7 @@ final class ChatViewController: UIViewController {
     private let textField = UITextField()
     private let sendButton = UIButton(type: .system)
     private let voiceRecorder = VoiceRecordingController()
+    private let voicePlaybackController = VoicePlaybackController()
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -47,12 +48,14 @@ final class ChatViewController: UIViewController {
         configureView()
         configureDataSource()
         configureVoiceRecorder()
+        configureVoicePlayback()
         bindViewModel()
         viewModel.load()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        voicePlaybackController.stop()
         viewModel.cancel()
         viewModel.flushDraft(textField.text ?? "")
     }
@@ -211,6 +214,19 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    private func configureVoicePlayback() {
+        voicePlaybackController.onStarted = { [weak self] messageID in
+            self?.viewModel.voicePlaybackStarted(messageID: messageID)
+        }
+        voicePlaybackController.onStopped = { [weak self] messageID in
+            self?.viewModel.voicePlaybackStopped(messageID: messageID)
+        }
+        voicePlaybackController.onFailed = { [weak self] messageID in
+            self?.viewModel.voicePlaybackStopped(messageID: messageID)
+            self?.showTransientRecordingMessage("Unable to play voice")
+        }
+    }
+
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, String> { [weak self] cell, _, rowID in
             guard let self, let row = self.rowsByID[rowID] else { return }
@@ -224,6 +240,9 @@ final class ChatViewController: UIViewController {
                 },
                 onRevoke: { [weak self] messageID in
                     self?.viewModel.revoke(messageID: messageID)
+                },
+                onPlayVoice: { [weak self] row in
+                    self?.handleVoicePlayback(row)
                 }
             )
         }
@@ -401,6 +420,22 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    private func handleVoicePlayback(_ row: ChatMessageRowState) {
+        guard row.isVoice else { return }
+
+        if row.isVoicePlaying {
+            voicePlaybackController.stop()
+            return
+        }
+
+        guard let localPath = row.voiceLocalPath else {
+            showTransientRecordingMessage("Voice file unavailable")
+            return
+        }
+
+        voicePlaybackController.play(messageID: row.id, fileURL: URL(fileURLWithPath: localPath))
+    }
+
     private func showTransientRecordingMessage(_ message: String) {
         recordingStatusLabel.isHidden = false
         recordingStatusLabel.text = message
@@ -479,17 +514,22 @@ private extension ChatMessageRowState {
         let retryText = canRetry ? "retry" : "no-retry"
         let revokeText = canRevoke ? "revoke" : "no-revoke"
         let revokeStatusText = isRevoked ? "revoked" : "normal"
+        let voiceUnreadText = isVoiceUnplayed ? "voice-unplayed" : "voice-played"
+        let voicePlayingText = isVoicePlaying ? "voice-playing" : "voice-stopped"
 
         return [
             id.rawValue,
             text,
             imageThumbnailPath ?? "",
+            voiceLocalPath ?? "",
             voiceDurationText,
             statusText ?? "",
             progressText,
             retryText,
             revokeText,
-            revokeStatusText
+            revokeStatusText,
+            voiceUnreadText,
+            voicePlayingText
         ].joined(separator: "|")
     }
 }
@@ -498,6 +538,10 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
     private let bubbleView = UIView()
     private let stackView = UIStackView()
     private let thumbnailImageView = UIImageView()
+    private let voiceStackView = UIStackView()
+    private let voicePlaybackButton = UIButton(type: .system)
+    private let voiceDurationLabel = UILabel()
+    private let voiceUnreadDotView = UIView()
     private let messageLabel = UILabel()
     private let metadataLabel = UILabel()
     private let retryButton = UIButton(type: .system)
@@ -508,6 +552,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
     private var onRetry: ((MessageID) -> Void)?
     private var onDelete: ((MessageID) -> Void)?
     private var onRevoke: ((MessageID) -> Void)?
+    private var onPlayVoice: ((ChatMessageRowState) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -526,21 +571,34 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         onRetry = nil
         onDelete = nil
         onRevoke = nil
+        onPlayVoice = nil
     }
 
     func configure(
         row: ChatMessageRowState,
         onRetry: @escaping (MessageID) -> Void,
         onDelete: @escaping (MessageID) -> Void,
-        onRevoke: @escaping (MessageID) -> Void
+        onRevoke: @escaping (MessageID) -> Void,
+        onPlayVoice: @escaping (ChatMessageRowState) -> Void
     ) {
         self.row = row
         retryMessageID = row.id
         self.onRetry = onRetry
         self.onDelete = onDelete
         self.onRevoke = onRevoke
-        messageLabel.text = row.isVoice ? "Voice \(Self.voiceDurationText(milliseconds: row.voiceDurationMilliseconds ?? 0))" : (row.isImage ? "Image unavailable" : row.text)
-        messageLabel.isHidden = row.isImage && row.imageThumbnailPath != nil
+        self.onPlayVoice = onPlayVoice
+
+        let voiceTintColor: UIColor = row.isOutgoing && !row.isRevoked ? .white : .systemBlue
+        voiceStackView.isHidden = !row.isVoice
+        voicePlaybackButton.setImage(UIImage(systemName: row.isVoicePlaying ? "pause.fill" : "play.fill"), for: .normal)
+        voicePlaybackButton.tintColor = voiceTintColor
+        voicePlaybackButton.accessibilityLabel = row.isVoicePlaying ? "Stop Voice" : "Play Voice"
+        voiceDurationLabel.text = Self.voiceDurationText(milliseconds: row.voiceDurationMilliseconds ?? 0)
+        voiceDurationLabel.textColor = row.isOutgoing && !row.isRevoked ? .white : .label
+        voiceUnreadDotView.isHidden = !row.isVoiceUnplayed
+
+        messageLabel.text = row.isImage ? "Image unavailable" : row.text
+        messageLabel.isHidden = row.isVoice || (row.isImage && row.imageThumbnailPath != nil)
         thumbnailImageView.isHidden = !row.isImage
 
         if let thumbnailPath = row.imageThumbnailPath {
@@ -582,6 +640,22 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         thumbnailImageView.clipsToBounds = true
         thumbnailImageView.layer.cornerRadius = 10
 
+        voiceStackView.translatesAutoresizingMaskIntoConstraints = false
+        voiceStackView.axis = .horizontal
+        voiceStackView.alignment = .center
+        voiceStackView.spacing = 8
+
+        voicePlaybackButton.translatesAutoresizingMaskIntoConstraints = false
+        voicePlaybackButton.addTarget(self, action: #selector(voicePlaybackButtonTapped), for: .touchUpInside)
+
+        voiceDurationLabel.font = .preferredFont(forTextStyle: .body)
+        voiceDurationLabel.adjustsFontForContentSizeCategory = true
+
+        voiceUnreadDotView.translatesAutoresizingMaskIntoConstraints = false
+        voiceUnreadDotView.backgroundColor = .systemRed
+        voiceUnreadDotView.layer.cornerRadius = 4
+        voiceUnreadDotView.isHidden = true
+
         messageLabel.font = .preferredFont(forTextStyle: .body)
         messageLabel.adjustsFontForContentSizeCategory = true
         messageLabel.numberOfLines = 0
@@ -597,7 +671,11 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
 
         contentView.addSubview(bubbleView)
         bubbleView.addSubview(stackView)
+        voiceStackView.addArrangedSubview(voicePlaybackButton)
+        voiceStackView.addArrangedSubview(voiceDurationLabel)
+        voiceStackView.addArrangedSubview(voiceUnreadDotView)
         stackView.addArrangedSubview(thumbnailImageView)
+        stackView.addArrangedSubview(voiceStackView)
         stackView.addArrangedSubview(messageLabel)
         stackView.addArrangedSubview(metadataLabel)
         stackView.addArrangedSubview(retryButton)
@@ -616,8 +694,17 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
             stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8),
 
             thumbnailImageView.widthAnchor.constraint(equalToConstant: 180),
-            thumbnailImageView.heightAnchor.constraint(equalToConstant: 180)
+            thumbnailImageView.heightAnchor.constraint(equalToConstant: 180),
+            voicePlaybackButton.widthAnchor.constraint(equalToConstant: 28),
+            voicePlaybackButton.heightAnchor.constraint(equalToConstant: 28),
+            voiceUnreadDotView.widthAnchor.constraint(equalToConstant: 8),
+            voiceUnreadDotView.heightAnchor.constraint(equalToConstant: 8)
         ])
+    }
+
+    @objc private func voicePlaybackButtonTapped() {
+        guard let row else { return }
+        onPlayVoice?(row)
     }
 
     @objc private func retryButtonTapped() {

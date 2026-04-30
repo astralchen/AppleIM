@@ -80,6 +80,8 @@ protocol ChatUseCase: Sendable {
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 发送语音消息
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 标记语音已播放
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState?
     /// 重发消息
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 删除消息
@@ -326,6 +328,24 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 task.cancel()
             }
         }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        guard let existingMessage = try await repository.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        guard existingMessage.type == .voice else {
+            return nil
+        }
+
+        try await repository.markVoicePlayed(messageID: messageID)
+
+        guard let updatedMessage = try await repository.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        return Self.row(from: updatedMessage, currentUserID: userID)
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -714,7 +734,10 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             canRetry: isOutgoing && (message.type == .text || message.type == .image) && message.sendStatus == .failed && !isRevoked,
             canDelete: !message.isDeleted,
             canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked,
-            isRevoked: isRevoked
+            isRevoked: isRevoked,
+            voiceLocalPath: isRevoked ? nil : message.voice?.localPath,
+            isVoiceUnplayed: !isOutgoing && message.type == .voice && message.readStatus == .unread && !isRevoked,
+            isVoicePlaying: false
         )
     }
 
@@ -1133,6 +1156,21 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                 task.cancel()
             }
         }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: repository,
+            pendingJobRepository: repository,
+            sendService: sendService,
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService
+        )
+        return try await useCase.markVoicePlayed(messageID: messageID)
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {

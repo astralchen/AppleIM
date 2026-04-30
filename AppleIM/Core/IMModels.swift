@@ -61,6 +61,16 @@ nonisolated enum MessageSendStatus: Int, Codable, Sendable {
     case failed = 3
 }
 
+/// 消息已读状态枚举
+///
+/// 对应数据库 `message.read_status` 字段
+nonisolated enum MessageReadStatus: Int, Codable, Sendable {
+    /// 未读/未播放
+    case unread = 0
+    /// 已读/已播放
+    case read = 1
+}
+
 /// 消息方向枚举
 ///
 /// 对应数据库 `message.direction` 字段
@@ -126,6 +136,8 @@ nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let direction: MessageDirection
     /// 发送状态
     let sendStatus: MessageSendStatus
+    /// 已读状态
+    let readStatus: MessageReadStatus
     /// 服务端时间戳（毫秒）
     let serverTime: Int64?
     /// 是否已撤回
