@@ -2097,6 +2097,230 @@ struct AppleIMTests {
         #expect(storedMessage?.image?.uploadStatus == .failed)
     }
 
+    @Test func crashRecoveryRestoresSendingTextMessageAsPendingJob() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "crash_text_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "crash_text_conversation", userID: "crash_text_user", title: "Crash Text", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "crash_text_user",
+                conversationID: "crash_text_conversation",
+                senderID: "crash_text_user",
+                text: "Recover me after restart",
+                localTime: 700,
+                messageID: "crash_text_message",
+                clientMessageID: "crash_text_client",
+                sortSequence: 700
+            )
+        )
+
+        let result = try await repository.recoverInterruptedOutgoingMessages(
+            userID: "crash_text_user",
+            retryPolicy: MessageRetryPolicy(initialDelaySeconds: 10, maxDelaySeconds: 60, maxRetryCount: 4),
+            now: 1_000
+        )
+        let storedMessage = try await repository.message(messageID: message.id)
+        let job = try await repository.pendingJob(id: "message_resend_crash_text_client")
+
+        #expect(result == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
+        #expect(storedMessage?.sendStatus == .pending)
+        #expect(job?.status == .pending)
+        #expect(job?.type == .messageResend)
+        #expect(job?.bizKey == "crash_text_client")
+        #expect(job?.maxRetryCount == 4)
+        #expect(job?.nextRetryAt == 1_000)
+        #expect(job?.payloadJSON.contains("ackMissing") == true)
+    }
+
+    @Test func crashRecoveryRestoresSendingImageMessageAsUploadJob() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "crash_image_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "crash_image_conversation", userID: "crash_image_user", title: "Crash Image", sortTimestamp: 1)
+        )
+        let image = StoredImageContent(
+            mediaID: "crash_image_media",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("crash_image.png").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("crash_image_thumb.jpg").path,
+            width: 64,
+            height: 64,
+            sizeBytes: 256,
+            format: "png"
+        )
+        let message = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "crash_image_user",
+                conversationID: "crash_image_conversation",
+                senderID: "crash_image_user",
+                image: image,
+                localTime: 800,
+                messageID: "crash_image_message",
+                clientMessageID: "crash_image_client",
+                sortSequence: 800
+            )
+        )
+        try await repository.updateImageUploadStatus(
+            messageID: message.id,
+            uploadStatus: .uploading,
+            uploadAck: nil,
+            sendStatus: .sending,
+            sendAck: nil,
+            pendingJob: nil
+        )
+
+        let result = try await repository.recoverInterruptedOutgoingMessages(
+            userID: "crash_image_user",
+            retryPolicy: MessageRetryPolicy(maxRetryCount: 5),
+            now: 1_100
+        )
+        let storedMessage = try await repository.message(messageID: message.id)
+        let job = try await repository.pendingJob(id: "image_upload_crash_image_client")
+        let mediaRows = try await databaseContext.databaseActor.query(
+            "SELECT upload_status FROM media_resource WHERE media_id = ? LIMIT 1;",
+            parameters: [.text("crash_image_media")],
+            paths: databaseContext.paths
+        )
+
+        #expect(result == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
+        #expect(storedMessage?.sendStatus == .pending)
+        #expect(storedMessage?.image?.uploadStatus == .pending)
+        #expect(mediaRows.first?.int("upload_status") == MediaUploadStatus.pending.rawValue)
+        #expect(job?.status == .pending)
+        #expect(job?.type == .imageUpload)
+        #expect(job?.bizKey == "crash_image_client")
+        #expect(job?.nextRetryAt == 1_100)
+        #expect(job?.payloadJSON.contains("interrupted") == true)
+    }
+
+    @Test func crashRecoveryIsIdempotentAndPreservesTerminalJobs() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "crash_idempotent_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "crash_idempotent_conversation", userID: "crash_idempotent_user", title: "Crash Idempotent", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "crash_idempotent_user",
+                conversationID: "crash_idempotent_conversation",
+                senderID: "crash_idempotent_user",
+                text: "Do not duplicate",
+                localTime: 900,
+                messageID: "crash_idempotent_message",
+                clientMessageID: "crash_idempotent_client",
+                sortSequence: 900
+            )
+        )
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "message_resend_crash_idempotent_client",
+                userID: "crash_idempotent_user",
+                type: .messageResend,
+                bizKey: "crash_idempotent_client",
+                payloadJSON: #"{"terminal":true}"#,
+                maxRetryCount: 1,
+                nextRetryAt: 123
+            )
+        )
+        try await repository.updatePendingJobStatus(
+            jobID: "message_resend_crash_idempotent_client",
+            status: .success,
+            nextRetryAt: nil
+        )
+
+        let firstResult = try await repository.recoverInterruptedOutgoingMessages(
+            userID: "crash_idempotent_user",
+            retryPolicy: MessageRetryPolicy(maxRetryCount: 5),
+            now: 1_200
+        )
+        let secondResult = try await repository.recoverInterruptedOutgoingMessages(
+            userID: "crash_idempotent_user",
+            retryPolicy: MessageRetryPolicy(maxRetryCount: 5),
+            now: 1_300
+        )
+        let storedMessage = try await repository.message(messageID: message.id)
+        let job = try await repository.pendingJob(id: "message_resend_crash_idempotent_client")
+        let countRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS job_count FROM pending_job WHERE job_id = ?;",
+            parameters: [.text("message_resend_crash_idempotent_client")],
+            paths: databaseContext.paths
+        )
+
+        #expect(firstResult == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
+        #expect(secondResult == MessageCrashRecoveryResult(scannedMessageCount: 0, recoveredMessageCount: 0, pendingJobCount: 0, failedMessageCount: 0))
+        #expect(storedMessage?.sendStatus == .pending)
+        #expect(job?.status == .success)
+        #expect(job?.payloadJSON == #"{"terminal":true}"#)
+        #expect(job?.maxRetryCount == 1)
+        #expect(countRows.first?.int("job_count") == 1)
+    }
+
+    @MainActor
+    @Test func networkRecoveryCoordinatorRecoversInterruptedMessagesBeforeRetrying() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "network_crash_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "network_crash_conversation", userID: "network_crash_user", title: "Network Crash", sortTimestamp: 1)
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "network_crash_user",
+                conversationID: "network_crash_conversation",
+                senderID: "network_crash_user",
+                text: "Recover then retry",
+                localTime: 950,
+                messageID: "network_crash_message",
+                clientMessageID: "network_crash_client",
+                sortSequence: 950
+            )
+        )
+        let monitor = TestNetworkConnectivityMonitor(isReachable: false)
+        let coordinator = NetworkRecoveryCoordinator(
+            userID: "network_crash_user",
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            monitor: monitor
+        )
+
+        coordinator.start()
+        monitor.setReachable(true)
+        try await waitForCondition {
+            let job = try await repository.pendingJob(id: "message_resend_network_crash_client")
+            return job?.status == .success
+        }
+        coordinator.stop()
+
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.serverMessageID == "server_network_crash_message")
+        #expect(coordinator.lastCrashRecoveryResult?.recoveredMessageCount == 1)
+        #expect(coordinator.lastRunResult?.successCount == 1)
+    }
+
     @MainActor
     @Test func networkRecoveryCoordinatorRunsPendingJobsWhenNetworkRecovers() async throws {
         let rootDirectory = temporaryDirectory()

@@ -17,23 +17,6 @@ nonisolated struct ChatMessagePage: Equatable, Sendable {
     let nextBeforeSortSequence: Int64?
 }
 
-/// 消息重发待处理任务载荷
-nonisolated private struct MessageResendPendingJobPayload: Codable, Equatable, Sendable {
-    let messageID: String
-    let conversationID: String
-    let clientMessageID: String
-    let lastFailureReason: MessageSendFailureReason?
-}
-
-/// 图片上传待处理任务载荷
-nonisolated private struct ImageUploadPendingJobPayload: Codable, Equatable, Sendable {
-    let messageID: String
-    let conversationID: String
-    let clientMessageID: String
-    let mediaID: String
-    let lastFailureReason: String?
-}
-
 /// 语音录制文件
 nonisolated struct VoiceRecordingFile: Equatable, Sendable {
     /// 临时录音文件 URL
@@ -453,24 +436,12 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             return nil
         }
 
-        let payload = MessageResendPendingJobPayload(
-            messageID: message.id.rawValue,
-            conversationID: message.conversationID.rawValue,
+        return try PendingMessageJobFactory.messageResendInput(
+            messageID: message.id,
+            conversationID: message.conversationID,
             clientMessageID: clientMessageID,
-            lastFailureReason: failureReason
-        )
-        let payloadData = try JSONEncoder().encode(payload)
-
-        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
-            return nil
-        }
-
-        return PendingJobInput(
-            id: Self.resendJobID(clientMessageID: clientMessageID),
             userID: userID,
-            type: .messageResend,
-            bizKey: clientMessageID,
-            payloadJSON: payloadJSON,
+            failureReason: failureReason,
             maxRetryCount: retryPolicy.maxRetryCount,
             nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
         )
@@ -485,7 +456,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
 
         try await pendingJobRepository.updatePendingJobStatus(
-            jobID: Self.resendJobID(clientMessageID: clientMessageID),
+            jobID: PendingMessageJobFactory.messageResendJobID(clientMessageID: clientMessageID),
             status: .success,
             nextRetryAt: nil
         )
@@ -665,25 +636,13 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             return nil
         }
 
-        let payload = ImageUploadPendingJobPayload(
-            messageID: message.id.rawValue,
-            conversationID: message.conversationID.rawValue,
+        return try PendingMessageJobFactory.imageUploadInput(
+            messageID: message.id,
+            conversationID: message.conversationID,
             clientMessageID: clientMessageID,
             mediaID: image.mediaID,
-            lastFailureReason: failureReason
-        )
-        let payloadData = try JSONEncoder().encode(payload)
-
-        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
-            return nil
-        }
-
-        return PendingJobInput(
-            id: Self.imageUploadJobID(clientMessageID: clientMessageID),
             userID: userID,
-            type: .imageUpload,
-            bizKey: clientMessageID,
-            payloadJSON: payloadJSON,
+            failureReason: failureReason,
             maxRetryCount: retryPolicy.maxRetryCount,
             nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
         )
@@ -695,18 +654,10 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
 
         try await pendingJobRepository.updatePendingJobStatus(
-            jobID: Self.imageUploadJobID(clientMessageID: clientMessageID),
+            jobID: PendingMessageJobFactory.imageUploadJobID(clientMessageID: clientMessageID),
             status: .success,
             nextRetryAt: nil
         )
-    }
-
-    private static func resendJobID(clientMessageID: String) -> String {
-        "message_resend_\(clientMessageID)"
-    }
-
-    private static func imageUploadJobID(clientMessageID: String) -> String {
-        "image_upload_\(clientMessageID)"
     }
 
     private static func currentTimestamp() -> Int64 {

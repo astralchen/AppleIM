@@ -420,6 +420,114 @@ nonisolated struct PendingJobInput: Equatable, Sendable {
     }
 }
 
+/// 消息重发待处理任务载荷
+nonisolated struct MessageResendPendingJobPayload: Codable, Equatable, Sendable {
+    let messageID: String
+    let conversationID: String
+    let clientMessageID: String
+    let lastFailureReason: MessageSendFailureReason?
+}
+
+/// 图片上传待处理任务载荷
+nonisolated struct ImageUploadPendingJobPayload: Codable, Equatable, Sendable {
+    let messageID: String
+    let conversationID: String
+    let clientMessageID: String
+    let mediaID: String
+    let lastFailureReason: String?
+}
+
+/// 消息待处理任务构造器
+nonisolated enum PendingMessageJobFactory {
+    static func messageResendJobID(clientMessageID: String) -> String {
+        "message_resend_\(clientMessageID)"
+    }
+
+    static func imageUploadJobID(clientMessageID: String) -> String {
+        "image_upload_\(clientMessageID)"
+    }
+
+    static func messageResendInput(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        clientMessageID: String,
+        userID: UserID,
+        failureReason: MessageSendFailureReason?,
+        maxRetryCount: Int,
+        nextRetryAt: Int64?
+    ) throws -> PendingJobInput {
+        let payload = MessageResendPendingJobPayload(
+            messageID: messageID.rawValue,
+            conversationID: conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            lastFailureReason: failureReason
+        )
+
+        return PendingJobInput(
+            id: messageResendJobID(clientMessageID: clientMessageID),
+            userID: userID,
+            type: .messageResend,
+            bizKey: clientMessageID,
+            payloadJSON: try payloadJSON(from: payload),
+            maxRetryCount: maxRetryCount,
+            nextRetryAt: nextRetryAt
+        )
+    }
+
+    static func imageUploadInput(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        clientMessageID: String,
+        mediaID: String,
+        userID: UserID,
+        failureReason: String?,
+        maxRetryCount: Int,
+        nextRetryAt: Int64?
+    ) throws -> PendingJobInput {
+        let payload = ImageUploadPendingJobPayload(
+            messageID: messageID.rawValue,
+            conversationID: conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            mediaID: mediaID,
+            lastFailureReason: failureReason
+        )
+
+        return PendingJobInput(
+            id: imageUploadJobID(clientMessageID: clientMessageID),
+            userID: userID,
+            type: .imageUpload,
+            bizKey: clientMessageID,
+            payloadJSON: try payloadJSON(from: payload),
+            maxRetryCount: maxRetryCount,
+            nextRetryAt: nextRetryAt
+        )
+    }
+
+    private static func payloadJSON<T: Encodable>(from payload: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let payloadData = try encoder.encode(payload)
+
+        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
+            throw ChatStoreError.missingColumn("pending_job_payload")
+        }
+
+        return payloadJSON
+    }
+}
+
+/// 崩溃恢复结果
+nonisolated struct MessageCrashRecoveryResult: Equatable, Sendable {
+    /// 扫描到的发送中消息数
+    let scannedMessageCount: Int
+    /// 恢复为 pending 的消息数
+    let recoveredMessageCount: Int
+    /// 补建或更新的待处理任务数
+    let pendingJobCount: Int
+    /// 标记为失败的消息数
+    let failedMessageCount: Int
+}
+
 /// 媒体文件索引记录
 ///
 /// 对应 file_index.db 的 file_index 表
@@ -542,6 +650,16 @@ protocol MessageSendRecoveryRepository: Sendable {
         ack: MessageSendAck?,
         pendingJob: PendingJobInput?
     ) async throws
+}
+
+/// 消息崩溃恢复仓储协议
+protocol MessageCrashRecoveryRepository: Sendable {
+    /// 恢复崩溃前中断的发送中消息
+    func recoverInterruptedOutgoingMessages(
+        userID: UserID,
+        retryPolicy: MessageRetryPolicy,
+        now: Int64
+    ) async throws -> MessageCrashRecoveryResult
 }
 
 /// 待处理任务仓储协议

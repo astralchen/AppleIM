@@ -87,6 +87,8 @@ final class NetworkRecoveryCoordinator {
 
     /// 最后一次运行结果
     private(set) var lastRunResult: PendingMessageRetryRunResult?
+    /// 最后一次崩溃恢复结果
+    private(set) var lastCrashRecoveryResult: MessageCrashRecoveryResult?
 
     init(
         userID: UserID,
@@ -118,9 +120,7 @@ final class NetworkRecoveryCoordinator {
 
         monitor.start()
 
-        if monitor.currentIsReachable {
-            runDueJobs()
-        }
+        runRecoveryAndDueJobs()
     }
 
     /// 停止网络恢复协调器
@@ -135,20 +135,29 @@ final class NetworkRecoveryCoordinator {
     ///
     /// 用于应用前台时主动触发重试
     func runDueJobsWhenReachable() {
-        guard monitor.currentIsReachable else { return }
-
-        runDueJobs()
+        runRecoveryAndDueJobs()
     }
 
     /// 运行待处理任务
     ///
     /// 防止重复运行，同一时间只允许一个重试任务
     private func runDueJobs() {
+        runRecoveryAndDueJobs()
+    }
+
+    /// 先恢复崩溃前中断的发送中消息，再在网络可达时运行待处理任务。
+    private func runRecoveryAndDueJobs() {
         guard recoveryTask == nil else { return }
 
         recoveryTask = Task { [userID, storeProvider, sendService, mediaUploadService, retryPolicy, weak self] in
             do {
+                let now = Int64(Date().timeIntervalSince1970)
                 let repository = try await storeProvider.repository()
+                let crashRecoveryResult = try await repository.recoverInterruptedOutgoingMessages(
+                    userID: userID,
+                    retryPolicy: retryPolicy,
+                    now: now
+                )
                 let runner = PendingMessageRetryRunner(
                     userID: userID,
                     messageRepository: repository,
@@ -157,9 +166,16 @@ final class NetworkRecoveryCoordinator {
                     mediaUploadService: mediaUploadService,
                     retryPolicy: retryPolicy
                 )
-                let result = try await runner.runDueJobs()
+                let isReachable = await MainActor.run {
+                    self?.monitor.currentIsReachable ?? false
+                }
+                let result = isReachable ? try await runner.runDueJobs(now: now) : nil
+
                 await MainActor.run {
-                    self?.lastRunResult = result
+                    self?.lastCrashRecoveryResult = crashRecoveryResult
+                    if let result {
+                        self?.lastRunResult = result
+                    }
                     self?.recoveryTask = nil
                 }
             } catch {

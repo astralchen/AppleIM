@@ -19,11 +19,19 @@ nonisolated private struct NotificationConversationContext: Equatable, Sendable 
     let isMuted: Bool
 }
 
+nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
+    let messageID: MessageID
+    let conversationID: ConversationID
+    let clientMessageID: String?
+    let type: MessageType
+    let imageMediaID: String?
+}
+
 /// 本地聊天仓储
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
 /// 所有操作通过 DatabaseActor 串行化执行
-nonisolated struct LocalChatRepository: ConversationRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, MediaIndexRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, SyncStore {
     /// 数据库 Actor
     private let database: DatabaseActor
     /// 账号存储路径
@@ -214,6 +222,124 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         }
 
         try await database.performTransaction(statements, paths: paths)
+    }
+
+    // MARK: - MessageCrashRecoveryRepository
+
+    func recoverInterruptedOutgoingMessages(
+        userID: UserID,
+        retryPolicy: MessageRetryPolicy,
+        now: Int64
+    ) async throws -> MessageCrashRecoveryResult {
+        let interruptedMessages = try await interruptedOutgoingMessages(userID: userID)
+        guard !interruptedMessages.isEmpty else {
+            return MessageCrashRecoveryResult(
+                scannedMessageCount: 0,
+                recoveredMessageCount: 0,
+                pendingJobCount: 0,
+                failedMessageCount: 0
+            )
+        }
+
+        var statements: [SQLiteStatement] = []
+        var recoveredMessageCount = 0
+        var pendingJobCount = 0
+        var failedMessageCount = 0
+
+        for message in interruptedMessages {
+            switch message.type {
+            case .text:
+                guard let clientMessageID = message.clientMessageID else {
+                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                    failedMessageCount += 1
+                    continue
+                }
+
+                let pendingJob = try PendingMessageJobFactory.messageResendInput(
+                    messageID: message.messageID,
+                    conversationID: message.conversationID,
+                    clientMessageID: clientMessageID,
+                    userID: userID,
+                    failureReason: .ackMissing,
+                    maxRetryCount: retryPolicy.maxRetryCount,
+                    nextRetryAt: now
+                )
+                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
+                statements.append(
+                    Self.upsertPendingJobStatement(
+                        pendingJob,
+                        status: .pending,
+                        retryCount: 0,
+                        updatedAt: now,
+                        createdAt: now
+                    )
+                )
+                recoveredMessageCount += 1
+                pendingJobCount += 1
+            case .image:
+                guard let clientMessageID = message.clientMessageID, let imageMediaID = message.imageMediaID else {
+                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                    statements += Self.updateImageUploadStatusStatements(
+                        messageID: message.messageID,
+                        status: .failed,
+                        uploadAck: nil,
+                        updatedAt: now
+                    )
+                    failedMessageCount += 1
+                    continue
+                }
+
+                let pendingJob = try PendingMessageJobFactory.imageUploadInput(
+                    messageID: message.messageID,
+                    conversationID: message.conversationID,
+                    clientMessageID: clientMessageID,
+                    mediaID: imageMediaID,
+                    userID: userID,
+                    failureReason: "interrupted",
+                    maxRetryCount: retryPolicy.maxRetryCount,
+                    nextRetryAt: now
+                )
+                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
+                statements += Self.updateImageUploadStatusStatements(
+                    messageID: message.messageID,
+                    status: .pending,
+                    uploadAck: nil,
+                    updatedAt: now
+                )
+                statements.append(
+                    Self.upsertPendingJobStatement(
+                        pendingJob,
+                        status: .pending,
+                        retryCount: 0,
+                        updatedAt: now,
+                        createdAt: now
+                    )
+                )
+                recoveredMessageCount += 1
+                pendingJobCount += 1
+            case .voice:
+                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                statements += Self.updateVoiceUploadStatusStatements(
+                    messageID: message.messageID,
+                    status: .failed,
+                    uploadAck: nil,
+                    updatedAt: now
+                )
+                failedMessageCount += 1
+            default:
+                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                failedMessageCount += 1
+            }
+        }
+
+        try await database.performTransaction(statements, paths: paths)
+
+        return MessageCrashRecoveryResult(
+            scannedMessageCount: interruptedMessages.count,
+            recoveredMessageCount: recoveredMessageCount,
+            pendingJobCount: pendingJobCount,
+            failedMessageCount: failedMessageCount
+        )
     }
 
     func resendTextMessage(messageID: MessageID) async throws -> StoredMessage {
@@ -973,6 +1099,35 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         return max(0, rows.first?.int("badge_count") ?? 0)
     }
 
+    private func interruptedOutgoingMessages(userID: UserID) async throws -> [InterruptedOutgoingMessage] {
+        let rows = try await database.query(
+            """
+            SELECT
+                message.message_id,
+                message.conversation_id,
+                message.client_msg_id,
+                message.msg_type,
+                message_image.media_id AS image_media_id
+            FROM message
+            INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
+            LEFT JOIN message_image ON message_image.content_id = message.content_id
+            WHERE conversation.user_id = ?
+            AND message.direction = ?
+            AND message.send_status = ?
+            AND message.is_deleted = 0
+            ORDER BY message.local_time ASC, message.sort_seq ASC;
+            """,
+            parameters: [
+                .text(userID.rawValue),
+                .integer(Int64(MessageDirection.outgoing.rawValue)),
+                .integer(Int64(MessageSendStatus.sending.rawValue))
+            ],
+            paths: paths
+        )
+
+        return try rows.map(Self.interruptedOutgoingMessage(from:))
+    }
+
     private func notifyIncomingMessages(_ messages: [IncomingSyncMessage], userID: UserID, badgeCount: Int) async {
         guard let localNotificationManager, !messages.isEmpty else {
             return
@@ -1162,6 +1317,21 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             md5: row.string("md5"),
             lastAccessAt: row.int64("last_access_at"),
             createdAt: try row.requiredInt64("created_at")
+        )
+    }
+
+    private static func interruptedOutgoingMessage(from row: SQLiteRow) throws -> InterruptedOutgoingMessage {
+        let typeRawValue = try row.requiredInt("msg_type")
+        guard let type = MessageType(rawValue: typeRawValue) else {
+            throw ChatStoreError.invalidMessageType(typeRawValue)
+        }
+
+        return InterruptedOutgoingMessage(
+            messageID: MessageID(rawValue: try row.requiredString("message_id")),
+            conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
+            clientMessageID: row.string("client_msg_id"),
+            type: type,
+            imageMediaID: row.string("image_media_id")
         )
     }
 
@@ -1508,7 +1678,10 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(job_id) DO UPDATE SET
-                payload_json = excluded.payload_json,
+                payload_json = CASE
+                    WHEN pending_job.status IN (?, ?) THEN pending_job.payload_json
+                    ELSE excluded.payload_json
+                END,
                 status = CASE
                     WHEN pending_job.status IN (?, ?) THEN pending_job.status
                     ELSE excluded.status
@@ -1517,12 +1690,18 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                     WHEN pending_job.status IN (?, ?) THEN pending_job.retry_count
                     ELSE excluded.retry_count
                 END,
-                max_retry_count = excluded.max_retry_count,
+                max_retry_count = CASE
+                    WHEN pending_job.status IN (?, ?) THEN pending_job.max_retry_count
+                    ELSE excluded.max_retry_count
+                END,
                 next_retry_at = CASE
                     WHEN pending_job.status IN (?, ?) THEN pending_job.next_retry_at
                     ELSE excluded.next_retry_at
                 END,
-                updated_at = excluded.updated_at;
+                updated_at = CASE
+                    WHEN pending_job.status IN (?, ?) THEN pending_job.updated_at
+                    ELSE excluded.updated_at
+                END;
             """,
             parameters: [
                 .text(input.id),
@@ -1536,6 +1715,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 .optionalInteger(input.nextRetryAt),
                 .integer(updatedAt),
                 .integer(createdAt),
+                .integer(Int64(PendingJobStatus.success.rawValue)),
+                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
+                .integer(Int64(PendingJobStatus.success.rawValue)),
+                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
+                .integer(Int64(PendingJobStatus.success.rawValue)),
+                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
                 .integer(Int64(PendingJobStatus.success.rawValue)),
                 .integer(Int64(PendingJobStatus.cancelled.rawValue)),
                 .integer(Int64(PendingJobStatus.success.rawValue)),
