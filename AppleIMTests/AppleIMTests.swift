@@ -44,6 +44,96 @@ struct AppleIMTests {
         #expect(FileManager.default.fileExists(atPath: paths.cacheDirectory.path))
     }
 
+    @Test func accountStorageAppliesFileProtectionToSensitivePaths() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let service = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let paths = try await service.prepareStorage(for: "protected_user")
+
+        #if os(iOS)
+        let protectedURLs = [
+            paths.rootDirectory,
+            paths.mainDatabase,
+            paths.searchDatabase,
+            paths.fileIndexDatabase,
+            paths.mediaDirectory
+        ]
+
+        for url in protectedURLs {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            let protection = attributes[.protectionKey] as? FileProtectionType
+            #expect(protection == .completeUntilFirstUserAuthentication)
+        }
+
+        let cacheAttributes = try FileManager.default.attributesOfItem(atPath: paths.cacheDirectory.path)
+        let cacheProtection = cacheAttributes[.protectionKey] as? FileProtectionType
+        #expect(cacheProtection == FileProtectionType.none)
+        #endif
+    }
+
+    @MainActor
+    @Test func accountDatabaseKeyStoreGeneratesStableIsolatedKeys() async throws {
+        let keyStore = InMemoryAccountDatabaseKeyStore()
+
+        let firstKey = try await keyStore.databaseKey(for: "secure_user")
+        let repeatedKey = try await keyStore.databaseKey(for: "secure_user")
+        let otherAccountKey = try await keyStore.databaseKey(for: "other_secure_user")
+        try await keyStore.deleteDatabaseKey(for: "secure_user")
+        let regeneratedKey = try await keyStore.databaseKey(for: "secure_user")
+
+        #expect(firstKey.count == 32)
+        #expect(firstKey == repeatedKey)
+        #expect(firstKey != otherAccountKey)
+        #expect(regeneratedKey.count == 32)
+        #expect(regeneratedKey != firstKey)
+    }
+
+    @MainActor
+    @Test func chatStoreProviderDeletesAccountStorageAndDatabaseKey() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let keyStore = InMemoryAccountDatabaseKeyStore()
+        let storeProvider = ChatStoreProvider(
+            accountID: "delete_secure_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: keyStore
+        )
+
+        _ = try await storeProvider.repository()
+        let originalKey = try await keyStore.databaseKey(for: "delete_secure_user")
+        let paths = try await storageService.prepareStorage(for: "delete_secure_user")
+
+        try await storeProvider.deleteAccountStorage()
+        let regeneratedKey = try await keyStore.databaseKey(for: "delete_secure_user")
+
+        #expect(FileManager.default.fileExists(atPath: paths.rootDirectory.path) == false)
+        #expect(regeneratedKey.count == 32)
+        #expect(regeneratedKey != originalKey)
+    }
+
+    @Test func databaseActorErrorDescriptionRedactsSensitiveDetails() {
+        let error = DatabaseActorError.executeFailed(
+            path: "/private/account_sensitive_user/main.db",
+            statement: "INSERT INTO message_text (text) VALUES ('secret token message');",
+            message: "failed near secret token message"
+        )
+        let description = String(describing: error)
+
+        #expect(description == error.safeDescription)
+        #expect(description.contains("account_sensitive_user") == false)
+        #expect(description.contains("secret token message") == false)
+        #expect(description.contains("INSERT INTO") == false)
+        #expect(description.contains("/private/") == false)
+    }
+
     @Test func databaseBootstrapPersistsMigrationMetadata() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

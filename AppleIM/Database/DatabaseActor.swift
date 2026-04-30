@@ -20,6 +20,34 @@ nonisolated enum DatabaseActorError: Error, Equatable, Sendable {
     case closeFailed(path: String, message: String)       // 关闭数据库失败
 }
 
+nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedError {
+    /// 安全错误描述，不包含完整路径、SQL、绑定参数或消息明文。
+    var description: String {
+        safeDescription
+    }
+
+    var errorDescription: String? {
+        safeDescription
+    }
+
+    var safeDescription: String {
+        switch self {
+        case .openFailed:
+            "Database open failed."
+        case .executeFailed:
+            "Database execute failed."
+        case .prepareFailed:
+            "Database prepare failed."
+        case .bindFailed:
+            "Database bind failed."
+        case .readFailed:
+            "Database read failed."
+        case .closeFailed:
+            "Database close failed."
+        }
+    }
+}
+
 /// 数据库迁移元数据
 /// 记录当前数据库版本、迁移历史、维护时间等信息
 /// 存储在 migration_meta 表和 migration_meta.json 文件中

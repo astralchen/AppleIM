@@ -57,6 +57,7 @@ actor FileAccountStorageService: AccountStorageService {
         try createFileIfNeeded(at: paths.mainDatabase)
         try createFileIfNeeded(at: paths.searchDatabase)
         try createFileIfNeeded(at: paths.fileIndexDatabase)
+        try applyProtectionAttributes(to: paths)
 
         return paths
     }
@@ -111,6 +112,32 @@ actor FileAccountStorageService: AccountStorageService {
         if !fileManager.fileExists(atPath: url.path) {
             _ = fileManager.createFile(atPath: url.path, contents: Data())
         }
+    }
+
+    /// 为账号目录、数据库和媒体目录应用 iOS 文件保护
+    private func applyProtectionAttributes(to paths: AccountStoragePaths) throws {
+        #if os(iOS)
+        let protectedURLs = [
+            paths.rootDirectory,
+            paths.mainDatabase,
+            paths.searchDatabase,
+            paths.fileIndexDatabase,
+            paths.mediaDirectory
+        ]
+        let fileManager = FileManager.default
+
+        for url in protectedURLs {
+            try fileManager.setAttributes(
+                [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                ofItemAtPath: url.path
+            )
+        }
+
+        try fileManager.setAttributes(
+            [.protectionKey: FileProtectionType.none],
+            ofItemAtPath: paths.cacheDirectory.path
+        )
+        #endif
     }
 
     /// 清理目录名中的非法字符

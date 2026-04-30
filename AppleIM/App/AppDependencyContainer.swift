@@ -34,6 +34,7 @@ final class AppDependencyContainer {
         demoUserID: UserID = "demo_user",
         storageService: (any AccountStorageService)? = nil,
         database: DatabaseActor = DatabaseActor(),
+        databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
         messageSendService: any MessageSendService = MockMessageSendService(),
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager(),
@@ -50,6 +51,7 @@ final class AppDependencyContainer {
             accountID: demoUserID,
             storageService: storageService,
             database: database,
+            databaseKeyStore: databaseKeyStore,
             localNotificationManager: localNotificationManager,
             applicationBadgeManager: applicationBadgeManager
         )

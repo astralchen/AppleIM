@@ -18,6 +18,8 @@ actor ChatStoreProvider {
     private let storageService: any AccountStorageService
     /// 数据库 Actor
     private let database: DatabaseActor
+    /// 账号数据库密钥存储
+    private let databaseKeyStore: any AccountDatabaseKeyStore
     /// 本地通知管理器
     private let localNotificationManager: (any LocalNotificationManaging)?
     /// App 角标管理器
@@ -37,12 +39,14 @@ actor ChatStoreProvider {
         accountID: UserID,
         storageService: any AccountStorageService,
         database: DatabaseActor,
+        databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
         localNotificationManager: (any LocalNotificationManaging)? = nil,
         applicationBadgeManager: (any ApplicationBadgeManaging)? = nil
     ) {
         self.accountID = accountID
         self.storageService = storageService
         self.database = database
+        self.databaseKeyStore = databaseKeyStore
         self.localNotificationManager = localNotificationManager
         self.applicationBadgeManager = applicationBadgeManager
     }
@@ -66,7 +70,7 @@ actor ChatStoreProvider {
             return cachedRepository
         }
 
-        let paths = try await storageService.prepareStorage(for: accountID)
+        let paths = try await prepareAccountStorage()
         _ = try await database.bootstrap(paths: paths)
         let repository = LocalChatRepository(
             database: database,
@@ -87,10 +91,24 @@ actor ChatStoreProvider {
             return cachedSearchIndex
         }
 
-        let paths = try await storageService.prepareStorage(for: accountID)
+        let paths = try await prepareAccountStorage()
         _ = try await database.bootstrap(paths: paths)
         let searchIndex = SearchIndexActor(database: database, paths: paths)
         cachedSearchIndex = searchIndex
         return searchIndex
+    }
+
+    /// 删除当前账号本地存储和账号绑定密钥
+    func deleteAccountStorage() async throws {
+        cachedRepository = nil
+        cachedSearchIndex = nil
+        try await storageService.deleteStorage(for: accountID)
+        try await databaseKeyStore.deleteDatabaseKey(for: accountID)
+    }
+
+    /// 准备账号存储并确保账号密钥已经存在
+    private func prepareAccountStorage() async throws -> AccountStoragePaths {
+        _ = try await databaseKeyStore.databaseKey(for: accountID)
+        return try await storageService.prepareStorage(for: accountID)
     }
 }
