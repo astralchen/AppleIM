@@ -7,7 +7,7 @@
 //  满足 Swift 6 严格并发检查要求
 
 import Foundation
-import SQLite3
+import SQLCipher
 
 /// 数据库操作错误类型
 /// 所有错误都包含路径和详细错误信息，便于调试
@@ -18,6 +18,7 @@ nonisolated enum DatabaseActorError: Error, Equatable, Sendable {
     case bindFailed(path: String, statement: String, message: String)     // 绑定参数失败
     case readFailed(path: String, statement: String, message: String)     // 读取数据失败
     case closeFailed(path: String, message: String)       // 关闭数据库失败
+    case encryptionFailed(path: String, message: String)  // 加密或明文迁移失败
 }
 
 nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedError {
@@ -44,6 +45,8 @@ nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedErro
             "Database read failed."
         case .closeFailed:
             "Database close failed."
+        case .encryptionFailed:
+            "Database encryption failed."
         }
     }
 }
@@ -81,6 +84,17 @@ nonisolated struct DatabaseBootstrapResult: Equatable, Sendable {
 /// - 事务使用 BEGIN/COMMIT/ROLLBACK 手动管理，失败时自动回滚
 /// - 参数绑定使用预编译语句，防止 SQL 注入
 actor DatabaseActor {
+    private var encryptionKeysByDatabasePath: [String: Data] = [:]
+
+    /// 为账号下的所有数据库文件配置同一个 SQLCipher 密钥。
+    ///
+    /// 密钥只保存在 actor 隔离状态中，不写入日志、错误描述或数据库文件。
+    func configureEncryptionKey(_ key: Data, for paths: AccountStoragePaths) {
+        for database in DatabaseFileKind.allCases {
+            encryptionKeysByDatabasePath[normalizedPath(for: url(for: database, in: paths))] = key
+        }
+    }
+
     /// 初始化数据库
     /// 执行初始建表脚本，创建 migration_meta 表和元数据文件
     ///
@@ -88,6 +102,7 @@ actor DatabaseActor {
     /// - Returns: 初始化结果，包含路径和元数据
     /// - Throws: 数据库操作失败时抛出错误
     func bootstrap(paths: AccountStoragePaths) async throws -> DatabaseBootstrapResult {
+        try migratePlaintextDatabasesIfNeeded(in: paths)
         try applyInitialScripts(to: paths)
         try applyIdempotentMigrations(to: paths)
 
@@ -135,6 +150,18 @@ actor DatabaseActor {
 
         let rows = try await query(statement, in: database, paths: paths)
         return Set(rows.compactMap { $0.string("name") })
+    }
+
+    /// 返回 SQLCipher 运行时版本，用于确认当前链接的是 SQLCipher 而非系统 SQLite。
+    func cipherVersion(in database: DatabaseFileKind = .main, paths: AccountStoragePaths) async throws -> String {
+        let rows = try await query("PRAGMA cipher_version;", in: database, paths: paths)
+        return rows.first?.values.values.compactMap { value -> String? in
+            guard case let .text(text) = value else {
+                return nil
+            }
+
+            return text
+        }.first ?? ""
     }
 
     /// 执行单条 SQL 语句（不返回结果）
@@ -238,6 +265,119 @@ actor DatabaseActor {
                 try? executeRaw("ROLLBACK;", using: handle, at: databaseURL)
                 throw error
             }
+        }
+    }
+
+    /// 将已有明文 SQLite 库迁移为 SQLCipher 加密库。
+    ///
+    /// 新安装的 0 字节数据库会直接按加密连接初始化；只有“带 key 打不开、无 key 可读”的旧库才会导出迁移。
+    private func migratePlaintextDatabasesIfNeeded(in paths: AccountStoragePaths) throws {
+        for database in DatabaseFileKind.allCases {
+            let databaseURL = url(for: database, in: paths)
+            guard encryptionKey(for: databaseURL) != nil else {
+                continue
+            }
+
+            guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+                continue
+            }
+
+            if canReadDatabase(at: databaseURL, applyingConfiguredKey: true) {
+                continue
+            }
+
+            guard canReadDatabase(at: databaseURL, applyingConfiguredKey: false) else {
+                throw DatabaseActorError.encryptionFailed(
+                    path: databaseURL.path,
+                    message: "Database cannot be opened with the configured key or as plaintext."
+                )
+            }
+
+            try migratePlaintextDatabase(at: databaseURL)
+        }
+    }
+
+    private func migratePlaintextDatabase(at databaseURL: URL) throws {
+        guard let key = encryptionKey(for: databaseURL) else {
+            return
+        }
+
+        let fileManager = FileManager.default
+        let tempURL = databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(databaseURL.lastPathComponent).encrypted-\(UUID().uuidString)")
+        let backupURL = databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("\(databaseURL.lastPathComponent).plaintext-backup-\(UUID().uuidString)")
+
+        defer {
+            try? fileManager.removeItem(at: tempURL)
+            try? fileManager.removeItem(at: backupURL)
+        }
+
+        do {
+            let handle = try openDatabase(at: databaseURL, applyingConfiguredKey: false)
+            defer {
+                try? closeDatabase(handle, at: databaseURL)
+            }
+
+            try executeRaw(
+                "ATTACH DATABASE '\(Self.escapedSQLString(tempURL.path))' AS encrypted;",
+                using: handle,
+                at: databaseURL
+            )
+            try applyEncryptionKey(key, to: handle, databaseName: "encrypted", at: databaseURL)
+            try executeRaw("SELECT sqlcipher_export('encrypted');", using: handle, at: databaseURL)
+            try executeRaw("DETACH DATABASE encrypted;", using: handle, at: databaseURL)
+        }
+
+        guard canReadDatabase(at: tempURL, applyingKey: key) else {
+            throw DatabaseActorError.encryptionFailed(
+                path: databaseURL.path,
+                message: "Encrypted database verification failed."
+            )
+        }
+
+        try fileManager.moveItem(at: databaseURL, to: backupURL)
+        do {
+            try fileManager.moveItem(at: tempURL, to: databaseURL)
+        } catch {
+            if fileManager.fileExists(atPath: backupURL.path), !fileManager.fileExists(atPath: databaseURL.path) {
+                try? fileManager.moveItem(at: backupURL, to: databaseURL)
+            }
+
+            throw DatabaseActorError.encryptionFailed(
+                path: databaseURL.path,
+                message: "Encrypted database replacement failed."
+            )
+        }
+    }
+
+    private func canReadDatabase(at url: URL, applyingConfiguredKey: Bool) -> Bool {
+        do {
+            let handle = try openDatabase(at: url, applyingConfiguredKey: applyingConfiguredKey)
+            defer {
+                try? closeDatabase(handle, at: url)
+            }
+
+            _ = try query("SELECT COUNT(*) AS table_count FROM sqlite_master;", parameters: [], using: handle, at: url)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func canReadDatabase(at url: URL, applyingKey key: Data) -> Bool {
+        do {
+            let handle = try openDatabase(at: url, encryptionKey: key)
+            defer {
+                try? closeDatabase(handle, at: url)
+            }
+
+            _ = try query("SELECT COUNT(*) AS table_count FROM sqlite_master;", parameters: [], using: handle, at: url)
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -349,6 +489,14 @@ actor DatabaseActor {
         case .fileIndex:
             paths.fileIndexDatabase
         }
+    }
+
+    private func encryptionKey(for url: URL) -> Data? {
+        encryptionKeysByDatabasePath[normalizedPath(for: url)]
+    }
+
+    private func normalizedPath(for url: URL) -> String {
+        url.standardizedFileURL.path
     }
 
     /// 执行预编译语句（打开连接、执行、关闭连接）
@@ -543,6 +691,14 @@ actor DatabaseActor {
 
     /// 打开数据库连接
     private func openDatabase(at url: URL) throws -> OpaquePointer {
+        try openDatabase(at: url, applyingConfiguredKey: true)
+    }
+
+    private func openDatabase(at url: URL, applyingConfiguredKey: Bool) throws -> OpaquePointer {
+        try openDatabase(at: url, encryptionKey: applyingConfiguredKey ? encryptionKey(for: url) : nil)
+    }
+
+    private func openDatabase(at url: URL, encryptionKey: Data?) throws -> OpaquePointer {
         var handle: OpaquePointer?
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         let status = sqlite3_open_v2(url.path, &handle, flags, nil)
@@ -557,7 +713,38 @@ actor DatabaseActor {
             throw DatabaseActorError.openFailed(path: url.path, message: message)
         }
 
+        if let encryptionKey {
+            do {
+                try applyEncryptionKey(encryptionKey, to: handle, at: url)
+            } catch {
+                sqlite3_close(handle)
+                throw error
+            }
+        }
+
         return handle
+    }
+
+    private func applyEncryptionKey(_ key: Data, to handle: OpaquePointer, at url: URL) throws {
+        let status = key.withUnsafeBytes { buffer in
+            sqlite3_key(handle, buffer.baseAddress, Int32(buffer.count))
+        }
+
+        guard status == SQLITE_OK else {
+            throw DatabaseActorError.encryptionFailed(path: url.path, message: Self.currentErrorMessage(for: handle))
+        }
+    }
+
+    private func applyEncryptionKey(_ key: Data, to handle: OpaquePointer, databaseName: String, at url: URL) throws {
+        let status = databaseName.withCString { databaseNamePointer in
+            key.withUnsafeBytes { buffer in
+                sqlite3_key_v2(handle, databaseNamePointer, buffer.baseAddress, Int32(buffer.count))
+            }
+        }
+
+        guard status == SQLITE_OK else {
+            throw DatabaseActorError.encryptionFailed(path: url.path, message: Self.currentErrorMessage(for: handle))
+        }
     }
 
     /// 关闭数据库连接
@@ -584,6 +771,10 @@ actor DatabaseActor {
         }
 
         return String(cString: pointer)
+    }
+
+    nonisolated private static func escapedSQLString(_ value: String) -> String {
+        value.replacingOccurrences(of: "'", with: "''")
     }
 
     nonisolated private static var transientDestructor: sqlite3_destructor_type {

@@ -108,7 +108,9 @@ actor ChatStoreProvider {
 
     /// 准备账号存储并确保账号密钥已经存在
     private func prepareAccountStorage() async throws -> AccountStoragePaths {
-        _ = try await databaseKeyStore.databaseKey(for: accountID)
-        return try await storageService.prepareStorage(for: accountID)
+        let databaseKey = try await databaseKeyStore.databaseKey(for: accountID)
+        let paths = try await storageService.prepareStorage(for: accountID)
+        await database.configureEncryptionKey(databaseKey, for: paths)
+        return paths
     }
 }

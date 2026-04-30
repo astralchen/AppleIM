@@ -119,6 +119,103 @@ struct AppleIMTests {
         #expect(regeneratedKey != originalKey)
     }
 
+    @MainActor
+    @Test func chatStoreProviderInitializesEncryptedDatabasesWithSQLCipher() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let keyStore = InMemoryAccountDatabaseKeyStore()
+        let databaseActor = DatabaseActor()
+        let storeProvider = ChatStoreProvider(
+            accountID: "cipher_user",
+            storageService: storageService,
+            database: databaseActor,
+            databaseKeyStore: keyStore
+        )
+
+        _ = try await storeProvider.repository()
+        let paths = try await storageService.prepareStorage(for: "cipher_user")
+
+        for databaseKind in DatabaseFileKind.allCases {
+            let cipherVersion = try await databaseActor.cipherVersion(in: databaseKind, paths: paths)
+            #expect(cipherVersion.isEmpty == false)
+        }
+    }
+
+    @MainActor
+    @Test func encryptedDatabaseCannotBeReadWithoutConfiguredKeyOrWithWrongKey() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let keyStore = InMemoryAccountDatabaseKeyStore()
+        let encryptedDatabaseActor = DatabaseActor()
+        let storeProvider = ChatStoreProvider(
+            accountID: "wrong_key_user",
+            storageService: storageService,
+            database: encryptedDatabaseActor,
+            databaseKeyStore: keyStore
+        )
+
+        _ = try await storeProvider.repository()
+        let paths = try await storageService.prepareStorage(for: "wrong_key_user")
+
+        let unconfiguredActor = DatabaseActor()
+        let unconfiguredReadFailed = await databaseReadFails(using: unconfiguredActor, paths: paths)
+
+        let wrongKeyActor = DatabaseActor()
+        await wrongKeyActor.configureEncryptionKey(Data(repeating: 0x7F, count: 32), for: paths)
+        let wrongKeyReadFailed = await databaseReadFails(using: wrongKeyActor, paths: paths)
+
+        #expect(unconfiguredReadFailed)
+        #expect(wrongKeyReadFailed)
+    }
+
+    @MainActor
+    @Test func plaintextDatabaseMigratesToEncryptedDatabaseWithoutLosingData() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let accountID: UserID = "plaintext_migration_user"
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let paths = try await storageService.prepareStorage(for: accountID)
+        let plaintextActor = DatabaseActor()
+        _ = try await plaintextActor.bootstrap(paths: paths)
+        let plaintextRepository = LocalChatRepository(database: plaintextActor, paths: paths)
+        try await plaintextRepository.upsertConversation(
+            makeConversationRecord(
+                id: "plaintext_migration_conversation",
+                userID: accountID,
+                title: "Migrated Conversation",
+                sortTimestamp: 10
+            )
+        )
+
+        let encryptedActor = DatabaseActor()
+        let storeProvider = ChatStoreProvider(
+            accountID: accountID,
+            storageService: storageService,
+            database: encryptedActor,
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore()
+        )
+
+        let encryptedRepository = try await storeProvider.repository()
+        let conversations = try await encryptedRepository.listConversations(for: accountID)
+        let cipherVersion = try await encryptedActor.cipherVersion(in: .main, paths: paths)
+        let unconfiguredReadFailed = await databaseReadFails(using: DatabaseActor(), paths: paths)
+
+        #expect(conversations.contains { $0.title == "Migrated Conversation" })
+        #expect(cipherVersion.isEmpty == false)
+        #expect(unconfiguredReadFailed)
+    }
+
     @Test func databaseActorErrorDescriptionRedactsSensitiveDetails() {
         let error = DatabaseActorError.executeFailed(
             path: "/private/account_sensitive_user/main.db",
@@ -3656,6 +3753,15 @@ private func makeRepository(rootDirectory: URL, accountID: UserID) async throws 
     let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: accountID)
     let repository = LocalChatRepository(database: databaseActor, paths: paths)
     return (repository, DatabaseTestContext(databaseActor: databaseActor, paths: paths))
+}
+
+private func databaseReadFails(using databaseActor: DatabaseActor, paths: AccountStoragePaths) async -> Bool {
+    do {
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+        return false
+    } catch {
+        return true
+    }
 }
 
 private func waitForCondition(
