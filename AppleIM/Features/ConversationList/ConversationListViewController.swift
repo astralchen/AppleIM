@@ -126,7 +126,7 @@ final class ConversationListViewController: UIViewController {
                 cell.accessories = self.accessories(for: row)
                 cell.isAccessibilityElement = true
                 cell.accessibilityIdentifier = "conversationList.cell.\(row.id.rawValue)"
-                cell.accessibilityLabel = [row.title, row.subtitle, row.unreadText].compactMap { $0 }.joined(separator: ", ")
+                cell.accessibilityLabel = self.accessibilityLabel(for: row)
 
                 var background = UIBackgroundConfiguration.listGroupedCell()
                 background.backgroundColor = row.isPinned ? .secondarySystemGroupedBackground : .systemBackground
@@ -303,8 +303,40 @@ final class ConversationListViewController: UIViewController {
         var configuration = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
         configuration.headerMode = .supplementary
         configuration.showsSeparators = true
+        configuration.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
+            self?.swipeActionsConfiguration(at: indexPath)
+        }
 
         return UICollectionViewCompositionalLayout.list(using: configuration)
+    }
+
+    private func swipeActionsConfiguration(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard
+            let rowID = dataSource?.itemIdentifier(for: indexPath),
+            let row = rowsByID[rowID]
+        else {
+            return nil
+        }
+
+        let muteTitle = row.isMuted ? "Unmute" : "Mute"
+        let muteAction = UIContextualAction(style: .normal, title: muteTitle) { [weak self] _, _, completion in
+            self?.viewModel.setMuted(conversationID: row.id, isMuted: !row.isMuted)
+            completion(true)
+        }
+        muteAction.backgroundColor = .systemOrange
+        muteAction.image = UIImage(systemName: row.isMuted ? "bell" : "bell.slash")
+
+        let pinTitle = row.isPinned ? "Unpin" : "Pin"
+        let pinAction = UIContextualAction(style: .normal, title: pinTitle) { [weak self] _, _, completion in
+            self?.viewModel.setPinned(conversationID: row.id, isPinned: !row.isPinned)
+            completion(true)
+        }
+        pinAction.backgroundColor = .systemBlue
+        pinAction.image = UIImage(systemName: row.isPinned ? "pin.slash" : "pin")
+
+        let configuration = UISwipeActionsConfiguration(actions: [muteAction, pinAction])
+        configuration.performsFirstActionWithFullSwipe = false
+        return configuration
     }
 
     private func accessories(for row: ConversationListRowState) -> [UICellAccessory] {
@@ -317,6 +349,24 @@ final class ConversationListViewController: UIViewController {
         }
 
         return accessories
+    }
+
+    private func accessibilityLabel(for row: ConversationListRowState) -> String {
+        var parts = [row.title, row.subtitle]
+
+        if let unreadText = row.unreadText {
+            parts.append(unreadText)
+        }
+
+        if row.isPinned {
+            parts.append("Pinned")
+        }
+
+        if row.isMuted {
+            parts.append("Muted")
+        }
+
+        return parts.joined(separator: ", ")
     }
 
     private func title(for sectionID: String) -> String {

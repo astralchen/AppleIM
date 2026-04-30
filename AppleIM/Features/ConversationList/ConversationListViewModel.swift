@@ -25,6 +25,8 @@ final class ConversationListViewModel {
     private var loadTask: Task<Void, Never>?
     /// 分页加载任务
     private var loadMoreTask: Task<Void, Never>?
+    /// 会话设置更新任务
+    private var settingTask: Task<Void, Never>?
     /// 下一页偏移量
     private var nextOffset = 0
 
@@ -139,16 +141,49 @@ final class ConversationListViewModel {
         }
     }
 
+    func setPinned(conversationID: ConversationID, isPinned: Bool) {
+        updateConversationSetting {
+            try await $0.setPinned(conversationID: conversationID, isPinned: isPinned)
+        }
+    }
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) {
+        updateConversationSetting {
+            try await $0.setMuted(conversationID: conversationID, isMuted: isMuted)
+        }
+    }
+
     func cancel() {
         loadTask?.cancel()
         loadTask = nil
         loadMoreTask?.cancel()
         loadMoreTask = nil
+        settingTask?.cancel()
+        settingTask = nil
     }
 
     private func publish(_ update: (inout ConversationListViewState) -> Void) {
         var state = stateSubject.value
         update(&state)
         stateSubject.send(state)
+    }
+
+    private func updateConversationSetting(_ operation: @escaping @Sendable (any ConversationListUseCase) async throws -> Void) {
+        settingTask?.cancel()
+        settingTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                try await operation(useCase)
+                guard !Task.isCancelled else { return }
+                load()
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to update conversation")
+                }
+            }
+        }
     }
 }

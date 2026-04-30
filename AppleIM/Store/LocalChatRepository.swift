@@ -82,6 +82,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         _ = try await refreshApplicationBadge(userID: userID)
     }
 
+    func updateConversationPin(conversationID: ConversationID, userID: UserID, isPinned: Bool) async throws {
+        try await conversationDAO.updatePin(conversationID: conversationID, userID: userID, isPinned: isPinned)
+    }
+
+    func updateConversationMute(conversationID: ConversationID, userID: UserID, isMuted: Bool) async throws {
+        try await conversationDAO.updateMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
+        _ = try await refreshApplicationBadge(userID: userID)
+    }
+
     // MARK: - NotificationSettingsRepository
 
     func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord {

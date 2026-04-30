@@ -59,6 +59,47 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testConversationCanBePinnedAndUnpinned() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        waitForConversationList(in: app)
+
+        let conversation = conversationCell(containing: "Sondra", in: app)
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5), "Expected Sondra conversation")
+        waitForConversationCell(title: "Sondra", labelContaining: "Pinned", in: app)
+        revealTrailingActions(on: conversation)
+        XCTAssertTrue(app.buttons["Unpin"].waitForExistence(timeout: 5), "Expected Unpin action")
+        app.buttons["Unpin"].tap()
+        waitForConversationCell(title: "Sondra", labelNotContaining: "Pinned", in: app)
+
+        let updatedConversation = conversationCell(containing: "Sondra", in: app)
+        revealTrailingActions(on: updatedConversation)
+        XCTAssertTrue(app.buttons["Pin"].waitForExistence(timeout: 5), "Expected Pin action")
+        app.buttons["Pin"].tap()
+        waitForConversationCell(title: "Sondra", labelContaining: "Pinned", in: app)
+    }
+
+    @MainActor
+    func testConversationCanBeMutedAndUnmuted() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        waitForConversationList(in: app)
+
+        let conversation = conversationCell(containing: "Sondra", in: app)
+        XCTAssertTrue(conversation.waitForExistence(timeout: 5), "Expected Sondra conversation")
+        revealTrailingActions(on: conversation)
+        XCTAssertTrue(app.buttons["Mute"].waitForExistence(timeout: 5), "Expected Mute action")
+        app.buttons["Mute"].tap()
+        waitForConversationCell(title: "Sondra", labelContaining: "Muted", in: app)
+
+        let updatedConversation = conversationCell(containing: "Sondra", in: app)
+        revealTrailingActions(on: updatedConversation)
+        XCTAssertTrue(app.buttons["Unmute"].waitForExistence(timeout: 5), "Expected Unmute action")
+        app.buttons["Unmute"].tap()
+        waitForConversationCell(title: "Sondra", labelNotContaining: "Muted", in: app)
+    }
+
+    @MainActor
     func testFailedSendCanBeRetried() throws {
         let app = makeUITestApplication(sendMode: .failFirst)
         app.launch()

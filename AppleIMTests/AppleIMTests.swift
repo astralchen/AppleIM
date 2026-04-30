@@ -44,6 +44,27 @@ struct AppleIMTests {
         #expect(viewModel.currentState.hasMoreRows == false)
     }
 
+    @MainActor
+    @Test func conversationListViewModelRefreshesAfterPinAndMuteChanges() async throws {
+        let useCase = MutableConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.setPinned(conversationID: "mutable_conversation", isPinned: true)
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.isPinned == true
+        }
+
+        viewModel.setMuted(conversationID: "mutable_conversation", isMuted: true)
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.isMuted == true
+        }
+    }
+
     @Test func accountStoragePreparesIsolatedDirectories() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -1594,6 +1615,29 @@ struct AppleIMTests {
         #expect(firstPage.hasMore)
         #expect(secondPage.rows.count == 1)
         #expect(secondPage.hasMore == false)
+    }
+
+    @Test func localConversationListUseCaseUpdatesPinAndMuteState() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "conversation_setting_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let useCase = LocalConversationListUseCase(userID: "conversation_setting_user", storeProvider: storeProvider)
+
+        try await useCase.setPinned(conversationID: "group_core", isPinned: true)
+        try await useCase.setMuted(conversationID: "single_sondra", isMuted: true)
+
+        let rows = try await useCase.loadConversations()
+        #expect(rows.first?.id == "single_sondra")
+        #expect(rows.first(where: { $0.id == "group_core" })?.isPinned == true)
+        #expect(rows.first(where: { $0.id == "single_sondra" })?.isMuted == true)
     }
 
     @Test func messageRepositoryUpdatesSendStatusAndFindsMessageByID() async throws {
@@ -4016,6 +4060,10 @@ private struct StubConversationListUseCase: ConversationListUseCase {
             hasMore: offset + pageRows.count < rows.count
         )
     }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
 private struct PagedConversationListUseCase: ConversationListUseCase {
@@ -4042,6 +4090,58 @@ private struct PagedConversationListUseCase: ConversationListUseCase {
         return ConversationListPage(
             rows: pageRows,
             hasMore: offset + pageRows.count < rows.count
+        )
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+}
+
+private actor MutableConversationListUseCase: ConversationListUseCase {
+    private var row = ConversationListRowState(
+        id: "mutable_conversation",
+        title: "Mutable Conversation",
+        subtitle: "Settings can change",
+        timeText: "Now",
+        unreadText: nil,
+        isPinned: false,
+        isMuted: false
+    )
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        [row]
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let allRows = try await loadConversations()
+        let rows = Array(allRows.dropFirst(offset).prefix(max(limit, 0)))
+        return ConversationListPage(rows: rows, hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {
+        guard conversationID == row.id else { return }
+        row = ConversationListRowState(
+            id: row.id,
+            title: row.title,
+            subtitle: row.subtitle,
+            timeText: row.timeText,
+            unreadText: row.unreadText,
+            isPinned: isPinned,
+            isMuted: row.isMuted
+        )
+    }
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {
+        guard conversationID == row.id else { return }
+        row = ConversationListRowState(
+            id: row.id,
+            title: row.title,
+            subtitle: row.subtitle,
+            timeText: row.timeText,
+            unreadText: row.unreadText,
+            isPinned: row.isPinned,
+            isMuted: isMuted
         )
     }
 }

@@ -616,6 +616,10 @@ protocol ConversationRepository: Sendable {
     func upsertConversation(_ record: ConversationRecord) async throws
     /// 标记会话已读
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws
+    /// 更新会话置顶状态
+    func updateConversationPin(conversationID: ConversationID, userID: UserID, isPinned: Bool) async throws
+    /// 更新会话免打扰状态
+    func updateConversationMute(conversationID: ConversationID, userID: UserID, isMuted: Bool) async throws
 }
 
 /// 通知设置仓储协议

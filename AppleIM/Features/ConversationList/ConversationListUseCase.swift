@@ -18,6 +18,10 @@ protocol ConversationListUseCase: Sendable {
     func loadConversations() async throws -> [ConversationListRowState]
     /// 分页加载会话列表
     func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage
+    /// 更新会话置顶状态
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws
+    /// 更新会话免打扰状态
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws
 }
 
 /// 本地会话列表用例实现
@@ -49,6 +53,16 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
             rows: Self.rowStates(from: pageConversations),
             hasMore: conversations.count > requestedLimit
         )
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {
+        let repository = try await storeProvider.repository()
+        try await repository.updateConversationPin(conversationID: conversationID, userID: userID, isPinned: isPinned)
+    }
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {
+        let repository = try await storeProvider.repository()
+        try await repository.updateConversationMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
     }
 
     private static func rowStates(from conversations: [Conversation]) -> [ConversationListRowState] {
@@ -104,4 +118,8 @@ nonisolated struct PreviewConversationListUseCase: ConversationListUseCase {
             hasMore: offset + pageRows.count < rows.count
         )
     }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
