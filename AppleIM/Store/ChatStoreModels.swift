@@ -391,6 +391,46 @@ nonisolated struct PendingJobInput: Equatable, Sendable {
     }
 }
 
+/// 媒体文件索引记录
+///
+/// 对应 file_index.db 的 file_index 表
+nonisolated struct MediaIndexRecord: Equatable, Sendable {
+    /// 媒体 ID
+    let mediaID: String
+    /// 用户 ID
+    let userID: UserID
+    /// 本地路径
+    let localPath: String
+    /// 文件名
+    let fileName: String?
+    /// 文件扩展名
+    let fileExtension: String?
+    /// 文件大小
+    let sizeBytes: Int64?
+    /// 文件摘要
+    let md5: String?
+    /// 最近访问时间
+    let lastAccessAt: Int64?
+    /// 创建时间
+    let createdAt: Int64
+}
+
+/// 缺失的媒体资源
+///
+/// 用于识别本地文件丢失但可通过远端地址恢复的媒体
+nonisolated struct MissingMediaResource: Equatable, Sendable {
+    /// 媒体 ID
+    let mediaID: String
+    /// 用户 ID
+    let userID: UserID
+    /// 归属消息 ID
+    let ownerMessageID: MessageID?
+    /// 本地路径
+    let localPath: String
+    /// 远端 URL
+    let remoteURL: String
+}
+
 /// 会话仓储协议
 protocol ConversationRepository: Sendable {
     /// 查询会话列表
@@ -473,4 +513,18 @@ protocol PendingJobRepository: Sendable {
     func schedulePendingJobRetry(jobID: String, nextRetryAt: Int64) async throws
     /// 更新待处理任务状态
     func updatePendingJobStatus(jobID: String, status: PendingJobStatus, nextRetryAt: Int64?) async throws
+}
+
+/// 媒体索引仓储协议
+protocol MediaIndexRepository: Sendable {
+    /// 插入或更新媒体索引记录
+    func upsertMediaIndexRecord(_ record: MediaIndexRecord) async throws
+    /// 查询媒体索引记录
+    func mediaIndexRecord(mediaID: String, userID: UserID) async throws -> MediaIndexRecord?
+    /// 更新媒体索引最近访问时间
+    func touchMediaIndexRecord(mediaID: String, userID: UserID, accessedAt: Int64) async throws
+    /// 扫描本地文件缺失的媒体资源
+    func scanMissingMediaResources(userID: UserID) async throws -> [MissingMediaResource]
+    /// 为缺失媒体资源创建下载任务
+    func enqueueMediaDownloadJobsForMissingResources(userID: UserID) async throws -> [PendingJob]
 }

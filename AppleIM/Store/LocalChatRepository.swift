@@ -7,11 +7,18 @@
 
 import Foundation
 
+nonisolated private struct MediaDownloadPendingJobPayload: Codable, Equatable, Sendable {
+    let mediaID: String
+    let ownerMessageID: String?
+    let localPath: String
+    let remoteURL: String
+}
+
 /// 本地聊天仓储
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
 /// 所有操作通过 DatabaseActor 串行化执行
-nonisolated struct LocalChatRepository: ConversationRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, MediaIndexRepository, SyncStore {
     /// 数据库 Actor
     private let database: DatabaseActor
     /// 账号存储路径
@@ -54,12 +61,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
     func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage {
         let result = MessageDAO.insertOutgoingImageStatements(input)
         try await database.performTransaction(result.statements, paths: paths)
+        try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.image, userID: input.userID, createdAt: input.localTime))
         return result.message
     }
 
     func insertOutgoingVoiceMessage(_ input: OutgoingVoiceMessageInput) async throws -> StoredMessage {
         let result = MessageDAO.insertOutgoingVoiceStatements(input)
         try await database.performTransaction(result.statements, paths: paths)
+        try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.voice, userID: input.userID, createdAt: input.localTime))
         return result.message
     }
 
@@ -527,6 +536,139 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         try await conversationDAO.countConversations(for: userID) > 0
     }
 
+    // MARK: - MediaIndexRepository
+
+    func upsertMediaIndexRecord(_ record: MediaIndexRecord) async throws {
+        try await upsertMediaIndexRecords([record])
+    }
+
+    func mediaIndexRecord(mediaID: String, userID: UserID) async throws -> MediaIndexRecord? {
+        let rows = try await database.query(
+            """
+            SELECT
+                media_id,
+                user_id,
+                local_path,
+                file_name,
+                file_ext,
+                size_bytes,
+                md5,
+                last_access_at,
+                created_at
+            FROM file_index
+            WHERE media_id = ?
+            AND user_id = ?
+            LIMIT 1;
+            """,
+            parameters: [
+                .text(mediaID),
+                .text(userID.rawValue)
+            ],
+            in: .fileIndex,
+            paths: paths
+        )
+
+        guard let row = rows.first else {
+            return nil
+        }
+
+        return try Self.mediaIndexRecord(from: row)
+    }
+
+    func touchMediaIndexRecord(mediaID: String, userID: UserID, accessedAt: Int64) async throws {
+        try await database.execute(
+            """
+            UPDATE file_index
+            SET last_access_at = ?
+            WHERE media_id = ?
+            AND user_id = ?;
+            """,
+            parameters: [
+                .integer(accessedAt),
+                .text(mediaID),
+                .text(userID.rawValue)
+            ],
+            in: .fileIndex,
+            paths: paths
+        )
+    }
+
+    func scanMissingMediaResources(userID: UserID) async throws -> [MissingMediaResource] {
+        let rows = try await database.query(
+            """
+            SELECT
+                media_id,
+                user_id,
+                owner_message_id,
+                local_path,
+                remote_url
+            FROM media_resource
+            WHERE user_id = ?
+            AND local_path IS NOT NULL
+            AND TRIM(local_path) <> ''
+            AND remote_url IS NOT NULL
+            AND TRIM(remote_url) <> ''
+            ORDER BY updated_at DESC, created_at DESC;
+            """,
+            parameters: [.text(userID.rawValue)],
+            paths: paths
+        )
+
+        var missingResources: [MissingMediaResource] = []
+        for row in rows {
+            let localPath = try row.requiredString("local_path")
+            guard !FileManager.default.fileExists(atPath: localPath) else {
+                continue
+            }
+
+            missingResources.append(
+                MissingMediaResource(
+                    mediaID: try row.requiredString("media_id"),
+                    userID: UserID(rawValue: try row.requiredString("user_id")),
+                    ownerMessageID: row.string("owner_message_id").map(MessageID.init(rawValue:)),
+                    localPath: localPath,
+                    remoteURL: try row.requiredString("remote_url")
+                )
+            )
+        }
+
+        return missingResources
+    }
+
+    func enqueueMediaDownloadJobsForMissingResources(userID: UserID) async throws -> [PendingJob] {
+        let missingResources = try await scanMissingMediaResources(userID: userID)
+        guard !missingResources.isEmpty else {
+            return []
+        }
+
+        let now = Self.currentTimestamp()
+        let pendingJobInputs = try missingResources.map {
+            try Self.mediaDownloadJobInput(for: $0, createdAt: now)
+        }
+        let statements = missingResources.map {
+            Self.markMediaDownloadPendingStatement($0, updatedAt: now)
+        } + pendingJobInputs.map {
+            Self.upsertPendingJobStatement(
+                $0,
+                status: .pending,
+                retryCount: 0,
+                updatedAt: now,
+                createdAt: now
+            )
+        }
+
+        try await database.performTransaction(statements, paths: paths)
+
+        var jobs: [PendingJob] = []
+        for input in pendingJobInputs {
+            if let job = try await pendingJob(id: input.id) {
+                jobs.append(job)
+            }
+        }
+
+        return jobs
+    }
+
     // MARK: - SyncStore
 
     func syncCheckpoint(for bizKey: String) async throws -> SyncCheckpoint? {
@@ -725,6 +867,202 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
 
     private static func currentTimestamp() -> Int64 {
         Int64(Date().timeIntervalSince1970)
+    }
+
+    private func upsertMediaIndexRecords(_ records: [MediaIndexRecord]) async throws {
+        guard !records.isEmpty else {
+            return
+        }
+
+        try await database.performTransaction(
+            records.map(Self.upsertMediaIndexStatement),
+            in: .fileIndex,
+            paths: paths
+        )
+    }
+
+    private static func mediaIndexRecord(from row: SQLiteRow) throws -> MediaIndexRecord {
+        MediaIndexRecord(
+            mediaID: try row.requiredString("media_id"),
+            userID: UserID(rawValue: try row.requiredString("user_id")),
+            localPath: try row.requiredString("local_path"),
+            fileName: row.string("file_name"),
+            fileExtension: row.string("file_ext"),
+            sizeBytes: row.int64("size_bytes"),
+            md5: row.string("md5"),
+            lastAccessAt: row.int64("last_access_at"),
+            createdAt: try row.requiredInt64("created_at")
+        )
+    }
+
+    private static func mediaIndexRecords(
+        for image: StoredImageContent,
+        userID: UserID,
+        createdAt: Int64
+    ) -> [MediaIndexRecord] {
+        [
+            MediaIndexRecord(
+                mediaID: image.mediaID,
+                userID: userID,
+                localPath: image.localPath,
+                fileName: fileName(from: image.localPath),
+                fileExtension: fileExtension(from: image.localPath, fallback: image.format),
+                sizeBytes: image.sizeBytes,
+                md5: image.md5,
+                lastAccessAt: createdAt,
+                createdAt: createdAt
+            ),
+            MediaIndexRecord(
+                mediaID: "\(image.mediaID)_thumb",
+                userID: userID,
+                localPath: image.thumbnailPath,
+                fileName: fileName(from: image.thumbnailPath),
+                fileExtension: fileExtension(from: image.thumbnailPath, fallback: "jpg"),
+                sizeBytes: existingFileSize(atPath: image.thumbnailPath),
+                md5: nil,
+                lastAccessAt: createdAt,
+                createdAt: createdAt
+            )
+        ]
+    }
+
+    private static func mediaIndexRecords(
+        for voice: StoredVoiceContent,
+        userID: UserID,
+        createdAt: Int64
+    ) -> [MediaIndexRecord] {
+        [
+            MediaIndexRecord(
+                mediaID: voice.mediaID,
+                userID: userID,
+                localPath: voice.localPath,
+                fileName: fileName(from: voice.localPath),
+                fileExtension: fileExtension(from: voice.localPath, fallback: voice.format),
+                sizeBytes: voice.sizeBytes,
+                md5: nil,
+                lastAccessAt: createdAt,
+                createdAt: createdAt
+            )
+        ]
+    }
+
+    private static func upsertMediaIndexStatement(_ record: MediaIndexRecord) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            INSERT INTO file_index (
+                media_id,
+                user_id,
+                local_path,
+                file_name,
+                file_ext,
+                size_bytes,
+                md5,
+                last_access_at,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(media_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                local_path = excluded.local_path,
+                file_name = excluded.file_name,
+                file_ext = excluded.file_ext,
+                size_bytes = excluded.size_bytes,
+                md5 = excluded.md5,
+                last_access_at = excluded.last_access_at,
+                created_at = file_index.created_at;
+            """,
+            parameters: [
+                .text(record.mediaID),
+                .text(record.userID.rawValue),
+                .text(record.localPath),
+                .optionalText(record.fileName),
+                .optionalText(record.fileExtension),
+                .optionalInteger(record.sizeBytes),
+                .optionalText(record.md5),
+                .optionalInteger(record.lastAccessAt),
+                .integer(record.createdAt)
+            ]
+        )
+    }
+
+    private static func mediaDownloadJobInput(
+        for resource: MissingMediaResource,
+        createdAt: Int64
+    ) throws -> PendingJobInput {
+        let payload = MediaDownloadPendingJobPayload(
+            mediaID: resource.mediaID,
+            ownerMessageID: resource.ownerMessageID?.rawValue,
+            localPath: resource.localPath,
+            remoteURL: resource.remoteURL
+        )
+        let payloadData = try JSONEncoder().encode(payload)
+
+        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
+            throw ChatStoreError.missingColumn("media_download_payload")
+        }
+
+        return PendingJobInput(
+            id: mediaDownloadJobID(mediaID: resource.mediaID),
+            userID: resource.userID,
+            type: .mediaDownload,
+            bizKey: resource.mediaID,
+            payloadJSON: payloadJSON,
+            maxRetryCount: 3,
+            nextRetryAt: createdAt
+        )
+    }
+
+    private static func markMediaDownloadPendingStatement(
+        _ resource: MissingMediaResource,
+        updatedAt: Int64
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            UPDATE media_resource
+            SET
+                download_status = 0,
+                updated_at = ?
+            WHERE media_id = ?
+            AND user_id = ?;
+            """,
+            parameters: [
+                .integer(updatedAt),
+                .text(resource.mediaID),
+                .text(resource.userID.rawValue)
+            ]
+        )
+    }
+
+    private static func mediaDownloadJobID(mediaID: String) -> String {
+        "media_download_\(mediaID)"
+    }
+
+    private static func fileName(from path: String) -> String? {
+        let fileName = URL(fileURLWithPath: path).lastPathComponent
+        return fileName.isEmpty ? nil : fileName
+    }
+
+    private static func fileExtension(from path: String, fallback: String?) -> String? {
+        let pathExtension = URL(fileURLWithPath: path).pathExtension
+        if !pathExtension.isEmpty {
+            return pathExtension.lowercased()
+        }
+
+        let sanitizedFallback = fallback?
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".").union(.whitespacesAndNewlines))
+            .lowercased()
+
+        return sanitizedFallback?.isEmpty == false ? sanitizedFallback : nil
+    }
+
+    private static func existingFileSize(atPath path: String) -> Int64? {
+        guard
+            FileManager.default.fileExists(atPath: path),
+            let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber
+        else {
+            return nil
+        }
+
+        return size.int64Value
     }
 
     private static func pendingJob(from row: SQLiteRow) throws -> PendingJob {

@@ -335,6 +335,163 @@ struct AppleIMTests {
         #expect(conversations.first?.lastMessageDigest == "[语音]")
     }
 
+    @Test func localChatRepositoryIndexesOutgoingImageMediaFiles() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "image_index_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "image_index_conversation", userID: "image_index_user", title: "Image Index", sortTimestamp: 1)
+        )
+
+        let image = StoredImageContent(
+            mediaID: "media_image_index",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image/original/media_image_index.png").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/media_image_index.jpg").path,
+            width: 120,
+            height: 80,
+            sizeBytes: 512,
+            md5: "image-index-md5",
+            format: "png"
+        )
+        _ = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "image_index_user",
+                conversationID: "image_index_conversation",
+                senderID: "image_index_user",
+                image: image,
+                localTime: 530,
+                messageID: "image_index_message",
+                clientMessageID: "image_index_client",
+                sortSequence: 530
+            )
+        )
+
+        let originalIndex = try await repository.mediaIndexRecord(mediaID: "media_image_index", userID: "image_index_user")
+        let thumbnailIndex = try await repository.mediaIndexRecord(mediaID: "media_image_index_thumb", userID: "image_index_user")
+
+        #expect(originalIndex?.localPath == image.localPath)
+        #expect(originalIndex?.fileName == "media_image_index.png")
+        #expect(originalIndex?.fileExtension == "png")
+        #expect(originalIndex?.sizeBytes == 512)
+        #expect(originalIndex?.md5 == "image-index-md5")
+        #expect(thumbnailIndex?.localPath == image.thumbnailPath)
+        #expect(thumbnailIndex?.fileName == "media_image_index.jpg")
+        #expect(thumbnailIndex?.fileExtension == "jpg")
+    }
+
+    @Test func localChatRepositoryIndexesOutgoingVoiceMediaFile() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "voice_index_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "voice_index_conversation", userID: "voice_index_user", title: "Voice Index", sortTimestamp: 1)
+        )
+
+        let voice = StoredVoiceContent(
+            mediaID: "media_voice_index",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("voice/media_voice_index.m4a").path,
+            durationMilliseconds: 2_400,
+            sizeBytes: 1_024,
+            format: "m4a"
+        )
+        _ = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: "voice_index_user",
+                conversationID: "voice_index_conversation",
+                senderID: "voice_index_user",
+                voice: voice,
+                localTime: 540,
+                messageID: "voice_index_message",
+                clientMessageID: "voice_index_client",
+                sortSequence: 540
+            )
+        )
+
+        let voiceIndex = try await repository.mediaIndexRecord(mediaID: "media_voice_index", userID: "voice_index_user")
+
+        #expect(voiceIndex?.localPath == voice.localPath)
+        #expect(voiceIndex?.fileName == "media_voice_index.m4a")
+        #expect(voiceIndex?.fileExtension == "m4a")
+        #expect(voiceIndex?.sizeBytes == 1_024)
+    }
+
+    @Test func localChatRepositoryEnqueuesDownloadJobForMissingMediaWithoutDuplication() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "missing_media_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "missing_media_conversation", userID: "missing_media_user", title: "Missing Media", sortTimestamp: 1)
+        )
+
+        let missingLocalPath = databaseContext.paths.mediaDirectory.appendingPathComponent("image/original/missing_media.png").path
+        let image = StoredImageContent(
+            mediaID: "missing_media",
+            localPath: missingLocalPath,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/missing_media.jpg").path,
+            width: 120,
+            height: 80,
+            sizeBytes: 512,
+            format: "png"
+        )
+        _ = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "missing_media_user",
+                conversationID: "missing_media_conversation",
+                senderID: "missing_media_user",
+                image: image,
+                localTime: 550,
+                messageID: "missing_media_message",
+                clientMessageID: "missing_media_client",
+                sortSequence: 550
+            )
+        )
+        try await databaseContext.databaseActor.execute(
+            """
+            UPDATE media_resource
+            SET remote_url = ?, download_status = ?
+            WHERE media_id = ?;
+            """,
+            parameters: [
+                .text("https://mock-cdn.chatbridge.local/image/missing_media"),
+                .integer(Int64(MediaUploadStatus.success.rawValue)),
+                .text("missing_media")
+            ],
+            paths: databaseContext.paths
+        )
+
+        let missingResources = try await repository.scanMissingMediaResources(userID: "missing_media_user")
+        let firstJobs = try await repository.enqueueMediaDownloadJobsForMissingResources(userID: "missing_media_user")
+        let secondJobs = try await repository.enqueueMediaDownloadJobsForMissingResources(userID: "missing_media_user")
+        let pendingJobRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS job_count FROM pending_job WHERE job_type = ?;",
+            parameters: [.integer(Int64(PendingJobType.mediaDownload.rawValue))],
+            paths: databaseContext.paths
+        )
+        let resourceRows = try await databaseContext.databaseActor.query(
+            "SELECT download_status FROM media_resource WHERE media_id = ?;",
+            parameters: [.text("missing_media")],
+            paths: databaseContext.paths
+        )
+
+        #expect(missingResources.map(\.mediaID) == ["missing_media"])
+        #expect(firstJobs.count == 1)
+        #expect(firstJobs.first?.id == "media_download_missing_media")
+        #expect(firstJobs.first?.type == .mediaDownload)
+        #expect(firstJobs.first?.payloadJSON.contains(#""localPath":"\#(missingLocalPath)""#) == true)
+        #expect(secondJobs.count == 1)
+        #expect(pendingJobRows.first?.int("job_count") == 1)
+        #expect(resourceRows.first?.int("download_status") == MediaUploadStatus.pending.rawValue)
+    }
+
     @Test func localChatRepositoryMarksVoiceMessagePlayed() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
