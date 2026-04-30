@@ -2214,6 +2214,213 @@ struct AppleIMTests {
         #expect(messages.map(\.text) == ["Unique 2", "Unique 1"])
     }
 
+    @Test func incomingSyncMessageSchedulesLocalNotification() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "notify_user")
+        let notificationManager = CapturingLocalNotificationManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            localNotificationManager: notificationManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "notify_conversation", userID: "notify_user", title: "Notify", sortTimestamp: 1)
+        )
+
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(
+                messages: [
+                    IncomingSyncMessage(
+                        messageID: "notify_message",
+                        conversationID: "notify_conversation",
+                        senderID: "notify_sender",
+                        serverMessageID: "notify_server",
+                        sequence: 1,
+                        text: "Preview body",
+                        serverTime: 1
+                    )
+                ],
+                nextCursor: "cursor_1",
+                nextSequence: 1
+            ),
+            userID: "notify_user"
+        )
+
+        let payloads = await notificationManager.payloads()
+        #expect(payloads.count == 1)
+        #expect(payloads.first?.conversationID == "notify_conversation")
+        #expect(payloads.first?.messageID == "notify_message")
+        #expect(payloads.first?.title == "Notify")
+        #expect(payloads.first?.notificationBody == "Preview body")
+    }
+
+    @Test func mutedConversationDoesNotScheduleLocalNotification() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "muted_notify_user")
+        let notificationManager = CapturingLocalNotificationManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            localNotificationManager: notificationManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "muted_notify_conversation",
+                userID: "muted_notify_user",
+                title: "Muted",
+                isMuted: true,
+                sortTimestamp: 1
+            )
+        )
+
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(
+                messages: [
+                    IncomingSyncMessage(
+                        messageID: "muted_notify_message",
+                        conversationID: "muted_notify_conversation",
+                        senderID: "notify_sender",
+                        serverMessageID: "muted_notify_server",
+                        sequence: 1,
+                        text: "Muted body",
+                        serverTime: 1
+                    )
+                ],
+                nextCursor: "cursor_1",
+                nextSequence: 1
+            ),
+            userID: "muted_notify_user"
+        )
+
+        let payloads = await notificationManager.payloads()
+        #expect(payloads.isEmpty)
+    }
+
+    @Test func hiddenPreviewNotificationUsesGenericBody() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "hidden_preview_user")
+        let notificationManager = CapturingLocalNotificationManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            localNotificationManager: notificationManager
+        )
+        try await databaseActor.execute(
+            """
+            INSERT INTO notification_setting (user_id, is_enabled, show_preview, updated_at)
+            VALUES (?, 1, 0, 1);
+            """,
+            parameters: [.text("hidden_preview_user")],
+            paths: paths
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "hidden_preview_conversation", userID: "hidden_preview_user", title: "Hidden", sortTimestamp: 1)
+        )
+
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(
+                messages: [
+                    IncomingSyncMessage(
+                        messageID: "hidden_preview_message",
+                        conversationID: "hidden_preview_conversation",
+                        senderID: "notify_sender",
+                        serverMessageID: "hidden_preview_server",
+                        sequence: 1,
+                        text: "Sensitive raw message",
+                        serverTime: 1
+                    )
+                ],
+                nextCursor: "cursor_1",
+                nextSequence: 1
+            ),
+            userID: "hidden_preview_user"
+        )
+
+        let payloads = await notificationManager.payloads()
+        #expect(payloads.count == 1)
+        #expect(payloads.first?.showPreview == false)
+        #expect(payloads.first?.notificationBody == "收到一条新消息")
+        #expect(payloads.first?.notificationBody != "Sensitive raw message")
+    }
+
+    @Test func outgoingDuplicateAndEmptySyncBatchesDoNotScheduleLocalNotifications() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "quiet_notify_user")
+        let initialRepository = LocalChatRepository(database: databaseActor, paths: paths)
+        try await initialRepository.upsertConversation(
+            makeConversationRecord(id: "quiet_notify_conversation", userID: "quiet_notify_user", title: "Quiet", sortTimestamp: 1)
+        )
+
+        let duplicateBatch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "quiet_duplicate_message",
+                    conversationID: "quiet_notify_conversation",
+                    senderID: "notify_sender",
+                    serverMessageID: "quiet_duplicate_server",
+                    sequence: 1,
+                    text: "Already inserted",
+                    serverTime: 1
+                )
+            ],
+            nextCursor: "cursor_1",
+            nextSequence: 1
+        )
+        _ = try await initialRepository.applyIncomingSyncBatch(duplicateBatch, userID: "quiet_notify_user")
+
+        let notificationManager = CapturingLocalNotificationManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            localNotificationManager: notificationManager
+        )
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(messages: [], nextCursor: "cursor_empty", nextSequence: 1),
+            userID: "quiet_notify_user"
+        )
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(
+                messages: [
+                    IncomingSyncMessage(
+                        messageID: "quiet_outgoing_message",
+                        conversationID: "quiet_notify_conversation",
+                        senderID: "quiet_notify_user",
+                        serverMessageID: "quiet_outgoing_server",
+                        sequence: 2,
+                        text: "Outgoing",
+                        serverTime: 2,
+                        direction: .outgoing
+                    )
+                ],
+                nextCursor: "cursor_2",
+                nextSequence: 2
+            ),
+            userID: "quiet_notify_user"
+        )
+        let duplicateResult = try await repository.applyIncomingSyncBatch(duplicateBatch, userID: "quiet_notify_user")
+
+        let payloads = await notificationManager.payloads()
+        #expect(duplicateResult.insertedCount == 0)
+        #expect(duplicateResult.skippedDuplicateCount == 1)
+        #expect(payloads.isEmpty)
+    }
+
     @Test func syncEngineRefreshesConversationSummaryFromLatestSequence() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -3146,6 +3353,7 @@ private func makeConversationRecord(
     userID: UserID,
     title: String,
     isPinned: Bool = false,
+    isMuted: Bool = false,
     unreadCount: Int = 0,
     draftText: String? = nil,
     sortTimestamp: Int64
@@ -3163,12 +3371,28 @@ private func makeConversationRecord(
         unreadCount: unreadCount,
         draftText: draftText,
         isPinned: isPinned,
-        isMuted: false,
+        isMuted: isMuted,
         isHidden: false,
         sortTimestamp: sortTimestamp,
         updatedAt: sortTimestamp,
         createdAt: sortTimestamp
     )
+}
+
+private actor CapturingLocalNotificationManager: LocalNotificationManaging {
+    private var capturedPayloads: [IncomingMessageNotificationPayload] = []
+
+    func requestAuthorization() async throws -> Bool {
+        true
+    }
+
+    func scheduleIncomingMessageNotification(_ payload: IncomingMessageNotificationPayload) async throws {
+        capturedPayloads.append(payload)
+    }
+
+    func payloads() -> [IncomingMessageNotificationPayload] {
+        capturedPayloads
+    }
 }
 
 private func collectRows(from stream: AsyncThrowingStream<ChatMessageRowState, Error>) async throws -> [ChatMessageRowState] {

@@ -14,11 +14,16 @@ nonisolated private struct MediaDownloadPendingJobPayload: Codable, Equatable, S
     let remoteURL: String
 }
 
+nonisolated private struct NotificationConversationContext: Equatable, Sendable {
+    let title: String
+    let isMuted: Bool
+}
+
 /// 本地聊天仓储
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
 /// 所有操作通过 DatabaseActor 串行化执行
-nonisolated struct LocalChatRepository: ConversationRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, MediaIndexRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, PendingJobRepository, MediaIndexRepository, SyncStore {
     /// 数据库 Actor
     private let database: DatabaseActor
     /// 账号存储路径
@@ -27,12 +32,19 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
     private let conversationDAO: ConversationDAO
     /// 消息 DAO
     private let messageDAO: MessageDAO
+    /// 本地通知管理器
+    private let localNotificationManager: (any LocalNotificationManaging)?
 
-    init(database: DatabaseActor, paths: AccountStoragePaths) {
+    init(
+        database: DatabaseActor,
+        paths: AccountStoragePaths,
+        localNotificationManager: (any LocalNotificationManaging)? = nil
+    ) {
         self.database = database
         self.paths = paths
         self.conversationDAO = ConversationDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
+        self.localNotificationManager = localNotificationManager
     }
 
     // MARK: - ConversationRepository
@@ -49,6 +61,32 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
 
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
         try await conversationDAO.markRead(conversationID: conversationID, userID: userID)
+    }
+
+    // MARK: - NotificationSettingsRepository
+
+    func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord {
+        let rows = try await database.query(
+            """
+            SELECT user_id, is_enabled, show_preview, updated_at
+            FROM notification_setting
+            WHERE user_id = ?
+            LIMIT 1;
+            """,
+            parameters: [.text(userID.rawValue)],
+            paths: paths
+        )
+
+        guard let row = rows.first else {
+            return .defaultSetting(for: userID)
+        }
+
+        return NotificationSettingRecord(
+            userID: UserID(rawValue: try row.requiredString("user_id")),
+            isEnabled: row.bool("is_enabled"),
+            showPreview: row.bool("show_preview"),
+            updatedAt: row.int64("updated_at") ?? 0
+        )
     }
 
     // MARK: - MessageRepository
@@ -773,6 +811,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
 
         try await database.performTransaction(statements, paths: paths)
 
+        await notifyIncomingMessages(
+            messagesToInsert.filter { $0.direction == .incoming },
+            userID: userID
+        )
+
         for message in messagesToInsert {
             scheduleMessageIndex(messageID: message.messageID, userID: userID)
         }
@@ -820,6 +863,84 @@ nonisolated struct LocalChatRepository: ConversationRepository, MessageRepositor
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    private func notifyIncomingMessages(_ messages: [IncomingSyncMessage], userID: UserID) async {
+        guard let localNotificationManager, !messages.isEmpty else {
+            return
+        }
+
+        let setting: NotificationSettingRecord
+        do {
+            setting = try await notificationSetting(for: userID)
+        } catch {
+            return
+        }
+
+        guard setting.isEnabled else {
+            return
+        }
+
+        for message in messages {
+            let fallbackTitle = message.conversationTitle ?? "ChatBridge"
+            let context: NotificationConversationContext
+
+            do {
+                context = try await notificationConversationContext(
+                    conversationID: message.conversationID,
+                    userID: userID,
+                    fallbackTitle: fallbackTitle
+                )
+            } catch {
+                context = NotificationConversationContext(title: fallbackTitle, isMuted: false)
+            }
+
+            guard !context.isMuted else {
+                continue
+            }
+
+            try? await localNotificationManager.scheduleIncomingMessageNotification(
+                IncomingMessageNotificationPayload(
+                    userID: userID,
+                    conversationID: message.conversationID,
+                    messageID: message.messageID,
+                    title: context.title,
+                    messageDigest: message.text,
+                    isMuted: context.isMuted,
+                    isEnabled: setting.isEnabled,
+                    showPreview: setting.showPreview
+                )
+            )
+        }
+    }
+
+    private func notificationConversationContext(
+        conversationID: ConversationID,
+        userID: UserID,
+        fallbackTitle: String
+    ) async throws -> NotificationConversationContext {
+        let rows = try await database.query(
+            """
+            SELECT title, is_muted
+            FROM conversation
+            WHERE conversation_id = ? AND user_id = ?
+            LIMIT 1;
+            """,
+            parameters: [
+                .text(conversationID.rawValue),
+                .text(userID.rawValue)
+            ],
+            paths: paths
+        )
+
+        guard let row = rows.first else {
+            return NotificationConversationContext(title: fallbackTitle, isMuted: false)
+        }
+
+        return NotificationConversationContext(
+            title: row.string("title") ?? fallbackTitle,
+            isMuted: row.bool("is_muted")
+        )
     }
 
     private static func refreshConversationSummaryStatement(

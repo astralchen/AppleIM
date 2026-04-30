@@ -21,6 +21,8 @@ final class AppDependencyContainer {
     private let mediaFileStore: any MediaFileStoring
     /// 媒体上传服务
     private let mediaUploadService: any MediaUploadService
+    /// 本地通知管理器
+    private let localNotificationManager: any LocalNotificationManaging
     /// 演示用户 ID
     private let demoUserID: UserID
     /// 网络恢复协调器
@@ -31,17 +33,20 @@ final class AppDependencyContainer {
         storageService: (any AccountStorageService)? = nil,
         database: DatabaseActor = DatabaseActor(),
         messageSendService: any MessageSendService = MockMessageSendService(),
-        mediaUploadService: any MediaUploadService = MockMediaUploadService()
+        mediaUploadService: any MediaUploadService = MockMediaUploadService(),
+        localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager()
     ) throws {
         let storageService = try storageService ?? AccountStorageFactory.makeDefaultService()
         self.demoUserID = demoUserID
         self.messageSendService = messageSendService
         self.mediaUploadService = mediaUploadService
+        self.localNotificationManager = localNotificationManager
         self.mediaFileStore = AccountMediaFileStore(accountID: demoUserID, storageService: storageService)
         self.storeProvider = ChatStoreProvider(
             accountID: demoUserID,
             storageService: storageService,
-            database: database
+            database: database,
+            localNotificationManager: localNotificationManager
         )
         self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
             userID: demoUserID,
@@ -53,6 +58,13 @@ final class AppDependencyContainer {
 
     func startNetworkRecovery() {
         networkRecoveryCoordinator.start()
+    }
+
+    func requestLocalNotificationAuthorization() {
+        let localNotificationManager = localNotificationManager
+        Task {
+            _ = try? await localNotificationManager.requestAuthorization()
+        }
     }
 
     func runDueJobsWhenNetworkIsReachable() {

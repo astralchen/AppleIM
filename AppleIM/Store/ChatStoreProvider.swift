@@ -18,6 +18,8 @@ actor ChatStoreProvider {
     private let storageService: any AccountStorageService
     /// 数据库 Actor
     private let database: DatabaseActor
+    /// 本地通知管理器
+    private let localNotificationManager: (any LocalNotificationManaging)?
     /// 缓存的仓储实例
     private var cachedRepository: LocalChatRepository?
     /// 缓存的搜索索引 Actor
@@ -29,10 +31,16 @@ actor ChatStoreProvider {
     ///   - accountID: 账号 ID
     ///   - storageService: 存储服务
     ///   - database: 数据库 Actor
-    init(accountID: UserID, storageService: any AccountStorageService, database: DatabaseActor) {
+    init(
+        accountID: UserID,
+        storageService: any AccountStorageService,
+        database: DatabaseActor,
+        localNotificationManager: (any LocalNotificationManaging)? = nil
+    ) {
         self.accountID = accountID
         self.storageService = storageService
         self.database = database
+        self.localNotificationManager = localNotificationManager
     }
 
     /// 获取聊天仓储实例
@@ -56,7 +64,11 @@ actor ChatStoreProvider {
 
         let paths = try await storageService.prepareStorage(for: accountID)
         _ = try await database.bootstrap(paths: paths)
-        let repository = LocalChatRepository(database: database, paths: paths)
+        let repository = LocalChatRepository(
+            database: database,
+            paths: paths,
+            localNotificationManager: localNotificationManager
+        )
         try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
         cachedRepository = repository
         return repository

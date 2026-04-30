@@ -33,6 +33,29 @@ nonisolated enum ChatStoreError: Error, Equatable, Sendable {
     case messageCannotBeResent(MessageID)
 }
 
+/// 通知设置记录
+///
+/// 对应 notification_setting 表；未配置时使用默认开启、展示预览。
+nonisolated struct NotificationSettingRecord: Equatable, Sendable {
+    /// 用户 ID
+    let userID: UserID
+    /// 是否开启通知
+    let isEnabled: Bool
+    /// 是否展示消息预览
+    let showPreview: Bool
+    /// 更新时间
+    let updatedAt: Int64
+
+    static func defaultSetting(for userID: UserID) -> NotificationSettingRecord {
+        NotificationSettingRecord(
+            userID: userID,
+            isEnabled: true,
+            showPreview: true,
+            updatedAt: 0
+        )
+    }
+}
+
 /// 会话记录
 ///
 /// 对应数据库 conversation 表的完整记录
@@ -439,6 +462,12 @@ protocol ConversationRepository: Sendable {
     func upsertConversation(_ record: ConversationRecord) async throws
     /// 标记会话已读
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws
+}
+
+/// 通知设置仓储协议
+protocol NotificationSettingsRepository: Sendable {
+    /// 读取通知设置
+    func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord
 }
 
 /// 消息仓储协议
