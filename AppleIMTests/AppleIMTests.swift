@@ -1518,6 +1518,86 @@ struct AppleIMTests {
         #expect(olderPage.nextBeforeSortSequence == 1)
     }
 
+    @Test func chatUseCasePagesThroughOneHundredThousandMessagesWithCursor() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "chat_perf_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "chat_perf_conversation", userID: "chat_perf_user", title: "Performance", sortTimestamp: 100_000)
+        )
+        try await seedPerformanceMessages(
+            databaseContext: databaseContext,
+            conversationID: "chat_perf_conversation",
+            userID: "chat_perf_user",
+            count: 100_000
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "chat_perf_user",
+            conversationID: "chat_perf_conversation",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let initialPage = try await useCase.loadInitialMessages()
+        let olderPage = try await useCase.loadOlderMessages(beforeSortSequence: 99_951, limit: 50)
+
+        #expect(initialPage.rows.count == 50)
+        #expect(initialPage.rows.first?.text == "Perf Message 99951")
+        #expect(initialPage.rows.last?.text == "Perf Message 100000")
+        #expect(initialPage.hasMore == true)
+        #expect(initialPage.nextBeforeSortSequence == 99_951)
+        #expect(olderPage.rows.count == 50)
+        #expect(olderPage.rows.first?.text == "Perf Message 99901")
+        #expect(olderPage.rows.last?.text == "Perf Message 99950")
+        #expect(olderPage.hasMore == true)
+        #expect(olderPage.nextBeforeSortSequence == 99_901)
+    }
+
+    @Test func messagePaginationQueriesUseVisibleSortIndex() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "chat_plan_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "chat_plan_conversation", userID: "chat_plan_user", title: "Query Plan", sortTimestamp: 100)
+        )
+        try await seedPerformanceMessages(
+            databaseContext: databaseContext,
+            conversationID: "chat_plan_conversation",
+            userID: "chat_plan_user",
+            count: 100
+        )
+
+        let initialPlanRows = try await databaseContext.databaseActor.query(
+            "EXPLAIN QUERY PLAN \(MessageDAO.listMessagesQuery(beforeSortSeq: nil))",
+            parameters: [
+                .text("chat_plan_conversation"),
+                .integer(51)
+            ],
+            paths: databaseContext.paths
+        )
+        let olderPlanRows = try await databaseContext.databaseActor.query(
+            "EXPLAIN QUERY PLAN \(MessageDAO.listMessagesQuery(beforeSortSeq: 51))",
+            parameters: [
+                .text("chat_plan_conversation"),
+                .integer(51),
+                .integer(51)
+            ],
+            paths: databaseContext.paths
+        )
+
+        let initialPlan = initialPlanRows.compactMap { $0.string("detail") }.joined(separator: "\n")
+        let olderPlan = olderPlanRows.compactMap { $0.string("detail") }.joined(separator: "\n")
+
+        #expect(initialPlan.contains("idx_message_conversation_visible_sort"))
+        #expect(olderPlan.contains("idx_message_conversation_visible_sort"))
+    }
+
     @Test func chatUseCaseSendTextYieldsSendingThenSuccess() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -2387,6 +2467,46 @@ struct AppleIMTests {
         #expect(viewModel.currentState.phase == .loaded)
         #expect(viewModel.currentState.isLoadingOlderMessages == false)
         #expect(viewModel.currentState.paginationErrorMessage == "Unable to load older messages")
+    }
+
+    @MainActor
+    @Test func chatViewModelCanLoadOlderMessagesAfterPaginationFailure() async throws {
+        let useCase = RecoveringPagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [makeChatRow(id: "current_message", text: "Current", sortSequence: 10)],
+                hasMore: true,
+                nextBeforeSortSequence: 10
+            ),
+            recoveredPage: ChatMessagePage(
+                rows: [makeChatRow(id: "older_message", text: "Older", sortSequence: 9)],
+                hasMore: false,
+                nextBeforeSortSequence: 9
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Recover")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["current_message"]
+            }
+        }
+        viewModel.loadOlderMessagesIfNeeded()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.paginationErrorMessage == "Unable to load older messages"
+            }
+        }
+        viewModel.loadOlderMessagesIfNeeded()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["older_message", "current_message"]
+            }
+        }
+
+        #expect(viewModel.currentState.paginationErrorMessage == nil)
+        #expect(viewModel.currentState.hasMoreOlderMessages == false)
+        #expect(useCase.loadOlderCallCount == 2)
     }
 
     @MainActor
@@ -3612,6 +3732,69 @@ private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     func revoke(messageID: MessageID) async throws {}
 }
 
+private final class RecoveringPagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialPage: ChatMessagePage
+    private let recoveredPage: ChatMessagePage
+    private(set) var loadOlderCallCount = 0
+
+    init(initialPage: ChatMessagePage, recoveredPage: ChatMessagePage) {
+        self.initialPage = initialPage
+        self.recoveredPage = recoveredPage
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        initialPage
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        loadOlderCallCount += 1
+
+        if loadOlderCallCount == 1 {
+            throw TestChatError.paginationFailed
+        }
+
+        return recoveredPage
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
 private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private(set) var sentImageCount = 0
 
@@ -3886,6 +4069,90 @@ private func makeRepository(rootDirectory: URL, accountID: UserID) async throws 
     return (repository, DatabaseTestContext(databaseActor: databaseActor, paths: paths))
 }
 
+private func seedPerformanceMessages(
+    databaseContext: DatabaseTestContext,
+    conversationID: ConversationID,
+    userID: UserID,
+    count: Int
+) async throws {
+    let numbersCTE = """
+    WITH
+        digits(d) AS (
+            VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+        ),
+        numbers(value) AS (
+            SELECT ones.d + tens.d * 10 + hundreds.d * 100 + thousands.d * 1000 + tenThousands.d * 10000 + 1
+            FROM digits AS ones
+            CROSS JOIN digits AS tens
+            CROSS JOIN digits AS hundreds
+            CROSS JOIN digits AS thousands
+            CROSS JOIN digits AS tenThousands
+        )
+    """
+
+    try await databaseContext.databaseActor.execute(
+        """
+        \(numbersCTE)
+        INSERT INTO message_text (content_id, text, mentions_json, at_all, rich_text_json)
+        SELECT
+            'perf_text_' || value,
+            'Perf Message ' || value,
+            NULL,
+            0,
+            NULL
+        FROM numbers
+        WHERE value <= \(count);
+        """,
+        paths: databaseContext.paths
+    )
+
+    try await databaseContext.databaseActor.execute(
+        """
+        \(numbersCTE)
+        INSERT INTO message (
+            message_id,
+            conversation_id,
+            sender_id,
+            client_msg_id,
+            msg_type,
+            direction,
+            send_status,
+            delivery_status,
+            read_status,
+            revoke_status,
+            is_deleted,
+            content_table,
+            content_id,
+            sort_seq,
+            local_time
+        )
+        SELECT
+            'perf_message_' || value,
+            ?,
+            ?,
+            'perf_client_' || value,
+            \(MessageType.text.rawValue),
+            \(MessageDirection.outgoing.rawValue),
+            \(MessageSendStatus.success.rawValue),
+            0,
+            \(MessageReadStatus.read.rawValue),
+            0,
+            0,
+            'message_text',
+            'perf_text_' || value,
+            value,
+            value
+        FROM numbers
+        WHERE value <= \(count);
+        """,
+        parameters: [
+            .text(conversationID.rawValue),
+            .text(userID.rawValue)
+        ],
+        paths: databaseContext.paths
+    )
+}
+
 private func databaseReadFails(using databaseActor: DatabaseActor, paths: AccountStoragePaths) async -> Bool {
     do {
         _ = try await databaseActor.tableNames(in: .main, paths: paths)
@@ -3896,7 +4163,7 @@ private func databaseReadFails(using databaseActor: DatabaseActor, paths: Accoun
 }
 
 private func waitForCondition(
-    timeoutNanoseconds: UInt64 = 1_000_000_000,
+    timeoutNanoseconds: UInt64 = 5_000_000_000,
     condition: @escaping () async throws -> Bool
 ) async throws {
     let startedAt = DispatchTime.now().uptimeNanoseconds

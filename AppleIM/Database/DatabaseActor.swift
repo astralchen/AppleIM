@@ -405,6 +405,11 @@ actor DatabaseActor {
             in: .main,
             paths: paths
         )
+        try executeIdempotentStatement(
+            "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);",
+            in: .main,
+            paths: paths
+        )
     }
 
     /// 执行幂等 SQL

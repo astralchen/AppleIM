@@ -45,7 +45,7 @@ nonisolated struct MigrationScript: Equatable, Sendable {
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
     /// 当前 Schema 版本
-    static let currentVersion = 3
+    static let currentVersion = 4
 
     /// 增量迁移脚本元数据
     static let migrationScripts: [MigrationScript] = [
@@ -61,6 +61,14 @@ nonisolated enum DatabaseSchema {
             version: 3,
             statements: [
                 "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC);"
+            ]
+        ),
+        MigrationScript(
+            id: "004_message_visible_sort_index",
+            database: .main,
+            version: 4,
+            statements: [
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);"
             ]
         )
     ]
@@ -348,6 +356,7 @@ nonisolated enum DatabaseSchema {
                 "CREATE INDEX IF NOT EXISTS idx_conversation_user_target ON conversation(user_id, target_id);",
                 "CREATE INDEX IF NOT EXISTS idx_member_conversation ON conversation_member(conversation_id);",
                 "CREATE INDEX IF NOT EXISTS idx_message_conversation_sort ON message(conversation_id, sort_seq DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);",
                 "CREATE INDEX IF NOT EXISTS idx_message_conversation_server ON message(conversation_id, server_time DESC);",
                 "CREATE INDEX IF NOT EXISTS idx_message_client_msg_id ON message(client_msg_id);",
                 "CREATE INDEX IF NOT EXISTS idx_message_server_msg_id ON message(server_msg_id);",

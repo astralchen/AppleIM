@@ -135,6 +135,9 @@ final class ChatViewModel {
 
         paginationTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                paginationTask = nil
+            }
 
             do {
                 let page = try await useCase.loadOlderMessages(
@@ -160,8 +163,6 @@ final class ChatViewModel {
                     state.paginationErrorMessage = "Unable to load older messages"
                 }
             }
-
-            paginationTask = nil
         }
     }
 

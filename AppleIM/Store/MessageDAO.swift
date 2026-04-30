@@ -22,64 +22,71 @@ nonisolated struct MessageDAO: Sendable {
     }
 
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
+        let query = Self.listMessagesQuery(beforeSortSeq: beforeSortSeq)
+        var parameters: [SQLiteValue] = [.text(conversationID.rawValue)]
+        if let beforeSortSeq {
+            parameters.append(.integer(beforeSortSeq))
+        }
+        parameters.append(.integer(Int64(limit)))
+
         let rows = try await database.query(
-            """
-            SELECT
-                message.message_id,
-                message.conversation_id,
-                message.sender_id,
-                message.client_msg_id,
-                message.server_msg_id,
-                message.seq,
-                message.msg_type,
-                message.direction,
-                message.send_status,
-                message.read_status,
-                message.server_time,
-                message.revoke_status,
-                message.is_deleted,
-                message_revoke.replace_text,
-                message.sort_seq,
-                message.local_time,
-                message_text.text,
-                message_image.media_id AS image_media_id,
-                message_image.width AS image_width,
-                message_image.height AS image_height,
-                message_image.size_bytes AS image_size_bytes,
-                message_image.local_path AS image_local_path,
-                message_image.thumb_path AS image_thumb_path,
-                message_image.cdn_url AS image_cdn_url,
-                message_image.md5 AS image_md5,
-                message_image.format AS image_format,
-                message_image.upload_status AS image_upload_status,
-                message_voice.media_id AS voice_media_id,
-                message_voice.duration_ms AS voice_duration_ms,
-                message_voice.size_bytes AS voice_size_bytes,
-                message_voice.local_path AS voice_local_path,
-                message_voice.cdn_url AS voice_cdn_url,
-                message_voice.format AS voice_format,
-                message_voice.upload_status AS voice_upload_status
-            FROM message
-            LEFT JOIN message_text ON message_text.content_id = message.content_id
-            LEFT JOIN message_image ON message_image.content_id = message.content_id
-            LEFT JOIN message_voice ON message_voice.content_id = message.content_id
-            LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
-            WHERE message.conversation_id = ?
-            AND (? IS NULL OR message.sort_seq < ?)
-            AND message.is_deleted = 0
-            ORDER BY message.sort_seq DESC
-            LIMIT ?;
-            """,
-            parameters: [
-                .text(conversationID.rawValue),
-                .optionalInteger(beforeSortSeq),
-                .optionalInteger(beforeSortSeq),
-                .integer(Int64(limit))
-            ],
+            query,
+            parameters: parameters,
             paths: paths
         )
 
         return try rows.map(Self.message(from:))
+    }
+
+    static func listMessagesQuery(beforeSortSeq: Int64?) -> String {
+        let cursorPredicate = beforeSortSeq == nil ? "" : "\n            AND message.sort_seq < ?"
+
+        return """
+        SELECT
+            message.message_id,
+            message.conversation_id,
+            message.sender_id,
+            message.client_msg_id,
+            message.server_msg_id,
+            message.seq,
+            message.msg_type,
+            message.direction,
+            message.send_status,
+            message.read_status,
+            message.server_time,
+            message.revoke_status,
+            message.is_deleted,
+            message_revoke.replace_text,
+            message.sort_seq,
+            message.local_time,
+            message_text.text,
+            message_image.media_id AS image_media_id,
+            message_image.width AS image_width,
+            message_image.height AS image_height,
+            message_image.size_bytes AS image_size_bytes,
+            message_image.local_path AS image_local_path,
+            message_image.thumb_path AS image_thumb_path,
+            message_image.cdn_url AS image_cdn_url,
+            message_image.md5 AS image_md5,
+            message_image.format AS image_format,
+            message_image.upload_status AS image_upload_status,
+            message_voice.media_id AS voice_media_id,
+            message_voice.duration_ms AS voice_duration_ms,
+            message_voice.size_bytes AS voice_size_bytes,
+            message_voice.local_path AS voice_local_path,
+            message_voice.cdn_url AS voice_cdn_url,
+            message_voice.format AS voice_format,
+            message_voice.upload_status AS voice_upload_status
+        FROM message INDEXED BY idx_message_conversation_visible_sort
+        LEFT JOIN message_text ON message_text.content_id = message.content_id
+        LEFT JOIN message_image ON message_image.content_id = message.content_id
+        LEFT JOIN message_voice ON message_voice.content_id = message.content_id
+        LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
+        WHERE message.conversation_id = ?
+        AND message.is_deleted = 0\(cursorPredicate)
+        ORDER BY message.sort_seq DESC
+        LIMIT ?;
+        """
     }
 
     func message(messageID: MessageID) async throws -> StoredMessage? {

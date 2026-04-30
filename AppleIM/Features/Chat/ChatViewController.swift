@@ -279,24 +279,35 @@ final class ChatViewController: UIViewController {
             textField.text = state.draftText
         }
 
+        let previousRowsByID = rowsByID
         let previousRowIDs = lastRenderedRowIDs
         let previousContentHeight = collectionView.contentSize.height
         let previousContentOffsetY = collectionView.contentOffset.y
         let wasNearBottom = isNearBottom()
-        let newRowIDs = state.rows.map(\.diffIdentifier)
+        let newRowIDs = state.rows.map { $0.id.rawValue }
         let isInitialMessageRender = previousRowIDs.isEmpty && !newRowIDs.isEmpty
         let isPrependingOlderMessages = previousRowIDs.first.map { newRowIDs.contains($0) } == true
             && newRowIDs.first != previousRowIDs.first
         let didAppendNewMessage = previousRowIDs.last.map { newRowIDs.contains($0) } == true
             && newRowIDs.last != previousRowIDs.last
+        let changedRowIDs = state.rows.compactMap { row -> String? in
+            let id = row.id.rawValue
+            return previousRowsByID[id] == row ? nil : id
+        }
 
-        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.diffIdentifier, $0) })
+        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
         lastRenderedRowIDs = newRowIDs
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-        snapshot.appendSections([chatSection])
-        snapshot.appendItems(newRowIDs, toSection: chatSection)
-        dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
+        guard let dataSource else { return }
+
+        let snapshot = makeIncrementalSnapshot(
+            dataSource: dataSource,
+            previousRowIDs: previousRowIDs,
+            newRowIDs: newRowIDs,
+            changedRowIDs: changedRowIDs
+        )
+
+        dataSource.apply(snapshot, animatingDifferences: !isInitialMessageRender) { [weak self] in
             guard let self else { return }
 
             self.collectionView.layoutIfNeeded()
@@ -312,6 +323,76 @@ final class ChatViewController: UIViewController {
                 self.scrollToBottom(animated: !isInitialMessageRender)
             }
         }
+    }
+
+    private func makeIncrementalSnapshot(
+        dataSource: UICollectionViewDiffableDataSource<String, String>,
+        previousRowIDs: [String],
+        newRowIDs: [String],
+        changedRowIDs: [String]
+    ) -> NSDiffableDataSourceSnapshot<String, String> {
+        guard !previousRowIDs.isEmpty else {
+            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+            snapshot.appendSections([chatSection])
+            snapshot.appendItems(newRowIDs, toSection: chatSection)
+            return snapshot
+        }
+
+        let oldSet = Set(previousRowIDs)
+        let newSet = Set(newRowIDs)
+        let survivingOldIDs = previousRowIDs.filter { newSet.contains($0) }
+        let survivingNewIDs = newRowIDs.filter { oldSet.contains($0) }
+
+        guard survivingOldIDs == survivingNewIDs else {
+            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+            snapshot.appendSections([chatSection])
+            snapshot.appendItems(newRowIDs, toSection: chatSection)
+            return snapshot
+        }
+
+        var snapshot = dataSource.snapshot()
+        if !snapshot.sectionIdentifiers.contains(chatSection) {
+            snapshot.appendSections([chatSection])
+        }
+
+        let currentIDs = snapshot.itemIdentifiers
+        let currentSet = Set(currentIDs)
+        let removedIDs = currentIDs.filter { !newSet.contains($0) }
+        if !removedIDs.isEmpty {
+            snapshot.deleteItems(removedIDs)
+        }
+
+        let prefixIDs = Array(newRowIDs.prefix { !oldSet.contains($0) })
+        let suffixIDs = Array(newRowIDs.reversed().prefix { !oldSet.contains($0) }.reversed())
+        let insertedIDs = newRowIDs.filter { !currentSet.contains($0) }
+        let edgeInsertedIDs = prefixIDs + suffixIDs
+
+        guard insertedIDs == edgeInsertedIDs else {
+            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+            snapshot.appendSections([chatSection])
+            snapshot.appendItems(newRowIDs, toSection: chatSection)
+            return snapshot
+        }
+
+        if !prefixIDs.isEmpty {
+            if let firstSurvivingID = survivingNewIDs.first {
+                snapshot.insertItems(prefixIDs, beforeItem: firstSurvivingID)
+            } else {
+                snapshot.appendItems(prefixIDs, toSection: chatSection)
+            }
+        }
+
+        if !suffixIDs.isEmpty {
+            snapshot.appendItems(suffixIDs, toSection: chatSection)
+        }
+
+        let snapshotSet = Set(snapshot.itemIdentifiers)
+        let reconfiguredIDs = changedRowIDs.filter { snapshotSet.contains($0) && currentSet.contains($0) }
+        if !reconfiguredIDs.isEmpty {
+            snapshot.reconfigureItems(reconfiguredIDs)
+        }
+
+        return snapshot
     }
 
     private func makeLayout() -> UICollectionViewLayout {
