@@ -23,6 +23,8 @@ final class AppDependencyContainer {
     private let mediaUploadService: any MediaUploadService
     /// 本地通知管理器
     private let localNotificationManager: any LocalNotificationManaging
+    /// App 角标管理器
+    private let applicationBadgeManager: any ApplicationBadgeManaging
     /// 演示用户 ID
     private let demoUserID: UserID
     /// 网络恢复协调器
@@ -34,19 +36,22 @@ final class AppDependencyContainer {
         database: DatabaseActor = DatabaseActor(),
         messageSendService: any MessageSendService = MockMessageSendService(),
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
-        localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager()
+        localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager(),
+        applicationBadgeManager: any ApplicationBadgeManaging = UIKitApplicationBadgeManager()
     ) throws {
         let storageService = try storageService ?? AccountStorageFactory.makeDefaultService()
         self.demoUserID = demoUserID
         self.messageSendService = messageSendService
         self.mediaUploadService = mediaUploadService
         self.localNotificationManager = localNotificationManager
+        self.applicationBadgeManager = applicationBadgeManager
         self.mediaFileStore = AccountMediaFileStore(accountID: demoUserID, storageService: storageService)
         self.storeProvider = ChatStoreProvider(
             accountID: demoUserID,
             storageService: storageService,
             database: database,
-            localNotificationManager: localNotificationManager
+            localNotificationManager: localNotificationManager,
+            applicationBadgeManager: applicationBadgeManager
         )
         self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
             userID: demoUserID,
@@ -69,6 +74,18 @@ final class AppDependencyContainer {
 
     func runDueJobsWhenNetworkIsReachable() {
         networkRecoveryCoordinator.runDueJobsWhenReachable()
+    }
+
+    func refreshApplicationBadge() {
+        let storeProvider = storeProvider
+        let userID = demoUserID
+        Task {
+            guard let repository = try? await storeProvider.repository() else {
+                return
+            }
+
+            _ = try? await repository.refreshApplicationBadge(userID: userID)
+        }
     }
 
     func makeConversationListViewController() -> ConversationListViewController {

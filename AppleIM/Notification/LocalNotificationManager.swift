@@ -6,7 +6,23 @@
 //  负责授权、前台展示策略和新消息通知投递
 
 import Foundation
+import UIKit
 @preconcurrency import UserNotifications
+
+/// App 角标管理协议
+protocol ApplicationBadgeManaging: Sendable {
+    /// 设置 App 图标角标数量
+    func setApplicationIconBadgeNumber(_ count: Int) async
+}
+
+/// 基于 UIKit 的 App 角标管理器
+nonisolated struct UIKitApplicationBadgeManager: ApplicationBadgeManaging {
+    func setApplicationIconBadgeNumber(_ count: Int) async {
+        await MainActor.run {
+            UIApplication.shared.applicationIconBadgeNumber = max(0, count)
+        }
+    }
+}
 
 /// 收到新消息后的本地通知载荷
 nonisolated struct IncomingMessageNotificationPayload: Equatable, Sendable {
@@ -26,6 +42,8 @@ nonisolated struct IncomingMessageNotificationPayload: Equatable, Sendable {
     let isEnabled: Bool
     /// 是否展示消息预览
     let showPreview: Bool
+    /// 当前 App 角标数
+    let badgeCount: Int?
     /// 隐藏预览时使用的通用正文
     let hiddenPreviewText: String
 
@@ -38,6 +56,7 @@ nonisolated struct IncomingMessageNotificationPayload: Equatable, Sendable {
         isMuted: Bool,
         isEnabled: Bool,
         showPreview: Bool,
+        badgeCount: Int? = nil,
         hiddenPreviewText: String = "收到一条新消息"
     ) {
         self.userID = userID
@@ -48,6 +67,7 @@ nonisolated struct IncomingMessageNotificationPayload: Equatable, Sendable {
         self.isMuted = isMuted
         self.isEnabled = isEnabled
         self.showPreview = showPreview
+        self.badgeCount = badgeCount
         self.hiddenPreviewText = hiddenPreviewText
     }
 
@@ -76,7 +96,7 @@ final class UserNotificationCenterNotificationManager: NSObject, LocalNotificati
 
     func requestAuthorization() async throws -> Bool {
         try await withCheckedThrowingContinuation { continuation in
-            center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+            center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
@@ -95,6 +115,9 @@ final class UserNotificationCenterNotificationManager: NSObject, LocalNotificati
         content.title = payload.title.isEmpty ? "ChatBridge" : payload.title
         content.body = payload.notificationBody
         content.sound = .default
+        if let badgeCount = payload.badgeCount {
+            content.badge = NSNumber(value: max(0, badgeCount))
+        }
         content.userInfo = [
             "user_id": payload.userID.rawValue,
             "conversation_id": payload.conversationID.rawValue,

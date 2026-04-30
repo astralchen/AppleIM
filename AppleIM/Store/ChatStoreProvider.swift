@@ -20,6 +20,8 @@ actor ChatStoreProvider {
     private let database: DatabaseActor
     /// 本地通知管理器
     private let localNotificationManager: (any LocalNotificationManaging)?
+    /// App 角标管理器
+    private let applicationBadgeManager: (any ApplicationBadgeManaging)?
     /// 缓存的仓储实例
     private var cachedRepository: LocalChatRepository?
     /// 缓存的搜索索引 Actor
@@ -35,12 +37,14 @@ actor ChatStoreProvider {
         accountID: UserID,
         storageService: any AccountStorageService,
         database: DatabaseActor,
-        localNotificationManager: (any LocalNotificationManaging)? = nil
+        localNotificationManager: (any LocalNotificationManaging)? = nil,
+        applicationBadgeManager: (any ApplicationBadgeManaging)? = nil
     ) {
         self.accountID = accountID
         self.storageService = storageService
         self.database = database
         self.localNotificationManager = localNotificationManager
+        self.applicationBadgeManager = applicationBadgeManager
     }
 
     /// 获取聊天仓储实例
@@ -67,7 +71,8 @@ actor ChatStoreProvider {
         let repository = LocalChatRepository(
             database: database,
             paths: paths,
-            localNotificationManager: localNotificationManager
+            localNotificationManager: localNotificationManager,
+            applicationBadgeManager: applicationBadgeManager
         )
         try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
         cachedRepository = repository

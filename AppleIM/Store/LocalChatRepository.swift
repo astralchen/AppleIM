@@ -34,17 +34,21 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     private let messageDAO: MessageDAO
     /// 本地通知管理器
     private let localNotificationManager: (any LocalNotificationManaging)?
+    /// App 角标管理器
+    private let applicationBadgeManager: (any ApplicationBadgeManaging)?
 
     init(
         database: DatabaseActor,
         paths: AccountStoragePaths,
-        localNotificationManager: (any LocalNotificationManaging)? = nil
+        localNotificationManager: (any LocalNotificationManaging)? = nil,
+        applicationBadgeManager: (any ApplicationBadgeManaging)? = nil
     ) {
         self.database = database
         self.paths = paths
         self.conversationDAO = ConversationDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
         self.localNotificationManager = localNotificationManager
+        self.applicationBadgeManager = applicationBadgeManager
     }
 
     // MARK: - ConversationRepository
@@ -57,10 +61,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     func upsertConversation(_ record: ConversationRecord) async throws {
         try await conversationDAO.upsert(record)
         scheduleConversationIndex(conversationID: record.id, userID: record.userID)
+        _ = try await refreshApplicationBadge(userID: record.userID)
     }
 
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
         try await conversationDAO.markRead(conversationID: conversationID, userID: userID)
+        _ = try await refreshApplicationBadge(userID: userID)
     }
 
     // MARK: - NotificationSettingsRepository
@@ -68,7 +74,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord {
         let rows = try await database.query(
             """
-            SELECT user_id, is_enabled, show_preview, updated_at
+            SELECT
+                user_id,
+                is_enabled,
+                show_preview,
+                badge_enabled,
+                badge_include_muted,
+                updated_at
             FROM notification_setting
             WHERE user_id = ?
             LIMIT 1;
@@ -85,8 +97,48 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             userID: UserID(rawValue: try row.requiredString("user_id")),
             isEnabled: row.bool("is_enabled"),
             showPreview: row.bool("show_preview"),
+            badgeEnabled: row.bool("badge_enabled"),
+            badgeIncludeMuted: row.bool("badge_include_muted"),
             updatedAt: row.int64("updated_at") ?? 0
         )
+    }
+
+    func updateBadgeEnabled(userID: UserID, isEnabled: Bool) async throws {
+        try await upsertBadgeSetting(
+            userID: userID,
+            column: "badge_enabled",
+            value: isEnabled
+        )
+        _ = try await refreshApplicationBadge(userID: userID)
+    }
+
+    func updateBadgeIncludeMuted(userID: UserID, includeMuted: Bool) async throws {
+        try await upsertBadgeSetting(
+            userID: userID,
+            column: "badge_include_muted",
+            value: includeMuted
+        )
+        _ = try await refreshApplicationBadge(userID: userID)
+    }
+
+    func refreshApplicationBadge(userID: UserID) async throws -> Int {
+        let setting = try await notificationSetting(for: userID)
+        let badgeCount: Int
+
+        if setting.badgeEnabled {
+            badgeCount = try await unreadBadgeCount(
+                userID: userID,
+                includeMuted: setting.badgeIncludeMuted
+            )
+        } else {
+            badgeCount = 0
+        }
+
+        if let applicationBadgeManager {
+            await applicationBadgeManager.setApplicationIconBadgeNumber(badgeCount)
+        }
+
+        return badgeCount
     }
 
     // MARK: - MessageRepository
@@ -810,10 +862,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         )
 
         try await database.performTransaction(statements, paths: paths)
+        let badgeCount = try await refreshApplicationBadge(userID: userID)
 
         await notifyIncomingMessages(
             messagesToInsert.filter { $0.direction == .incoming },
-            userID: userID
+            userID: userID,
+            badgeCount: badgeCount
         )
 
         for message in messagesToInsert {
@@ -865,7 +919,56 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         return formatter.string(from: date)
     }
 
-    private func notifyIncomingMessages(_ messages: [IncomingSyncMessage], userID: UserID) async {
+    private func upsertBadgeSetting(userID: UserID, column: String, value: Bool) async throws {
+        let now = Self.currentTimestamp()
+        let insertedBadgeEnabled = column == "badge_enabled" ? value : true
+        let insertedBadgeIncludeMuted = column == "badge_include_muted" ? value : true
+        try await database.execute(
+            """
+            INSERT INTO notification_setting (
+                user_id,
+                is_enabled,
+                show_preview,
+                badge_enabled,
+                badge_include_muted,
+                updated_at
+            ) VALUES (?, 1, 1, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                \(column) = ?,
+                updated_at = ?;
+            """,
+            parameters: [
+                .text(userID.rawValue),
+                .integer(insertedBadgeEnabled ? 1 : 0),
+                .integer(insertedBadgeIncludeMuted ? 1 : 0),
+                .integer(now),
+                .integer(value ? 1 : 0),
+                .integer(now)
+            ],
+            paths: paths
+        )
+    }
+
+    private func unreadBadgeCount(userID: UserID, includeMuted: Bool) async throws -> Int {
+        let rows = try await database.query(
+            """
+            SELECT COALESCE(SUM(unread_count), 0) AS badge_count
+            FROM conversation
+            WHERE user_id = ?
+            AND is_hidden = 0
+            AND (? = 1 OR is_muted = 0);
+            """,
+            parameters: [
+                .text(userID.rawValue),
+                .integer(includeMuted ? 1 : 0)
+            ],
+            paths: paths
+        )
+
+        return max(0, rows.first?.int("badge_count") ?? 0)
+    }
+
+    private func notifyIncomingMessages(_ messages: [IncomingSyncMessage], userID: UserID, badgeCount: Int) async {
         guard let localNotificationManager, !messages.isEmpty else {
             return
         }
@@ -908,7 +1011,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                     messageDigest: message.text,
                     isMuted: context.isMuted,
                     isEnabled: setting.isEnabled,
-                    showPreview: setting.showPreview
+                    showPreview: setting.showPreview,
+                    badgeCount: badgeCount
                 )
             )
         }

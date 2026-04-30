@@ -60,16 +60,18 @@ actor DatabaseActor {
     /// - Returns: 初始化结果，包含路径和元数据
     /// - Throws: 数据库操作失败时抛出错误
     func bootstrap(paths: AccountStoragePaths) async throws -> DatabaseBootstrapResult {
+        try applyInitialScripts(to: paths)
+        try applyIdempotentMigrations(to: paths)
+
         let metadata = MigrationMetadata(
             schemaVersion: DatabaseSchema.currentVersion,
-            lastMigrationID: DatabaseSchema.initialScripts.last?.id ?? "",
+            lastMigrationID: DatabaseSchema.allScripts.last?.id ?? "",
             lastVacuumAt: nil,
             lastIntegrityCheckAt: nil,
             ftsRebuildVersion: 0,
-            appliedScriptIDs: DatabaseSchema.initialScripts.map(\.id)
+            appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
         )
 
-        try applyInitialScripts(to: paths)
         try await persistMigrationMetadata(metadata, in: paths)
         try persist(metadata: metadata, in: paths)
 
@@ -209,6 +211,55 @@ actor DatabaseActor {
                 throw error
             }
         }
+    }
+
+    /// 应用可重复执行的轻量迁移
+    ///
+    /// 初始建表脚本使用 `CREATE TABLE IF NOT EXISTS`，不会自动给旧表补列。
+    /// 这里通过表结构检查补齐新增字段，保证已有账号目录再次启动后也能升级。
+    private func applyIdempotentMigrations(to paths: AccountStoragePaths) throws {
+        try addColumnIfMissing(
+            table: "notification_setting",
+            column: "badge_enabled",
+            definition: "INTEGER DEFAULT 1",
+            in: .main,
+            paths: paths
+        )
+        try addColumnIfMissing(
+            table: "notification_setting",
+            column: "badge_include_muted",
+            definition: "INTEGER DEFAULT 1",
+            in: .main,
+            paths: paths
+        )
+    }
+
+    /// 按需补充字段
+    private func addColumnIfMissing(
+        table: String,
+        column: String,
+        definition: String,
+        in database: DatabaseFileKind,
+        paths: AccountStoragePaths
+    ) throws {
+        let databaseURL = url(for: database, in: paths)
+        let handle = try openDatabase(at: databaseURL)
+        defer {
+            try? closeDatabase(handle, at: databaseURL)
+        }
+
+        let columns = try columnNames(in: table, using: handle, at: databaseURL)
+        guard !columns.contains(column) else {
+            return
+        }
+
+        try executeRaw("ALTER TABLE \(table) ADD COLUMN \(column) \(definition);", using: handle, at: databaseURL)
+    }
+
+    /// 读取表字段名
+    private func columnNames(in table: String, using handle: OpaquePointer, at url: URL) throws -> Set<String> {
+        let rows = try query("PRAGMA table_info(\(table));", parameters: [], using: handle, at: url)
+        return Set(rows.compactMap { $0.string("name") })
     }
 
     /// 持久化迁移元数据到数据库

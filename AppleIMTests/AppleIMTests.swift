@@ -65,6 +65,7 @@ struct AppleIMTests {
         #expect(loadedMetadata.appliedScriptIDs.contains("001_main_core_tables"))
         #expect(loadedMetadata.appliedScriptIDs.contains("001_search_tables"))
         #expect(loadedMetadata.appliedScriptIDs.contains("001_file_index_tables"))
+        #expect(loadedMetadata.appliedScriptIDs.contains("002_notification_badge_settings"))
         #expect(mainTables.contains("migration_meta"))
         #expect(mainTables.contains("conversation"))
         #expect(mainTables.contains("message"))
@@ -72,6 +73,66 @@ struct AppleIMTests {
         #expect(searchTables.contains("contact_search"))
         #expect(searchTables.contains("conversation_search"))
         #expect(fileIndexTables.contains("file_index"))
+    }
+
+    @Test func databaseBootstrapCreatesNotificationBadgeSettingColumns() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "fresh_badge_schema_user")
+        let rows = try await databaseActor.query("PRAGMA table_info(notification_setting);", paths: paths)
+        let columns = Set(rows.compactMap { $0.string("name") })
+        let repository = LocalChatRepository(database: databaseActor, paths: paths)
+        let setting = try await repository.notificationSetting(for: "fresh_badge_schema_user")
+
+        #expect(columns.contains("badge_enabled"))
+        #expect(columns.contains("badge_include_muted"))
+        #expect(setting.badgeEnabled == true)
+        #expect(setting.badgeIncludeMuted == true)
+    }
+
+    @Test func databaseBootstrapMigratesLegacyNotificationBadgeSettingColumns() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let paths = try await storageService.prepareStorage(for: "legacy_badge_schema_user")
+        let databaseActor = DatabaseActor()
+        try await databaseActor.execute(
+            """
+            CREATE TABLE notification_setting (
+                user_id TEXT PRIMARY KEY,
+                is_enabled INTEGER DEFAULT 1,
+                show_preview INTEGER DEFAULT 1,
+                updated_at INTEGER
+            );
+            """,
+            paths: paths
+        )
+        try await databaseActor.execute(
+            """
+            INSERT INTO notification_setting (user_id, is_enabled, show_preview, updated_at)
+            VALUES (?, 1, 0, 10);
+            """,
+            parameters: [.text("legacy_badge_schema_user")],
+            paths: paths
+        )
+
+        _ = try await databaseActor.bootstrap(paths: paths)
+        let rows = try await databaseActor.query("PRAGMA table_info(notification_setting);", paths: paths)
+        let columns = Set(rows.compactMap { $0.string("name") })
+        let repository = LocalChatRepository(database: databaseActor, paths: paths)
+        let setting = try await repository.notificationSetting(for: "legacy_badge_schema_user")
+
+        #expect(columns.contains("badge_enabled"))
+        #expect(columns.contains("badge_include_muted"))
+        #expect(setting.showPreview == false)
+        #expect(setting.badgeEnabled == true)
+        #expect(setting.badgeIncludeMuted == true)
     }
 
     @Test func searchIndexRebuildIndexesContactsConversationsAndMessages() async throws {
@@ -257,6 +318,16 @@ struct AppleIMTests {
             let rows = try await databaseContext.databaseActor.query(
                 "SELECT COUNT(*) AS index_count FROM message_search WHERE message_id = ?;",
                 parameters: [.text("search_failure_message")],
+                in: .search,
+                paths: databaseContext.paths
+            )
+
+            return rows.first?.int("index_count") == 1
+        }
+        try await waitForCondition {
+            let rows = try await databaseContext.databaseActor.query(
+                "SELECT COUNT(*) AS index_count FROM conversation_search WHERE conversation_id = ?;",
+                parameters: [.text("search_failure_conversation")],
                 in: .search,
                 paths: databaseContext.paths
             )
@@ -2258,6 +2329,172 @@ struct AppleIMTests {
         #expect(payloads.first?.notificationBody == "Preview body")
     }
 
+    @Test func applicationBadgeRefreshesFromTotalUnreadIncludingMutedByDefault() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "badge_total_user")
+        let badgeManager = CapturingApplicationBadgeManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            applicationBadgeManager: badgeManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "badge_normal", userID: "badge_total_user", title: "Normal", unreadCount: 2, sortTimestamp: 1)
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "badge_muted",
+                userID: "badge_total_user",
+                title: "Muted",
+                isMuted: true,
+                unreadCount: 3,
+                sortTimestamp: 2
+            )
+        )
+
+        let count = try await repository.refreshApplicationBadge(userID: "badge_total_user")
+        let badgeValues = await badgeManager.values()
+
+        #expect(count == 5)
+        #expect(badgeValues.last == 5)
+    }
+
+    @Test func applicationBadgeCanExcludeMutedConversationUnread() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "badge_muted_policy_user")
+        let badgeManager = CapturingApplicationBadgeManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            applicationBadgeManager: badgeManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "badge_policy_normal", userID: "badge_muted_policy_user", title: "Normal", unreadCount: 2, sortTimestamp: 1)
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "badge_policy_muted",
+                userID: "badge_muted_policy_user",
+                title: "Muted",
+                isMuted: true,
+                unreadCount: 3,
+                sortTimestamp: 2
+            )
+        )
+
+        try await repository.updateBadgeIncludeMuted(userID: "badge_muted_policy_user", includeMuted: false)
+        let setting = try await repository.notificationSetting(for: "badge_muted_policy_user")
+        let conversations = try await repository.listConversations(for: "badge_muted_policy_user")
+        let badgeValues = await badgeManager.values()
+
+        #expect(setting.badgeIncludeMuted == false)
+        #expect(conversations.first { $0.id == "badge_policy_muted" }?.unreadCount == 3)
+        #expect(badgeValues.last == 2)
+    }
+
+    @Test func markingConversationReadRefreshesApplicationBadgeToZero() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "badge_read_user")
+        let badgeManager = CapturingApplicationBadgeManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            applicationBadgeManager: badgeManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "badge_read_conversation", userID: "badge_read_user", title: "Read", unreadCount: 4, sortTimestamp: 1)
+        )
+
+        try await repository.markConversationRead(conversationID: "badge_read_conversation", userID: "badge_read_user")
+        let badgeValues = await badgeManager.values()
+
+        #expect(badgeValues.contains(4))
+        #expect(badgeValues.last == 0)
+    }
+
+    @Test func disabledApplicationBadgeRefreshesToZeroWithoutClearingConversationUnread() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "badge_disabled_user")
+        let badgeManager = CapturingApplicationBadgeManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            applicationBadgeManager: badgeManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "badge_disabled_conversation", userID: "badge_disabled_user", title: "Disabled", unreadCount: 6, sortTimestamp: 1)
+        )
+
+        try await repository.updateBadgeEnabled(userID: "badge_disabled_user", isEnabled: false)
+        let conversations = try await repository.listConversations(for: "badge_disabled_user")
+        let badgeValues = await badgeManager.values()
+
+        #expect(conversations.first?.unreadCount == 6)
+        #expect(badgeValues.last == 0)
+    }
+
+    @Test func incomingSyncMessageCarriesLatestBadgeCountInNotificationPayload() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "notify_badge_user")
+        let notificationManager = CapturingLocalNotificationManager()
+        let badgeManager = CapturingApplicationBadgeManager()
+        let repository = LocalChatRepository(
+            database: databaseActor,
+            paths: paths,
+            localNotificationManager: notificationManager,
+            applicationBadgeManager: badgeManager
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "notify_badge_conversation", userID: "notify_badge_user", title: "Badge", unreadCount: 1, sortTimestamp: 1)
+        )
+
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(
+                messages: [
+                    IncomingSyncMessage(
+                        messageID: "notify_badge_message",
+                        conversationID: "notify_badge_conversation",
+                        senderID: "notify_badge_sender",
+                        serverMessageID: "notify_badge_server",
+                        sequence: 2,
+                        text: "Badge body",
+                        serverTime: 2
+                    )
+                ],
+                nextCursor: "cursor_2",
+                nextSequence: 2
+            ),
+            userID: "notify_badge_user"
+        )
+
+        let payloads = await notificationManager.payloads()
+        let badgeValues = await badgeManager.values()
+
+        #expect(payloads.count == 1)
+        #expect(payloads.first?.badgeCount == 2)
+        #expect(badgeValues.last == 2)
+    }
+
     @Test func mutedConversationDoesNotScheduleLocalNotification() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -3392,6 +3629,18 @@ private actor CapturingLocalNotificationManager: LocalNotificationManaging {
 
     func payloads() -> [IncomingMessageNotificationPayload] {
         capturedPayloads
+    }
+}
+
+private actor CapturingApplicationBadgeManager: ApplicationBadgeManaging {
+    private var capturedValues: [Int] = []
+
+    func setApplicationIconBadgeNumber(_ count: Int) async {
+        capturedValues.append(count)
+    }
+
+    func values() -> [Int] {
+        capturedValues
     }
 }
 

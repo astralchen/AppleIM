@@ -27,6 +27,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             self.dependencies = dependencies
             dependencies.requestLocalNotificationAuthorization()
             dependencies.startNetworkRecovery()
+            dependencies.refreshApplicationBadge()
             window.rootViewController = UINavigationController(
                 rootViewController: dependencies.makeConversationListViewController()
             )
@@ -46,6 +47,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 触发待处理任务的重试
     func sceneDidBecomeActive(_ scene: UIScene) {
         dependencies?.runDueJobsWhenNetworkIsReachable()
+        dependencies?.refreshApplicationBadge()
     }
 
     func sceneWillResignActive(_ scene: UIScene) {
@@ -56,6 +58,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 触发待处理任务的重试
     func sceneWillEnterForeground(_ scene: UIScene) {
         dependencies?.runDueJobsWhenNetworkIsReachable()
+        dependencies?.refreshApplicationBadge()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {

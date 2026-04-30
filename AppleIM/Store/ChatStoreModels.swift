@@ -43,6 +43,10 @@ nonisolated struct NotificationSettingRecord: Equatable, Sendable {
     let isEnabled: Bool
     /// 是否展示消息预览
     let showPreview: Bool
+    /// 是否开启 App 角标
+    let badgeEnabled: Bool
+    /// 免打扰会话是否计入 App 角标
+    let badgeIncludeMuted: Bool
     /// 更新时间
     let updatedAt: Int64
 
@@ -51,6 +55,8 @@ nonisolated struct NotificationSettingRecord: Equatable, Sendable {
             userID: userID,
             isEnabled: true,
             showPreview: true,
+            badgeEnabled: true,
+            badgeIncludeMuted: true,
             updatedAt: 0
         )
     }
@@ -468,6 +474,12 @@ protocol ConversationRepository: Sendable {
 protocol NotificationSettingsRepository: Sendable {
     /// 读取通知设置
     func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord
+    /// 更新 App 角标开关
+    func updateBadgeEnabled(userID: UserID, isEnabled: Bool) async throws
+    /// 更新免打扰会话是否计入 App 角标
+    func updateBadgeIncludeMuted(userID: UserID, includeMuted: Bool) async throws
+    /// 刷新 App 角标并返回最终角标数
+    func refreshApplicationBadge(userID: UserID) async throws -> Int
 }
 
 /// 消息仓储协议

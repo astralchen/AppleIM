@@ -45,7 +45,20 @@ nonisolated struct MigrationScript: Equatable, Sendable {
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
     /// 当前 Schema 版本
-    static let currentVersion = 1
+    static let currentVersion = 2
+
+    /// 增量迁移脚本元数据
+    static let migrationScripts: [MigrationScript] = [
+        MigrationScript(
+            id: "002_notification_badge_settings",
+            database: .main,
+            version: 2,
+            statements: []
+        )
+    ]
+
+    /// 所有已知脚本元数据
+    static let allScripts: [MigrationScript] = initialScripts + migrationScripts
 
     /// 初始化脚本数组
     static let initialScripts: [MigrationScript] = [
@@ -306,6 +319,8 @@ nonisolated enum DatabaseSchema {
                     user_id TEXT PRIMARY KEY,
                     is_enabled INTEGER DEFAULT 1,
                     show_preview INTEGER DEFAULT 1,
+                    badge_enabled INTEGER DEFAULT 1,
+                    badge_include_muted INTEGER DEFAULT 1,
                     updated_at INTEGER
                 );
                 """,
