@@ -29,6 +29,8 @@ final class AppDependencyContainer {
     private let demoUserID: UserID
     /// 网络恢复协调器
     private let networkRecoveryCoordinator: NetworkRecoveryCoordinator
+    /// 最近一次后台数据修复报告
+    private(set) var lastDataRepairReport: DataRepairReport?
 
     init(
         demoUserID: UserID = "demo_user",
@@ -87,6 +89,20 @@ final class AppDependencyContainer {
             }
 
             _ = try? await repository.refreshApplicationBadge(userID: userID)
+        }
+    }
+
+    func runStartupDataRepair() {
+        let storeProvider = storeProvider
+        Task { [weak self] in
+            guard let repairService = try? await storeProvider.dataRepairService() else {
+                return
+            }
+
+            let report = await repairService.run()
+            await MainActor.run {
+                self?.lastDataRepairReport = report
+            }
         }
     }
 

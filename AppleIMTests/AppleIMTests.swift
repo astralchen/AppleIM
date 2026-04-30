@@ -1023,6 +1023,251 @@ struct AppleIMTests {
         #expect(resourceRows.first?.int("download_status") == MediaUploadStatus.pending.rawValue)
     }
 
+    @Test func databaseIntegrityCheckReturnsOKForAllDatabases() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "integrity_user")
+
+        let results = try await databaseActor.integrityCheck(paths: paths)
+
+        #expect(results.map(\.database) == DatabaseFileKind.allCases)
+        #expect(results.allSatisfy { $0.isOK })
+    }
+
+    @Test func dataRepairRebuildsClearedFTSIndex() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "repair_search_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "repair_search_conversation", userID: "repair_search_user", title: "Repair Search", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "repair_search_user",
+                conversationID: "repair_search_conversation",
+                senderID: "repair_search_user",
+                text: "Repairable FTS body",
+                localTime: 560,
+                messageID: "repair_search_message",
+                clientMessageID: "repair_search_client",
+                sortSequence: 560
+            )
+        )
+        try await waitForCondition {
+            let rows = try await databaseContext.databaseActor.query(
+                "SELECT COUNT(*) AS index_count FROM message_search WHERE message_id = ?;",
+                parameters: [.text("repair_search_message")],
+                in: .search,
+                paths: databaseContext.paths
+            )
+
+            return rows.first?.int("index_count") == 1
+        }
+        try await databaseContext.databaseActor.performTransaction(
+            [
+                SQLiteStatement("DELETE FROM contact_search;"),
+                SQLiteStatement("DELETE FROM conversation_search;"),
+                SQLiteStatement("DELETE FROM message_search;")
+            ],
+            in: .search,
+            paths: databaseContext.paths
+        )
+
+        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        let emptyResults = try await searchIndex.search(query: "Repairable", limit: 10)
+        let repairService = DataRepairService(
+            userID: "repair_search_user",
+            database: databaseContext.databaseActor,
+            paths: databaseContext.paths,
+            repository: repository,
+            searchIndex: searchIndex
+        )
+
+        let report = await repairService.run()
+        let repairedResults = try await searchIndex.search(query: "Repairable", limit: 10)
+        let metadata = try await databaseContext.databaseActor.loadMigrationMetadata(paths: databaseContext.paths)
+
+        #expect(emptyResults.isEmpty)
+        #expect(report.steps.first { $0.step == .ftsRebuild }?.isSuccessful == true)
+        #expect(report.isSuccessful)
+        #expect(repairedResults.contains { $0.kind == .message && $0.messageID == "repair_search_message" })
+        #expect(metadata.ftsRebuildVersion == 1)
+        #expect(metadata.lastIntegrityCheckAt != nil)
+    }
+
+    @Test func mediaIndexRebuildRestoresExistingImageAndVoiceFiles() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "repair_media_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "repair_media_conversation", userID: "repair_media_user", title: "Repair Media", sortTimestamp: 1)
+        )
+        let imageDirectory = databaseContext.paths.mediaDirectory.appendingPathComponent("image/original", isDirectory: true)
+        let thumbnailDirectory = databaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb", isDirectory: true)
+        let voiceDirectory = databaseContext.paths.mediaDirectory.appendingPathComponent("voice", isDirectory: true)
+        try FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: thumbnailDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: voiceDirectory, withIntermediateDirectories: true)
+        let imageURL = imageDirectory.appendingPathComponent("repair_image.png")
+        let thumbnailURL = thumbnailDirectory.appendingPathComponent("repair_image.jpg")
+        let voiceURL = voiceDirectory.appendingPathComponent("repair_voice.m4a")
+        try Data("image".utf8).write(to: imageURL, options: [.atomic])
+        try Data("thumb".utf8).write(to: thumbnailURL, options: [.atomic])
+        try Data("voice".utf8).write(to: voiceURL, options: [.atomic])
+
+        _ = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "repair_media_user",
+                conversationID: "repair_media_conversation",
+                senderID: "repair_media_user",
+                image: StoredImageContent(
+                    mediaID: "repair_image",
+                    localPath: imageURL.path,
+                    thumbnailPath: thumbnailURL.path,
+                    width: 120,
+                    height: 80,
+                    sizeBytes: 5,
+                    md5: "repair-md5",
+                    format: "png"
+                ),
+                localTime: 570,
+                messageID: "repair_image_message",
+                clientMessageID: "repair_image_client",
+                sortSequence: 570
+            )
+        )
+        _ = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: "repair_media_user",
+                conversationID: "repair_media_conversation",
+                senderID: "repair_media_user",
+                voice: StoredVoiceContent(
+                    mediaID: "repair_voice",
+                    localPath: voiceURL.path,
+                    durationMilliseconds: 2_000,
+                    sizeBytes: 5,
+                    format: "m4a"
+                ),
+                localTime: 571,
+                messageID: "repair_voice_message",
+                clientMessageID: "repair_voice_client",
+                sortSequence: 571
+            )
+        )
+        try await databaseContext.databaseActor.execute(
+            "DELETE FROM file_index WHERE user_id = ?;",
+            parameters: [.text("repair_media_user")],
+            in: .fileIndex,
+            paths: databaseContext.paths
+        )
+
+        let result = try await repository.rebuildMediaIndex(userID: "repair_media_user")
+        let imageIndex = try await repository.mediaIndexRecord(mediaID: "repair_image", userID: "repair_media_user")
+        let thumbnailIndex = try await repository.mediaIndexRecord(mediaID: "repair_image_thumb", userID: "repair_media_user")
+        let voiceIndex = try await repository.mediaIndexRecord(mediaID: "repair_voice", userID: "repair_media_user")
+
+        #expect(result == MediaIndexRebuildResult(scannedResourceCount: 2, rebuiltIndexCount: 3, missingResourceCount: 0, createdDownloadJobCount: 0))
+        #expect(imageIndex?.localPath == imageURL.path)
+        #expect(imageIndex?.md5 == "repair-md5")
+        #expect(thumbnailIndex?.localPath == thumbnailURL.path)
+        #expect(voiceIndex?.localPath == voiceURL.path)
+    }
+
+    @Test func dataRepairCreatesDownloadJobForMissingMedia() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "repair_missing_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "repair_missing_conversation", userID: "repair_missing_user", title: "Repair Missing", sortTimestamp: 1)
+        )
+        let missingLocalPath = databaseContext.paths.mediaDirectory.appendingPathComponent("image/original/repair_missing.png").path
+        _ = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: "repair_missing_user",
+                conversationID: "repair_missing_conversation",
+                senderID: "repair_missing_user",
+                image: StoredImageContent(
+                    mediaID: "repair_missing",
+                    localPath: missingLocalPath,
+                    thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/repair_missing.jpg").path,
+                    width: 64,
+                    height: 64,
+                    sizeBytes: 128,
+                    format: "png"
+                ),
+                localTime: 580,
+                messageID: "repair_missing_message",
+                clientMessageID: "repair_missing_client",
+                sortSequence: 580
+            )
+        )
+        try await databaseContext.databaseActor.execute(
+            """
+            UPDATE media_resource
+            SET remote_url = ?
+            WHERE media_id = ?;
+            """,
+            parameters: [
+                .text("https://mock-cdn.chatbridge.local/image/repair_missing"),
+                .text("repair_missing")
+            ],
+            paths: databaseContext.paths
+        )
+
+        let repairService = DataRepairService(
+            userID: "repair_missing_user",
+            database: databaseContext.databaseActor,
+            paths: databaseContext.paths,
+            repository: repository,
+            searchIndex: SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        )
+
+        let report = await repairService.run()
+        let job = try await repository.pendingJob(id: "media_download_repair_missing")
+
+        #expect(report.mediaIndexRebuildResult?.missingResourceCount == 1)
+        #expect(report.mediaIndexRebuildResult?.createdDownloadJobCount == 1)
+        #expect(job?.type == .mediaDownload)
+        #expect(job?.payloadJSON.contains(#""remoteURL":"https://mock-cdn.chatbridge.local/image/repair_missing""#) == true)
+    }
+
+    @Test func dataRepairReportsFailureWithoutThrowing() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "repair_failure_user")
+        try FileManager.default.removeItem(at: databaseContext.paths.searchDatabase)
+        try FileManager.default.createDirectory(at: databaseContext.paths.searchDatabase, withIntermediateDirectories: false)
+        let repairService = DataRepairService(
+            userID: "repair_failure_user",
+            database: databaseContext.databaseActor,
+            paths: databaseContext.paths,
+            repository: repository,
+            searchIndex: SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        )
+
+        let report = await repairService.run()
+
+        #expect(report.isSuccessful == false)
+        #expect(report.steps.contains { $0.step == .integrityCheck && !$0.isSuccessful })
+        #expect(report.steps.contains { $0.step == .ftsRebuild && !$0.isSuccessful })
+        #expect(report.steps.contains { $0.step == .mediaIndexRebuild && $0.isSuccessful })
+    }
+
     @Test func localChatRepositoryMarksVoiceMessagePlayed() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

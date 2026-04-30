@@ -28,6 +28,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             dependencies.requestLocalNotificationAuthorization()
             dependencies.startNetworkRecovery()
             dependencies.refreshApplicationBadge()
+            dependencies.runStartupDataRepair()
             window.rootViewController = UINavigationController(
                 rootViewController: dependencies.makeConversationListViewController()
             )

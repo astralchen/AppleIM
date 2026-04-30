@@ -568,6 +568,44 @@ nonisolated struct MissingMediaResource: Equatable, Sendable {
     let remoteURL: String
 }
 
+/// 媒体索引重建结果。
+nonisolated struct MediaIndexRebuildResult: Equatable, Sendable {
+    /// 扫描到的媒体资源数
+    let scannedResourceCount: Int
+    /// 重建的 file_index 记录数
+    let rebuiltIndexCount: Int
+    /// 本地文件丢失但具备远端地址的资源数
+    let missingResourceCount: Int
+    /// 创建或更新的媒体下载任务数
+    let createdDownloadJobCount: Int
+}
+
+/// 数据修复步骤。
+nonisolated enum DataRepairStep: String, Equatable, Sendable {
+    case integrityCheck
+    case ftsRebuild
+    case mediaIndexRebuild
+}
+
+/// 单个数据修复步骤的执行结果。
+nonisolated struct DataRepairStepReport: Equatable, Sendable {
+    let step: DataRepairStep
+    let isSuccessful: Bool
+    let errorDescription: String?
+}
+
+/// 数据修复结构化报告。
+nonisolated struct DataRepairReport: Equatable, Sendable {
+    let userID: UserID
+    let integrityResults: [DatabaseIntegrityCheckResult]
+    let mediaIndexRebuildResult: MediaIndexRebuildResult?
+    let steps: [DataRepairStepReport]
+
+    var isSuccessful: Bool {
+        steps.allSatisfy(\.isSuccessful)
+    }
+}
+
 /// 会话仓储协议
 protocol ConversationRepository: Sendable {
     /// 查询会话列表
@@ -688,4 +726,6 @@ protocol MediaIndexRepository: Sendable {
     func scanMissingMediaResources(userID: UserID) async throws -> [MissingMediaResource]
     /// 为缺失媒体资源创建下载任务
     func enqueueMediaDownloadJobsForMissingResources(userID: UserID) async throws -> [PendingJob]
+    /// 以 media_resource 为真源重建 file_index.db
+    func rebuildMediaIndex(userID: UserID) async throws -> MediaIndexRebuildResult
 }

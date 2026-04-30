@@ -98,6 +98,21 @@ actor ChatStoreProvider {
         return searchIndex
     }
 
+    /// 获取后台数据修复服务。
+    func dataRepairService() async throws -> DataRepairService {
+        let paths = try await prepareAccountStorage()
+        _ = try await database.bootstrap(paths: paths)
+        let repository = try await repository()
+        let searchIndex = try await searchIndex()
+        return DataRepairService(
+            userID: accountID,
+            database: database,
+            paths: paths,
+            repository: repository,
+            searchIndex: searchIndex
+        )
+    }
+
     /// 删除当前账号本地存储和账号绑定密钥
     func deleteAccountStorage() async throws {
         cachedRepository = nil

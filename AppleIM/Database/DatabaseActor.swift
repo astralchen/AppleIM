@@ -70,6 +70,16 @@ nonisolated struct DatabaseBootstrapResult: Equatable, Sendable {
     let metadata: MigrationMetadata  // 迁移元数据
 }
 
+/// 数据库完整性检查结果。
+nonisolated struct DatabaseIntegrityCheckResult: Equatable, Sendable {
+    let database: DatabaseFileKind
+    let messages: [String]
+
+    var isOK: Bool {
+        messages == ["ok"]
+    }
+}
+
 /// 数据库 Actor
 ///
 /// 核心职责：
@@ -102,16 +112,18 @@ actor DatabaseActor {
     /// - Returns: 初始化结果，包含路径和元数据
     /// - Throws: 数据库操作失败时抛出错误
     func bootstrap(paths: AccountStoragePaths) async throws -> DatabaseBootstrapResult {
+        let previousMetadata = try? await loadMigrationMetadata(paths: paths)
         try migratePlaintextDatabasesIfNeeded(in: paths)
         try applyInitialScripts(to: paths)
         try applyIdempotentMigrations(to: paths)
 
+        let persistedMetadata = previousMetadata ?? (try? loadMigrationMetadataFromDatabase(in: paths))
         let metadata = MigrationMetadata(
             schemaVersion: DatabaseSchema.currentVersion,
             lastMigrationID: DatabaseSchema.allScripts.last?.id ?? "",
-            lastVacuumAt: nil,
-            lastIntegrityCheckAt: nil,
-            ftsRebuildVersion: 0,
+            lastVacuumAt: persistedMetadata?.lastVacuumAt,
+            lastIntegrityCheckAt: persistedMetadata?.lastIntegrityCheckAt,
+            ftsRebuildVersion: persistedMetadata?.ftsRebuildVersion ?? 0,
             appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
         )
 
@@ -130,6 +142,61 @@ actor DatabaseActor {
     func loadMigrationMetadata(paths: AccountStoragePaths) async throws -> MigrationMetadata {
         let data = try Data(contentsOf: metadataURL(in: paths))
         return try JSONDecoder().decode(MigrationMetadata.self, from: data)
+    }
+
+    /// 对指定数据库运行 SQLite/SQLCipher 完整性检查。
+    func integrityCheck(
+        in database: DatabaseFileKind,
+        paths: AccountStoragePaths
+    ) async throws -> DatabaseIntegrityCheckResult {
+        let rows = try await query("PRAGMA integrity_check;", in: database, paths: paths)
+        let messages = rows.compactMap { row -> String? in
+            row.string("integrity_check") ?? row.values.values.compactMap { value -> String? in
+                guard case let .text(text) = value else {
+                    return nil
+                }
+
+                return text
+            }.first
+        }
+
+        return DatabaseIntegrityCheckResult(
+            database: database,
+            messages: messages.isEmpty ? ["ok"] : messages
+        )
+    }
+
+    /// 对账号下所有数据库运行完整性检查。
+    func integrityCheck(paths: AccountStoragePaths) async throws -> [DatabaseIntegrityCheckResult] {
+        var results: [DatabaseIntegrityCheckResult] = []
+
+        for database in DatabaseFileKind.allCases {
+            results.append(try await integrityCheck(in: database, paths: paths))
+        }
+
+        return results
+    }
+
+    /// 更新维护元数据，用于记录后台修复任务的检查时间和 FTS 重建版本。
+    func recordMaintenanceMetadata(
+        paths: AccountStoragePaths,
+        integrityCheckedAt: Int64?,
+        ftsRebuildVersion: Int?
+    ) async throws -> MigrationMetadata {
+        let previousMetadata = (try? await loadMigrationMetadata(paths: paths))
+            ?? (try? loadMigrationMetadataFromDatabase(in: paths))
+        let metadata = MigrationMetadata(
+            schemaVersion: DatabaseSchema.currentVersion,
+            lastMigrationID: DatabaseSchema.allScripts.last?.id ?? "",
+            lastVacuumAt: previousMetadata?.lastVacuumAt,
+            lastIntegrityCheckAt: integrityCheckedAt.map(Int.init) ?? previousMetadata?.lastIntegrityCheckAt,
+            ftsRebuildVersion: ftsRebuildVersion ?? previousMetadata?.ftsRebuildVersion ?? 0,
+            appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
+        )
+
+        try await persistMigrationMetadata(metadata, in: paths)
+        try persist(metadata: metadata, in: paths)
+        return metadata
     }
 
     /// 获取数据库中的所有表名
@@ -453,6 +520,43 @@ actor DatabaseActor {
     private func columnNames(in table: String, using handle: OpaquePointer, at url: URL) throws -> Set<String> {
         let rows = try query("PRAGMA table_info(\(table));", parameters: [], using: handle, at: url)
         return Set(rows.compactMap { $0.string("name") })
+    }
+
+    private func loadMigrationMetadataFromDatabase(in paths: AccountStoragePaths) throws -> MigrationMetadata? {
+        let databaseURL = url(for: .main, in: paths)
+        let handle = try openDatabase(at: databaseURL)
+        defer {
+            try? closeDatabase(handle, at: databaseURL)
+        }
+
+        let rows = try query(
+            """
+            SELECT
+                schema_version,
+                last_migration_id,
+                last_vacuum_at,
+                last_integrity_check_at,
+                fts_rebuild_version
+            FROM migration_meta
+            LIMIT 1;
+            """,
+            parameters: [],
+            using: handle,
+            at: databaseURL
+        )
+
+        guard let row = rows.first else {
+            return nil
+        }
+
+        return MigrationMetadata(
+            schemaVersion: row.int("schema_version") ?? DatabaseSchema.currentVersion,
+            lastMigrationID: row.string("last_migration_id") ?? DatabaseSchema.allScripts.last?.id ?? "",
+            lastVacuumAt: row.int("last_vacuum_at"),
+            lastIntegrityCheckAt: row.int("last_integrity_check_at"),
+            ftsRebuildVersion: row.int("fts_rebuild_version") ?? 0,
+            appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
+        )
     }
 
     /// 持久化迁移元数据到数据库

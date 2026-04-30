@@ -869,6 +869,36 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
 
     func enqueueMediaDownloadJobsForMissingResources(userID: UserID) async throws -> [PendingJob] {
         let missingResources = try await scanMissingMediaResources(userID: userID)
+        return try await enqueueMediaDownloadJobs(for: missingResources)
+    }
+
+    func rebuildMediaIndex(userID: UserID) async throws -> MediaIndexRebuildResult {
+        let resourceRows = try await mediaResourceRowsForIndexRebuild(userID: userID)
+        let rebuiltRecords = resourceRows.flatMap(Self.mediaIndexRecordsForExistingFiles)
+        let missingResources = try await scanMissingMediaResources(userID: userID)
+
+        try await database.performTransaction(
+            [
+                SQLiteStatement(
+                    "DELETE FROM file_index WHERE user_id = ?;",
+                    parameters: [.text(userID.rawValue)]
+                )
+            ] + rebuiltRecords.map(Self.upsertMediaIndexStatement),
+            in: .fileIndex,
+            paths: paths
+        )
+
+        let downloadJobs = try await enqueueMediaDownloadJobs(for: missingResources)
+
+        return MediaIndexRebuildResult(
+            scannedResourceCount: resourceRows.count,
+            rebuiltIndexCount: rebuiltRecords.count,
+            missingResourceCount: missingResources.count,
+            createdDownloadJobCount: downloadJobs.count
+        )
+    }
+
+    private func enqueueMediaDownloadJobs(for missingResources: [MissingMediaResource]) async throws -> [PendingJob] {
         guard !missingResources.isEmpty else {
             return []
         }
@@ -1099,6 +1129,27 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         return max(0, rows.first?.int("badge_count") ?? 0)
     }
 
+    private func mediaResourceRowsForIndexRebuild(userID: UserID) async throws -> [SQLiteRow] {
+        try await database.query(
+            """
+            SELECT
+                media_id,
+                user_id,
+                local_path,
+                thumb_path,
+                size_bytes,
+                md5,
+                updated_at,
+                created_at
+            FROM media_resource
+            WHERE user_id = ?
+            ORDER BY updated_at DESC, created_at DESC;
+            """,
+            parameters: [.text(userID.rawValue)],
+            paths: paths
+        )
+    }
+
     private func interruptedOutgoingMessages(userID: UserID) async throws -> [InterruptedOutgoingMessage] {
         let rows = try await database.query(
             """
@@ -1318,6 +1369,53 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             lastAccessAt: row.int64("last_access_at"),
             createdAt: try row.requiredInt64("created_at")
         )
+    }
+
+    private static func mediaIndexRecordsForExistingFiles(from row: SQLiteRow) -> [MediaIndexRecord] {
+        guard
+            let mediaID = row.string("media_id"),
+            let userID = row.string("user_id")
+        else {
+            return []
+        }
+
+        let timestamp = row.int64("created_at") ?? row.int64("updated_at") ?? currentTimestamp()
+        let md5 = row.string("md5")
+        var records: [MediaIndexRecord] = []
+
+        if let localPath = row.string("local_path"), FileManager.default.fileExists(atPath: localPath) {
+            records.append(
+                MediaIndexRecord(
+                    mediaID: mediaID,
+                    userID: UserID(rawValue: userID),
+                    localPath: localPath,
+                    fileName: fileName(from: localPath),
+                    fileExtension: fileExtension(from: localPath, fallback: nil),
+                    sizeBytes: existingFileSize(atPath: localPath) ?? row.int64("size_bytes"),
+                    md5: md5,
+                    lastAccessAt: timestamp,
+                    createdAt: timestamp
+                )
+            )
+        }
+
+        if let thumbnailPath = row.string("thumb_path"), FileManager.default.fileExists(atPath: thumbnailPath) {
+            records.append(
+                MediaIndexRecord(
+                    mediaID: "\(mediaID)_thumb",
+                    userID: UserID(rawValue: userID),
+                    localPath: thumbnailPath,
+                    fileName: fileName(from: thumbnailPath),
+                    fileExtension: fileExtension(from: thumbnailPath, fallback: "jpg"),
+                    sizeBytes: existingFileSize(atPath: thumbnailPath),
+                    md5: nil,
+                    lastAccessAt: timestamp,
+                    createdAt: timestamp
+                )
+            )
+        }
+
+        return records
     }
 
     private static func interruptedOutgoingMessage(from row: SQLiteRow) throws -> InterruptedOutgoingMessage {
