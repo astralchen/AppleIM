@@ -475,7 +475,7 @@ extension ChatViewController: UICollectionViewDelegate {
             return nil
         }
 
-        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+        return UIContextMenuConfiguration(identifier: rowID as NSString, previewProvider: nil) { [weak self] _ in
             var actions: [UIAction] = []
 
             if row.canRevoke {
@@ -496,6 +496,59 @@ extension ChatViewController: UICollectionViewDelegate {
 
             return UIMenu(children: actions)
         }
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        previewForHighlightingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
+    ) -> UITargetedPreview? {
+        contextMenuPreview(for: configuration)
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        previewForDismissingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
+    ) -> UITargetedPreview? {
+        contextMenuPreview(for: configuration)
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        willEndContextMenuInteraction configuration: UIContextMenuConfiguration,
+        animator: UIContextMenuInteractionAnimating?
+    ) {
+        guard let animator else {
+            clearContextMenuPreview(for: configuration)
+            return
+        }
+
+        animator.addCompletion { [weak self] in
+            self?.clearContextMenuPreview(for: configuration)
+        }
+    }
+
+    private func contextMenuPreview(for configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
+        guard
+            let rowID = configuration.identifier as? String,
+            let indexPath = dataSource?.indexPath(for: rowID),
+            let cell = collectionView.cellForItem(at: indexPath) as? ChatMessageCell
+        else {
+            return nil
+        }
+
+        return cell.makeContextMenuPreview()
+    }
+
+    private func clearContextMenuPreview(for configuration: UIContextMenuConfiguration) {
+        guard
+            let rowID = configuration.identifier as? String,
+            let indexPath = dataSource?.indexPath(for: rowID),
+            let cell = collectionView.cellForItem(at: indexPath) as? ChatMessageCell
+        else {
+            return
+        }
+
+        cell.clearContextMenuPreview()
     }
 }
 
@@ -532,6 +585,7 @@ private final class ChatMessageCell: UICollectionViewCell {
     private var trailingConstraint: NSLayoutConstraint?
     private var retryMessageID: MessageID?
     private var onRetry: ((MessageID) -> Void)?
+    private var contextMenuSnapshotView: UIImageView?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -541,6 +595,11 @@ private final class ChatMessageCell: UICollectionViewCell {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        clearContextMenuPreview()
     }
 
     func configure(row: ChatMessageRowState, onRetry: @escaping (MessageID) -> Void) {
@@ -567,6 +626,55 @@ private final class ChatMessageCell: UICollectionViewCell {
 
         leadingConstraint?.isActive = !row.isOutgoing
         trailingConstraint?.isActive = row.isOutgoing
+    }
+
+    func makeContextMenuPreview() -> UITargetedPreview {
+        contentView.layoutIfNeeded()
+
+        // 使用稳定的气泡快照承载菜单动画。直接把真实 bubbleView 交给 UIKit
+        // 可能会在 context menu 过渡期间临时隐藏或偏移真实 cell。
+        let previewView = contextMenuSnapshotView ?? makeBubbleSnapshotView()
+        if previewView.superview == nil {
+            contentView.addSubview(previewView)
+        }
+        previewView.frame = bubbleView.frame
+        previewView.isHidden = false
+        contextMenuSnapshotView = previewView
+        // UIKit 动画期间只保留快照气泡可见，避免 preview 抬起或消失时
+        // 底下的真实气泡露边。
+        bubbleView.isHidden = true
+
+        let parameters = UIPreviewParameters()
+        parameters.backgroundColor = .clear
+        parameters.visiblePath = UIBezierPath(
+            roundedRect: previewView.bounds,
+            cornerRadius: bubbleView.layer.cornerRadius
+        )
+
+        let target = UIPreviewTarget(container: contentView, center: bubbleView.center)
+        return UITargetedPreview(view: previewView, parameters: parameters, target: target)
+    }
+
+    func clearContextMenuPreview() {
+        // context menu 动画结束后恢复真实气泡；如果菜单期间 cell 被复用，
+        // prepareForReuse 也会调用这里清掉临时状态。
+        contextMenuSnapshotView?.removeFromSuperview()
+        contextMenuSnapshotView = nil
+        bubbleView.isHidden = false
+    }
+
+    private func makeBubbleSnapshotView() -> UIImageView {
+        let rendererFormat = UIGraphicsImageRendererFormat()
+        rendererFormat.scale = window?.screen.scale ?? UIScreen.main.scale
+        rendererFormat.opaque = false
+        let previewImage = UIGraphicsImageRenderer(bounds: bubbleView.bounds, format: rendererFormat).image { _ in
+            bubbleView.drawHierarchy(in: bubbleView.bounds, afterScreenUpdates: false)
+        }
+        let previewView = UIImageView(image: previewImage)
+        previewView.frame = bubbleView.frame
+        previewView.layer.cornerRadius = bubbleView.layer.cornerRadius
+        previewView.layer.masksToBounds = true
+        return previewView
     }
 
     private func configureView() {

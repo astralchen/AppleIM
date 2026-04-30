@@ -46,7 +46,7 @@ final class VoiceRecordingController: NSObject {
     func beginRecording() async {
         guard !isRecording else { return }
 
-        let hasPermission = await requestMicrophonePermission()
+        let hasPermission = await Self.requestMicrophonePermission()
         guard hasPermission else {
             onCompletion?(.permissionDenied)
             publishIdleState(hintText: "Microphone access denied")
@@ -188,7 +188,7 @@ final class VoiceRecordingController: NSObject {
         return max(0, Int(Date().timeIntervalSince(startedAt) * 1_000))
     }
 
-    private func requestMicrophonePermission() async -> Bool {
+    private nonisolated static func requestMicrophonePermission() async -> Bool {
         let session = AVAudioSession.sharedInstance()
 
         switch session.recordPermission {
