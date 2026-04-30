@@ -22,6 +22,7 @@ final class ConversationListViewController: UIViewController {
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ConversationListRowState] = [:]
     private var searchRowsByID: [String: SearchResultRowState] = [:]
+    private var renderedConversationIDs: [String] = []
     private var lastConversationState = ConversationListViewState()
     private var lastSearchState = SearchViewState()
 
@@ -203,13 +204,35 @@ final class ConversationListViewController: UIViewController {
             loadingIndicator.stopAnimating()
         }
 
+        let previousRowsByID = rowsByID
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
         searchRowsByID = [:]
+        let rowIDs = state.rows.map { $0.id.rawValue }
+        let changedRowIDs = rowIDs.filter { previousRowsByID[$0] != rowsByID[$0] }
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-        snapshot.appendSections([conversationListSection])
-        snapshot.appendItems(state.rows.map { $0.id.rawValue }, toSection: conversationListSection)
-        dataSource?.apply(snapshot, animatingDifferences: true)
+        if shouldRebuildConversationSnapshot(with: rowIDs, phase: state.phase) {
+            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+            snapshot.appendSections([conversationListSection])
+            snapshot.appendItems(rowIDs, toSection: conversationListSection)
+            dataSource?.apply(snapshot, animatingDifferences: state.phase != .loading && !renderedConversationIDs.isEmpty)
+        } else if rowIDs.count > renderedConversationIDs.count {
+            var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<String, String>()
+
+            if !snapshot.sectionIdentifiers.contains(conversationListSection) {
+                snapshot.appendSections([conversationListSection])
+            }
+
+            let newRowIDs = Array(rowIDs.dropFirst(renderedConversationIDs.count))
+            snapshot.appendItems(newRowIDs, toSection: conversationListSection)
+            snapshot.reconfigureItems(changedRowIDs.filter { !newRowIDs.contains($0) })
+            dataSource?.apply(snapshot, animatingDifferences: false)
+        } else if !changedRowIDs.isEmpty {
+            var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<String, String>()
+            snapshot.reconfigureItems(changedRowIDs)
+            dataSource?.apply(snapshot, animatingDifferences: false)
+        }
+
+        renderedConversationIDs = rowIDs
     }
 
     private func renderSearch(_ state: SearchViewState) {
@@ -230,6 +253,7 @@ final class ConversationListViewController: UIViewController {
 
         emptyLabel.isHidden = state.phase == .loading || !state.isEmpty
         rowsByID = [:]
+        renderedConversationIDs = []
 
         let allRows = state.contacts + state.conversations + state.messages
         searchRowsByID = Dictionary(uniqueKeysWithValues: allRows.map { ($0.id, $0) })
@@ -252,6 +276,18 @@ final class ConversationListViewController: UIViewController {
         }
 
         dataSource?.apply(snapshot, animatingDifferences: true)
+    }
+
+    private func shouldRebuildConversationSnapshot(with rowIDs: [String], phase: ConversationListViewState.LoadingPhase) -> Bool {
+        guard !renderedConversationIDs.isEmpty else {
+            return true
+        }
+
+        guard rowIDs.count >= renderedConversationIDs.count else {
+            return true
+        }
+
+        return !rowIDs.starts(with: renderedConversationIDs) || phase == .loading
     }
 
     private func makeLayout() -> UICollectionViewLayout {
@@ -329,6 +365,25 @@ extension ConversationListViewController: UICollectionViewDelegate {
         }
 
         onSelectConversation(row)
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard lastSearchState.isSearching == false else {
+            return
+        }
+
+        let visibleRowID = collectionView.indexPathsForVisibleItems
+            .max { lhs, rhs in
+                if lhs.section == rhs.section {
+                    return lhs.item < rhs.item
+                }
+
+                return lhs.section < rhs.section
+            }
+            .flatMap { dataSource?.itemIdentifier(for: $0) }
+            .map(ConversationID.init(rawValue:))
+
+        viewModel.loadNextPageIfNeeded(visibleRowID: visibleRowID)
     }
 }
 

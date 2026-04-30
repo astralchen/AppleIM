@@ -58,6 +58,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         return records.map(Self.conversation(from:))
     }
 
+    func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [Conversation] {
+        let records = try await conversationDAO.listConversations(for: userID, limit: limit, offset: offset)
+        return records.map(Self.conversation(from:))
+    }
+
     func upsertConversation(_ record: ConversationRecord) async throws {
         try await conversationDAO.upsert(record)
         scheduleConversationIndex(conversationID: record.id, userID: record.userID)

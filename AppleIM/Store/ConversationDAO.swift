@@ -110,6 +110,53 @@ nonisolated struct ConversationDAO: Sendable {
         return try rows.map(Self.record(from:))
     }
 
+    /// 分页查询会话列表
+    ///
+    /// 按置顶和排序时间戳降序排列，不包含隐藏的会话。用于会话列表首屏和滚动分页，避免一次性加载大批量会话。
+    ///
+    /// - Parameters:
+    ///   - userID: 用户 ID
+    ///   - limit: 查询数量
+    ///   - offset: 偏移数量
+    /// - Returns: 会话记录数组
+    /// - Throws: 数据库查询失败时抛出错误
+    func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [ConversationRecord] {
+        let rows = try await database.query(
+            """
+            SELECT
+                conversation_id,
+                user_id,
+                biz_type,
+                target_id,
+                title,
+                avatar_url,
+                last_message_id,
+                last_message_time,
+                last_message_digest,
+                unread_count,
+                draft_text,
+                is_pinned,
+                is_muted,
+                is_hidden,
+                sort_ts,
+                updated_at,
+                created_at
+            FROM conversation
+            WHERE user_id = ? AND is_hidden = 0
+            ORDER BY is_pinned DESC, sort_ts DESC
+            LIMIT ? OFFSET ?;
+            """,
+            parameters: [
+                .text(userID.rawValue),
+                .integer(Int64(max(limit, 0))),
+                .integer(Int64(max(offset, 0)))
+            ],
+            paths: paths
+        )
+
+        return try rows.map(Self.record(from:))
+    }
+
     /// 统计会话数量
     ///
     /// - Parameter userID: 用户 ID

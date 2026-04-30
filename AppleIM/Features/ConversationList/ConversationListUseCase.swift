@@ -7,10 +7,17 @@
 
 import Foundation
 
+nonisolated struct ConversationListPage: Equatable, Sendable {
+    let rows: [ConversationListRowState]
+    let hasMore: Bool
+}
+
 /// 会话列表用例协议
 protocol ConversationListUseCase: Sendable {
     /// 加载会话列表
     func loadConversations() async throws -> [ConversationListRowState]
+    /// 分页加载会话列表
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage
 }
 
 /// 本地会话列表用例实现
@@ -29,6 +36,22 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         let repository = try await storeProvider.repository()
         let conversations = try await repository.listConversations(for: userID)
 
+        return Self.rowStates(from: conversations)
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let repository = try await storeProvider.repository()
+        let requestedLimit = max(limit, 0)
+        let conversations = try await repository.listConversations(for: userID, limit: requestedLimit + 1, offset: offset)
+        let pageConversations = Array(conversations.prefix(requestedLimit))
+
+        return ConversationListPage(
+            rows: Self.rowStates(from: pageConversations),
+            hasMore: conversations.count > requestedLimit
+        )
+    }
+
+    private static func rowStates(from conversations: [Conversation]) -> [ConversationListRowState] {
         return conversations.map { conversation in
             let subtitle = conversation.draftText.map { "Draft: \($0)" } ?? conversation.lastMessageDigest
 
@@ -69,5 +92,16 @@ nonisolated struct PreviewConversationListUseCase: ConversationListUseCase {
                 isMuted: true
             )
         ]
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let rows = try await loadConversations()
+        let requestedLimit = max(limit, 0)
+        let pageRows = Array(rows.dropFirst(offset).prefix(requestedLimit))
+
+        return ConversationListPage(
+            rows: pageRows,
+            hasMore: offset + pageRows.count < rows.count
+        )
     }
 }

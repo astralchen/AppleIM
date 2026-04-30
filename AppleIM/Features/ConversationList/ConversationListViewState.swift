@@ -49,6 +49,10 @@ nonisolated struct ConversationListViewState: Equatable, Sendable {
     var phase: LoadingPhase = .idle
     /// 会话行数组
     var rows: [ConversationListRowState] = []
+    /// 是否正在加载下一页
+    var isLoadingMore = false
+    /// 是否还有更多会话可加载
+    var hasMoreRows = false
     /// 空列表提示
     var emptyMessage = "No conversations yet"
 

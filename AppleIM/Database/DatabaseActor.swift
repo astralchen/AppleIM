@@ -400,6 +400,26 @@ actor DatabaseActor {
             in: .main,
             paths: paths
         )
+        try executeIdempotentStatement(
+            "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC);",
+            in: .main,
+            paths: paths
+        )
+    }
+
+    /// 执行幂等 SQL
+    private func executeIdempotentStatement(
+        _ statement: String,
+        in database: DatabaseFileKind,
+        paths: AccountStoragePaths
+    ) throws {
+        let databaseURL = url(for: database, in: paths)
+        let handle = try openDatabase(at: databaseURL)
+        defer {
+            try? closeDatabase(handle, at: databaseURL)
+        }
+
+        try executeRaw(statement, using: handle, at: databaseURL)
     }
 
     /// 按需补充字段

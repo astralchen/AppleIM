@@ -27,6 +27,23 @@ struct AppleIMTests {
         #expect(viewModel.currentState.rows.first?.title == "Test Conversation")
     }
 
+    @MainActor
+    @Test func conversationListViewModelLoadsNextPageNearBottom() async throws {
+        let viewModel = ConversationListViewModel(useCase: PagedConversationListUseCase(), pageSize: 2)
+
+        viewModel.load()
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["paged_0", "paged_1"])
+        #expect(viewModel.currentState.hasMoreRows)
+
+        viewModel.loadNextPageIfNeeded(visibleRowID: "paged_1")
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["paged_0", "paged_1", "paged_2"])
+        #expect(viewModel.currentState.hasMoreRows == false)
+    }
+
     @Test func accountStoragePreparesIsolatedDirectories() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -595,6 +612,58 @@ struct AppleIMTests {
         let records = try await dao.listConversations(for: "ordered_user")
 
         #expect(records.map(\.id.rawValue) == ["pinned_old", "normal_new", "normal_old"])
+    }
+
+    @Test func conversationDAOPagesVisibleConversationsInSortOrder() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "paged_user")
+        let dao = ConversationDAO(database: databaseActor, paths: paths)
+
+        try await dao.upsert(makeConversationRecord(id: "normal_old", userID: "paged_user", title: "Old", sortTimestamp: 10))
+        try await dao.upsert(makeConversationRecord(id: "normal_new", userID: "paged_user", title: "New", sortTimestamp: 30))
+        try await dao.upsert(makeConversationRecord(id: "pinned_old", userID: "paged_user", title: "Pinned", isPinned: true, sortTimestamp: 20))
+
+        let firstPage = try await dao.listConversations(for: "paged_user", limit: 2, offset: 0)
+        let secondPage = try await dao.listConversations(for: "paged_user", limit: 2, offset: 2)
+
+        #expect(firstPage.map(\.id.rawValue) == ["pinned_old", "normal_new"])
+        #expect(secondPage.map(\.id.rawValue) == ["normal_old"])
+    }
+
+    @Test func conversationDAOFirstPageLoadsOneThousandConversationsUnderBudget() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "scale_user")
+        let dao = ConversationDAO(database: databaseActor, paths: paths)
+
+        for index in 0..<1_000 {
+            let id = ConversationID(rawValue: String(format: "scale_%04d", index))
+            try await dao.upsert(
+                makeConversationRecord(
+                    id: id,
+                    userID: "scale_user",
+                    title: "Scale \(index)",
+                    isPinned: index == 0,
+                    sortTimestamp: Int64(index)
+                )
+            )
+        }
+
+        let startedAt = Date()
+        let firstPage = try await dao.listConversations(for: "scale_user", limit: 50, offset: 0)
+        let elapsed = Date().timeIntervalSince(startedAt)
+
+        #expect(firstPage.count == 50)
+        #expect(firstPage.first?.id == "scale_0000")
+        #expect(firstPage.dropFirst().first?.id == "scale_0999")
+        #expect(elapsed < 0.5)
     }
 
     @Test func localChatRepositoryInsertsOutgoingTextMessageInTransaction() async throws {
@@ -1257,6 +1326,29 @@ struct AppleIMTests {
         #expect(rows.count == 3)
         #expect(rows.first?.id == "single_sondra")
         #expect(rows.first?.unreadText == "2")
+    }
+
+    @Test func localConversationListUseCaseLoadsPagedRows() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "paged_usecase_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let useCase = LocalConversationListUseCase(userID: "paged_usecase_user", storeProvider: storeProvider)
+
+        let firstPage = try await useCase.loadConversationPage(limit: 2, offset: 0)
+        let secondPage = try await useCase.loadConversationPage(limit: 2, offset: 2)
+
+        #expect(firstPage.rows.count == 2)
+        #expect(firstPage.hasMore)
+        #expect(secondPage.rows.count == 1)
+        #expect(secondPage.hasMore == false)
     }
 
     @Test func messageRepositoryUpdatesSendStatusAndFindsMessageByID() async throws {
@@ -3323,6 +3415,45 @@ private struct StubConversationListUseCase: ConversationListUseCase {
                 isMuted: false
             )
         ]
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let rows = try await loadConversations()
+        let requestedLimit = max(limit, 0)
+        let pageRows = Array(rows.dropFirst(offset).prefix(requestedLimit))
+
+        return ConversationListPage(
+            rows: pageRows,
+            hasMore: offset + pageRows.count < rows.count
+        )
+    }
+}
+
+private struct PagedConversationListUseCase: ConversationListUseCase {
+    private let rows: [ConversationListRowState] = (0..<3).map { index in
+        ConversationListRowState(
+            id: ConversationID(rawValue: "paged_\(index)"),
+            title: "Paged \(index)",
+            subtitle: "Page row \(index)",
+            timeText: "Now",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        )
+    }
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        rows
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let requestedLimit = max(limit, 0)
+        let pageRows = Array(rows.dropFirst(offset).prefix(requestedLimit))
+
+        return ConversationListPage(
+            rows: pageRows,
+            hasMore: offset + pageRows.count < rows.count
+        )
     }
 }
 

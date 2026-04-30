@@ -464,6 +464,8 @@ nonisolated struct MissingMediaResource: Equatable, Sendable {
 protocol ConversationRepository: Sendable {
     /// 查询会话列表
     func listConversations(for userID: UserID) async throws -> [Conversation]
+    /// 分页查询会话列表
+    func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [Conversation]
     /// 插入或更新会话
     func upsertConversation(_ record: ConversationRecord) async throws
     /// 标记会话已读
