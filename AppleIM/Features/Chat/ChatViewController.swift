@@ -213,10 +213,19 @@ final class ChatViewController: UIViewController {
 
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, String> { [weak self] cell, _, rowID in
-            guard let row = self?.rowsByID[rowID] else { return }
-            cell.configure(row: row) { [weak self] messageID in
-                self?.viewModel.resend(messageID: messageID)
-            }
+            guard let self, let row = self.rowsByID[rowID] else { return }
+            cell.configure(
+                row: row,
+                onRetry: { [weak self] messageID in
+                    self?.viewModel.resend(messageID: messageID)
+                },
+                onDelete: { [weak self] messageID in
+                    self?.viewModel.delete(messageID: messageID)
+                },
+                onRevoke: { [weak self] messageID in
+                    self?.viewModel.revoke(messageID: messageID)
+                }
+            )
         }
 
         dataSource = UICollectionViewDiffableDataSource<String, String>(
@@ -461,95 +470,6 @@ extension ChatViewController: UICollectionViewDelegate {
             viewModel.loadOlderMessagesIfNeeded()
         }
     }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        contextMenuConfigurationForItemAt indexPath: IndexPath,
-        point: CGPoint
-    ) -> UIContextMenuConfiguration? {
-        guard
-            let rowID = dataSource?.itemIdentifier(for: indexPath),
-            let row = rowsByID[rowID],
-            row.canDelete || row.canRevoke
-        else {
-            return nil
-        }
-
-        return UIContextMenuConfiguration(identifier: rowID as NSString, previewProvider: nil) { [weak self] _ in
-            var actions: [UIAction] = []
-
-            if row.canRevoke {
-                actions.append(
-                    UIAction(title: "Revoke", image: UIImage(systemName: "arrow.uturn.backward")) { _ in
-                        self?.viewModel.revoke(messageID: row.id)
-                    }
-                )
-            }
-
-            if row.canDelete {
-                actions.append(
-                    UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
-                        self?.viewModel.delete(messageID: row.id)
-                    }
-                )
-            }
-
-            return UIMenu(children: actions)
-        }
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        previewForHighlightingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
-    ) -> UITargetedPreview? {
-        contextMenuPreview(for: configuration)
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        previewForDismissingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
-    ) -> UITargetedPreview? {
-        contextMenuPreview(for: configuration)
-    }
-
-    func collectionView(
-        _ collectionView: UICollectionView,
-        willEndContextMenuInteraction configuration: UIContextMenuConfiguration,
-        animator: UIContextMenuInteractionAnimating?
-    ) {
-        guard let animator else {
-            clearContextMenuPreview(for: configuration)
-            return
-        }
-
-        animator.addCompletion { [weak self] in
-            self?.clearContextMenuPreview(for: configuration)
-        }
-    }
-
-    private func contextMenuPreview(for configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
-        guard
-            let rowID = configuration.identifier as? String,
-            let indexPath = dataSource?.indexPath(for: rowID),
-            let cell = collectionView.cellForItem(at: indexPath) as? ChatMessageCell
-        else {
-            return nil
-        }
-
-        return cell.makeContextMenuPreview()
-    }
-
-    private func clearContextMenuPreview(for configuration: UIContextMenuConfiguration) {
-        guard
-            let rowID = configuration.identifier as? String,
-            let indexPath = dataSource?.indexPath(for: rowID),
-            let cell = collectionView.cellForItem(at: indexPath) as? ChatMessageCell
-        else {
-            return
-        }
-
-        cell.clearContextMenuPreview()
-    }
 }
 
 private extension ChatMessageRowState {
@@ -574,7 +494,7 @@ private extension ChatMessageRowState {
     }
 }
 
-private final class ChatMessageCell: UICollectionViewCell {
+private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDelegate {
     private let bubbleView = UIView()
     private let stackView = UIStackView()
     private let thumbnailImageView = UIImageView()
@@ -583,9 +503,11 @@ private final class ChatMessageCell: UICollectionViewCell {
     private let retryButton = UIButton(type: .system)
     private var leadingConstraint: NSLayoutConstraint?
     private var trailingConstraint: NSLayoutConstraint?
+    private var row: ChatMessageRowState?
     private var retryMessageID: MessageID?
     private var onRetry: ((MessageID) -> Void)?
-    private var contextMenuSnapshotView: UIImageView?
+    private var onDelete: ((MessageID) -> Void)?
+    private var onRevoke: ((MessageID) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -599,12 +521,24 @@ private final class ChatMessageCell: UICollectionViewCell {
 
     override func prepareForReuse() {
         super.prepareForReuse()
-        clearContextMenuPreview()
+        row = nil
+        retryMessageID = nil
+        onRetry = nil
+        onDelete = nil
+        onRevoke = nil
     }
 
-    func configure(row: ChatMessageRowState, onRetry: @escaping (MessageID) -> Void) {
+    func configure(
+        row: ChatMessageRowState,
+        onRetry: @escaping (MessageID) -> Void,
+        onDelete: @escaping (MessageID) -> Void,
+        onRevoke: @escaping (MessageID) -> Void
+    ) {
+        self.row = row
         retryMessageID = row.id
         self.onRetry = onRetry
+        self.onDelete = onDelete
+        self.onRevoke = onRevoke
         messageLabel.text = row.isVoice ? "Voice \(Self.voiceDurationText(milliseconds: row.voiceDurationMilliseconds ?? 0))" : (row.isImage ? "Image unavailable" : row.text)
         messageLabel.isHidden = row.isImage && row.imageThumbnailPath != nil
         thumbnailImageView.isHidden = !row.isImage
@@ -628,61 +562,16 @@ private final class ChatMessageCell: UICollectionViewCell {
         trailingConstraint?.isActive = row.isOutgoing
     }
 
-    func makeContextMenuPreview() -> UITargetedPreview {
-        contentView.layoutIfNeeded()
-
-        // 使用稳定的气泡快照承载菜单动画。直接把真实 bubbleView 交给 UIKit
-        // 可能会在 context menu 过渡期间临时隐藏或偏移真实 cell。
-        let previewView = contextMenuSnapshotView ?? makeBubbleSnapshotView()
-        if previewView.superview == nil {
-            contentView.addSubview(previewView)
-        }
-        previewView.frame = bubbleView.frame
-        previewView.isHidden = false
-        contextMenuSnapshotView = previewView
-        // UIKit 动画期间只保留快照气泡可见，避免 preview 抬起或消失时
-        // 底下的真实气泡露边。
-        bubbleView.isHidden = true
-
-        let parameters = UIPreviewParameters()
-        parameters.backgroundColor = .clear
-        parameters.visiblePath = UIBezierPath(
-            roundedRect: previewView.bounds,
-            cornerRadius: bubbleView.layer.cornerRadius
-        )
-
-        let target = UIPreviewTarget(container: contentView, center: bubbleView.center)
-        return UITargetedPreview(view: previewView, parameters: parameters, target: target)
-    }
-
-    func clearContextMenuPreview() {
-        // context menu 动画结束后恢复真实气泡；如果菜单期间 cell 被复用，
-        // prepareForReuse 也会调用这里清掉临时状态。
-        contextMenuSnapshotView?.removeFromSuperview()
-        contextMenuSnapshotView = nil
-        bubbleView.isHidden = false
-    }
-
-    private func makeBubbleSnapshotView() -> UIImageView {
-        let rendererFormat = UIGraphicsImageRendererFormat()
-        rendererFormat.scale = window?.screen.scale ?? UIScreen.main.scale
-        rendererFormat.opaque = false
-        let previewImage = UIGraphicsImageRenderer(bounds: bubbleView.bounds, format: rendererFormat).image { _ in
-            bubbleView.drawHierarchy(in: bubbleView.bounds, afterScreenUpdates: false)
-        }
-        let previewView = UIImageView(image: previewImage)
-        previewView.frame = bubbleView.frame
-        previewView.layer.cornerRadius = bubbleView.layer.cornerRadius
-        previewView.layer.masksToBounds = true
-        return previewView
-    }
-
     private func configureView() {
         contentView.backgroundColor = .systemGroupedBackground
 
         bubbleView.translatesAutoresizingMaskIntoConstraints = false
+        bubbleView.isUserInteractionEnabled = true
         bubbleView.layer.cornerRadius = 16
         bubbleView.layer.masksToBounds = true
+        // 把菜单交互绑定到气泡本身，避免 UICollectionView 的 item 级菜单
+        // 把整条 cell 当作 preview 源，从而生成灰色背景残影。
+        bubbleView.addInteraction(UIContextMenuInteraction(delegate: self))
 
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .vertical
@@ -734,6 +623,37 @@ private final class ChatMessageCell: UICollectionViewCell {
     @objc private func retryButtonTapped() {
         guard let retryMessageID else { return }
         onRetry?(retryMessageID)
+    }
+
+    func contextMenuInteraction(
+        _ interaction: UIContextMenuInteraction,
+        configurationForMenuAtLocation location: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let row, row.canDelete || row.canRevoke else {
+            return nil
+        }
+
+        return UIContextMenuConfiguration(identifier: row.diffIdentifier as NSString, previewProvider: nil) { [weak self] _ in
+            var actions: [UIAction] = []
+
+            if row.canRevoke {
+                actions.append(
+                    UIAction(title: "Revoke", image: UIImage(systemName: "arrow.uturn.backward")) { _ in
+                        self?.onRevoke?(row.id)
+                    }
+                )
+            }
+
+            if row.canDelete {
+                actions.append(
+                    UIAction(title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
+                        self?.onDelete?(row.id)
+                    }
+                )
+            }
+
+            return UIMenu(children: actions)
+        }
     }
 
     private static func voiceDurationText(milliseconds: Int) -> String {
