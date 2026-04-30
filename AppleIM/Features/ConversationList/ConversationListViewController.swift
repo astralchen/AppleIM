@@ -76,11 +76,14 @@ final class ConversationListViewController: UIViewController {
         searchController.searchResultsUpdater = self
         searchController.obscuresBackgroundDuringPresentation = false
         searchController.searchBar.placeholder = "Search"
+        searchController.searchBar.accessibilityIdentifier = "conversationList.searchBar"
+        searchController.searchBar.searchTextField.accessibilityIdentifier = "conversationList.searchField"
         definesPresentationContext = true
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.delegate = self
+        collectionView.accessibilityIdentifier = "conversationList.collection"
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.textColor = .secondaryLabel
@@ -121,6 +124,9 @@ final class ConversationListViewController: UIViewController {
                 content.secondaryText = row.subtitle
                 content.secondaryTextProperties.color = .secondaryLabel
                 cell.accessories = self.accessories(for: row)
+                cell.isAccessibilityElement = true
+                cell.accessibilityIdentifier = "conversationList.cell.\(row.id.rawValue)"
+                cell.accessibilityLabel = [row.title, row.subtitle, row.unreadText].compactMap { $0 }.joined(separator: ", ")
 
                 var background = UIBackgroundConfiguration.listGroupedCell()
                 background.backgroundColor = row.isPinned ? .secondarySystemGroupedBackground : .systemBackground
@@ -130,6 +136,9 @@ final class ConversationListViewController: UIViewController {
                 content.secondaryText = row.subtitle
                 content.secondaryTextProperties.color = .secondaryLabel
                 cell.accessories = row.conversationID == nil ? [] : [.disclosureIndicator()]
+                cell.isAccessibilityElement = true
+                cell.accessibilityIdentifier = "conversationList.searchCell.\(rowID)"
+                cell.accessibilityLabel = [row.title, row.subtitle].compactMap { $0 }.joined(separator: ", ")
                 cell.backgroundConfiguration = UIBackgroundConfiguration.listGroupedCell()
             }
 

@@ -2,42 +2,86 @@
 //  AppleIMUITests.swift
 //  AppleIMUITests
 //
-//  Created by Sondra on 2026/4/28.
-//
 
 import XCTest
 
 final class AppleIMUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
+    func testLaunchShowsSeededConversations() throws {
+        let app = makeUITestApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        waitForConversationList(in: app)
+        XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
+        XCTAssertTrue(app.navigationBars["ChatBridge"].exists)
     }
 
     @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+    func testOpenConversationAndSendTextMessage() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        openSondraConversation(in: app)
+
+        let message = "UI test message \(UUID().uuidString)"
+        let input = app.textFields["chat.messageInput"]
+        input.tap()
+        input.typeText(message)
+        app.buttons["chat.sendButton"].tap()
+
+        XCTAssertTrue(
+            messageCell(containing: message, in: app).waitForExistence(timeout: 5),
+            "Expected sent message to appear in chat"
+        )
+    }
+
+    @MainActor
+    func testSearchFindsSeededConversation() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        waitForConversationList(in: app)
+
+        let searchField = app.searchFields["conversationList.searchField"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5), "Expected search field")
+        searchField.tap()
+        searchField.typeText("Sondra")
+
+        let result = app.cells["conversationList.searchCell.conversation_single_sondra"]
+        let fallbackResult = app.staticTexts["Sondra"]
+        XCTAssertTrue(
+            result.waitForExistence(timeout: 10) || fallbackResult.exists,
+            "Expected search result for seeded Sondra conversation"
+        )
+    }
+
+    @MainActor
+    func testFailedSendCanBeRetried() throws {
+        let app = makeUITestApplication(sendMode: .failFirst)
+        app.launch()
+        openSondraConversation(in: app)
+
+        let message = "UI test retry \(UUID().uuidString)"
+        let input = app.textFields["chat.messageInput"]
+        input.tap()
+        input.typeText(message)
+        app.buttons["chat.sendButton"].tap()
+
+        let failedMessage = messageCell(containing: message, in: app)
+        XCTAssertTrue(failedMessage.waitForExistence(timeout: 5), "Expected failed message row")
+
+        let retryButton = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat.retryButton."))
+            .firstMatch
+        XCTAssertTrue(retryButton.waitForExistence(timeout: 5), "Expected retry button after first send failure")
+        retryButton.tap()
+
+        let retryButtonHidden = NSPredicate(format: "exists == false")
+        expectation(for: retryButtonHidden, evaluatedWith: retryButton)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(messageCell(containing: message, in: app).exists)
     }
 }

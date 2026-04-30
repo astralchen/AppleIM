@@ -29,6 +29,8 @@ final class AppDependencyContainer {
     private let demoUserID: UserID
     /// 网络恢复协调器
     private let networkRecoveryCoordinator: NetworkRecoveryCoordinator
+    /// UI 自动化测试模式
+    let isUITesting: Bool
     /// 最近一次后台数据修复报告
     private(set) var lastDataRepairReport: DataRepairReport?
 
@@ -42,25 +44,37 @@ final class AppDependencyContainer {
         localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager(),
         applicationBadgeManager: any ApplicationBadgeManaging = UIKitApplicationBadgeManager()
     ) throws {
-        let storageService = try storageService ?? AccountStorageFactory.makeDefaultService()
-        self.demoUserID = demoUserID
-        self.messageSendService = messageSendService
+        let uiTestConfiguration = AppUITestConfiguration.current
+        let storageService = try storageService
+            ?? uiTestConfiguration.map(AppUITestConfiguration.makeStorageService)
+            ?? AccountStorageFactory.makeDefaultService()
+        let resolvedDemoUserID = uiTestConfiguration?.demoUserID ?? demoUserID
+        let resolvedDatabaseKeyStore: any AccountDatabaseKeyStore = uiTestConfiguration == nil
+            ? databaseKeyStore
+            : InMemoryAccountDatabaseKeyStore()
+        let resolvedMessageSendService = uiTestConfiguration
+            .map(AppUITestConfiguration.makeMessageSendService)
+            ?? messageSendService
+
+        self.isUITesting = uiTestConfiguration != nil
+        self.demoUserID = resolvedDemoUserID
+        self.messageSendService = resolvedMessageSendService
         self.mediaUploadService = mediaUploadService
         self.localNotificationManager = localNotificationManager
         self.applicationBadgeManager = applicationBadgeManager
-        self.mediaFileStore = AccountMediaFileStore(accountID: demoUserID, storageService: storageService)
+        self.mediaFileStore = AccountMediaFileStore(accountID: resolvedDemoUserID, storageService: storageService)
         self.storeProvider = ChatStoreProvider(
-            accountID: demoUserID,
+            accountID: resolvedDemoUserID,
             storageService: storageService,
             database: database,
-            databaseKeyStore: databaseKeyStore,
+            databaseKeyStore: resolvedDatabaseKeyStore,
             localNotificationManager: localNotificationManager,
             applicationBadgeManager: applicationBadgeManager
         )
         self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
-            userID: demoUserID,
+            userID: resolvedDemoUserID,
             storeProvider: storeProvider,
-            sendService: messageSendService,
+            sendService: resolvedMessageSendService,
             mediaUploadService: mediaUploadService
         )
     }

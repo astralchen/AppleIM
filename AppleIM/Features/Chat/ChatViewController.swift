@@ -68,6 +68,7 @@ final class ChatViewController: UIViewController {
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.delegate = self
+        collectionView.accessibilityIdentifier = "chat.collection"
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.text = "No messages yet"
@@ -102,6 +103,7 @@ final class ChatViewController: UIViewController {
         )
         photoButton.configuration = photoButtonConfiguration
         photoButton.accessibilityLabel = "Choose Photo"
+        photoButton.accessibilityIdentifier = "chat.photoButton"
         photoButton.setContentHuggingPriority(.required, for: .horizontal)
         photoButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         photoButton.addTarget(self, action: #selector(photoButtonTapped), for: .touchUpInside)
@@ -117,6 +119,7 @@ final class ChatViewController: UIViewController {
         )
         voiceButton.configuration = voiceButtonConfiguration
         voiceButton.accessibilityLabel = "Hold to Record Voice"
+        voiceButton.accessibilityIdentifier = "chat.voiceButton"
         voiceButton.setContentHuggingPriority(.required, for: .horizontal)
         voiceButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         voiceButton.addTarget(self, action: #selector(voiceButtonTouchDown), for: .touchDown)
@@ -130,6 +133,7 @@ final class ChatViewController: UIViewController {
         textField.borderStyle = .roundedRect
         textField.placeholder = "Message"
         textField.returnKeyType = .send
+        textField.accessibilityIdentifier = "chat.messageInput"
         textField.delegate = self
         textField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         textField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -150,6 +154,7 @@ final class ChatViewController: UIViewController {
             return attributes
         }
         sendButton.configuration = sendButtonConfiguration
+        sendButton.accessibilityIdentifier = "chat.sendButton"
         sendButton.setContentHuggingPriority(.required, for: .horizontal)
         sendButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         sendButton.addTarget(self, action: #selector(sendButtonTapped), for: .touchUpInside)
@@ -653,6 +658,9 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         onDelete = nil
         onRevoke = nil
         onPlayVoice = nil
+        accessibilityIdentifier = nil
+        accessibilityLabel = nil
+        retryButton.accessibilityIdentifier = nil
     }
 
     func configure(
@@ -668,6 +676,8 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         self.onDelete = onDelete
         self.onRevoke = onRevoke
         self.onPlayVoice = onPlayVoice
+        accessibilityIdentifier = "chat.messageCell.\(row.id.rawValue)"
+        accessibilityLabel = Self.accessibilityLabel(for: row)
 
         let voiceTintColor: UIColor = row.isOutgoing && !row.isRevoked ? .white : .systemBlue
         voiceStackView.isHidden = !row.isVoice
@@ -696,6 +706,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         metadataLabel.textColor = row.isOutgoing && !row.isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel
         retryButton.isHidden = !row.canRetry
         retryButton.tintColor = row.isOutgoing ? .white : .systemBlue
+        retryButton.accessibilityIdentifier = "chat.retryButton.\(row.id.rawValue)"
 
         leadingConstraint?.isActive = !row.isOutgoing
         trailingConstraint?.isActive = row.isOutgoing
@@ -827,5 +838,19 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
     private static func voiceDurationText(milliseconds: Int) -> String {
         let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
         return "\(seconds)s"
+    }
+
+    private static func accessibilityLabel(for row: ChatMessageRowState) -> String {
+        var parts = [row.isImage ? "Image" : row.text]
+
+        if let statusText = row.statusText {
+            parts.append(statusText)
+        }
+
+        if let uploadProgress = row.uploadProgress {
+            parts.append("Uploading \(Int(uploadProgress * 100))%")
+        }
+
+        return parts.joined(separator: ", ")
     }
 }

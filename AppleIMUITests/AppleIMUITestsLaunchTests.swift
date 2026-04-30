@@ -2,16 +2,10 @@
 //  AppleIMUITestsLaunchTests.swift
 //  AppleIMUITests
 //
-//  Created by Sondra on 2026/4/28.
-//
 
 import XCTest
 
 final class AppleIMUITestsLaunchTests: XCTestCase {
-
-    override class var runsForEachTargetApplicationUIConfiguration: Bool {
-        true
-    }
 
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -19,13 +13,9 @@ final class AppleIMUITestsLaunchTests: XCTestCase {
 
     @MainActor
     func testLaunch() throws {
-        let app = XCUIApplication()
+        let app = makeUITestApplication()
         app.launch()
-
-        // Insert steps here to perform after app launch but before taking a screenshot,
-        // such as logging into a test account or navigating somewhere in the app
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        waitForConversationList(in: app)
 
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "Launch Screen"

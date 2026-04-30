@@ -25,8 +25,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         do {
             let dependencies = try AppDependencyContainer()
             self.dependencies = dependencies
-            dependencies.requestLocalNotificationAuthorization()
-            dependencies.startNetworkRecovery()
+            if !dependencies.isUITesting {
+                dependencies.requestLocalNotificationAuthorization()
+                dependencies.startNetworkRecovery()
+            }
             dependencies.refreshApplicationBadge()
             dependencies.runStartupDataRepair()
             window.rootViewController = UINavigationController(
@@ -47,6 +49,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// 触发待处理任务的重试
     func sceneDidBecomeActive(_ scene: UIScene) {
+        guard dependencies?.isUITesting != true else {
+            return
+        }
+
         dependencies?.runDueJobsWhenNetworkIsReachable()
         dependencies?.refreshApplicationBadge()
     }
@@ -58,6 +64,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// 触发待处理任务的重试
     func sceneWillEnterForeground(_ scene: UIScene) {
+        guard dependencies?.isUITesting != true else {
+            return
+        }
+
         dependencies?.runDueJobsWhenNetworkIsReachable()
         dependencies?.refreshApplicationBadge()
     }
