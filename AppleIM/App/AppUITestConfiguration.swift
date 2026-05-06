@@ -100,6 +100,14 @@ actor FailFirstUITestMessageSendService: MessageSendService {
         await send(message: message)
     }
 
+    func sendVideo(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
+        await send(message: message)
+    }
+
+    func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
+        await send(message: message)
+    }
+
     private func send(message: StoredMessage) async -> MessageSendResult {
         do {
             try await Task.sleep(nanoseconds: delayNanoseconds)

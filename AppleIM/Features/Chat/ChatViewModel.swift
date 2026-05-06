@@ -264,6 +264,35 @@ final class ChatViewModel {
         }
     }
 
+    /// 发送视频消息
+    ///
+    /// - Parameters:
+    ///   - fileURL: PHPicker 或文件提供方返回的临时视频文件
+    ///   - preferredFileExtension: 首选文件扩展名
+    func sendVideo(fileURL: URL, preferredFileExtension: String?) {
+        sendTask?.cancel()
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                publish { state in
+                    state.draftText = ""
+                }
+
+                for try await row in useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension) {
+                    guard !Task.isCancelled else { return }
+                    upsert(row)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to send video")
+                }
+            }
+        }
+    }
+
     /// 标记语音开始播放
     ///
     /// 播放启动成功后调用，立即更新播放态和未播放红点，再异步回写已播放状态。

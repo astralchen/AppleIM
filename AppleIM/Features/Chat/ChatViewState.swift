@@ -17,6 +17,12 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let text: String
     /// 图片缩略图路径
     let imageThumbnailPath: String?
+    /// 视频缩略图路径
+    let videoThumbnailPath: String?
+    /// 视频本地路径
+    let videoLocalPath: String?
+    /// 视频时长（毫秒）
+    let videoDurationMilliseconds: Int?
     /// 语音时长（毫秒）
     let voiceDurationMilliseconds: Int?
     /// 排序序号
@@ -48,6 +54,9 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         id: MessageID,
         text: String,
         imageThumbnailPath: String?,
+        videoThumbnailPath: String? = nil,
+        videoLocalPath: String? = nil,
+        videoDurationMilliseconds: Int? = nil,
         voiceDurationMilliseconds: Int?,
         sortSequence: Int64,
         timeText: String,
@@ -65,6 +74,9 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         self.id = id
         self.text = text
         self.imageThumbnailPath = imageThumbnailPath
+        self.videoThumbnailPath = videoThumbnailPath
+        self.videoLocalPath = videoLocalPath
+        self.videoDurationMilliseconds = videoDurationMilliseconds
         self.voiceDurationMilliseconds = voiceDurationMilliseconds
         self.sortSequence = sortSequence
         self.timeText = timeText
@@ -85,6 +97,11 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         imageThumbnailPath != nil
     }
 
+    /// 是否为视频消息
+    var isVideo: Bool {
+        videoThumbnailPath != nil || videoLocalPath != nil || videoDurationMilliseconds != nil
+    }
+
     /// 是否为语音消息
     var isVoice: Bool {
         voiceDurationMilliseconds != nil
@@ -95,6 +112,9 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             id: id,
             text: text,
             imageThumbnailPath: imageThumbnailPath,
+            videoThumbnailPath: videoThumbnailPath,
+            videoLocalPath: videoLocalPath,
+            videoDurationMilliseconds: videoDurationMilliseconds,
             voiceDurationMilliseconds: voiceDurationMilliseconds,
             sortSequence: sortSequence,
             timeText: timeText,

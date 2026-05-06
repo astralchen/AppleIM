@@ -6,6 +6,7 @@
 //
 
 import Testing
+import AVFoundation
 import Combine
 import Foundation
 import CoreGraphics
@@ -799,6 +800,27 @@ struct AppleIMTests {
         #expect(storedFile.content.format == "m4a")
     }
 
+    @Test func mediaFileActorStoresVideoAndThumbnailInsideAccountDirectory() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (_, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "video_media_user")
+        let sourceVideoURL = try await makeSampleVideoFile(in: rootDirectory)
+        let mediaFileActor = await MediaFileActor(paths: paths)
+        let storedFile = try await mediaFileActor.saveVideo(fileURL: sourceVideoURL, preferredFileExtension: "mov")
+
+        #expect(storedFile.content.localPath.hasPrefix(paths.mediaDirectory.appendingPathComponent("video").path))
+        #expect(storedFile.content.thumbnailPath.hasPrefix(paths.mediaDirectory.appendingPathComponent("video/thumb").path))
+        #expect(FileManager.default.fileExists(atPath: storedFile.content.localPath))
+        #expect(FileManager.default.fileExists(atPath: storedFile.content.thumbnailPath))
+        #expect(storedFile.content.durationMilliseconds >= 0)
+        #expect(storedFile.content.width == 64)
+        #expect(storedFile.content.height == 64)
+        #expect(storedFile.content.sizeBytes > 0)
+    }
+
     @Test func localChatRepositoryInsertsOutgoingImageMessageInTransaction() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -897,6 +919,60 @@ struct AppleIMTests {
         #expect(contentRows.first?.int("content_count") == 1)
         #expect(resourceRows.first?.int("resource_count") == 1)
         #expect(conversations.first?.lastMessageDigest == "[语音]")
+    }
+
+    @Test func localChatRepositoryInsertsOutgoingVideoMessageInTransaction() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "video_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "video_conversation", userID: "video_user", title: "Video Target", sortTimestamp: 1)
+        )
+
+        let video = StoredVideoContent(
+            mediaID: "media_video_1",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("video/media_video_1.mov").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("video/thumb/media_video_1.jpg").path,
+            durationMilliseconds: 1_000,
+            width: 64,
+            height: 64,
+            sizeBytes: 2_048
+        )
+        let message = try await repository.insertOutgoingVideoMessage(
+            OutgoingVideoMessageInput(
+                userID: "video_user",
+                conversationID: "video_conversation",
+                senderID: "video_user",
+                video: video,
+                localTime: 520,
+                messageID: "video_message_1",
+                clientMessageID: "video_client_1",
+                sortSequence: 520
+            )
+        )
+        let messages = try await repository.listMessages(conversationID: "video_conversation", limit: 20, beforeSortSeq: nil)
+        let contentRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS content_count FROM message_video WHERE content_id = ?;",
+            parameters: [.text("video_video_message_1")],
+            paths: databaseContext.paths
+        )
+        let resourceRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS resource_count FROM media_resource WHERE owner_message_id = ?;",
+            parameters: [.text(message.id.rawValue)],
+            paths: databaseContext.paths
+        )
+        let conversations = try await repository.listConversations(for: "video_user")
+
+        #expect(message.type == .video)
+        #expect(message.sendStatus == .sending)
+        #expect(message.video == video)
+        #expect(messages.first?.video == video)
+        #expect(contentRows.first?.int("content_count") == 1)
+        #expect(resourceRows.first?.int("resource_count") == 1)
+        #expect(conversations.first?.lastMessageDigest == "[视频]")
     }
 
     @Test func localChatRepositoryIndexesOutgoingImageMediaFiles() async throws {
@@ -1442,6 +1518,52 @@ struct AppleIMTests {
         #expect(voiceRows.first?.string("cdn_url") == storedMessage?.voice?.remoteURL)
     }
 
+    @Test func chatUseCaseSendVideoYieldsProgressThenSuccess() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "video_send_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "video_send_conversation", userID: "video_send_user", title: "Video Send", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let useCase = LocalChatUseCase(
+            userID: "video_send_user",
+            conversationID: "video_send_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [0.2, 0.8, 1.0], delayNanoseconds: 0)
+        )
+
+        let rows = try await collectRows(
+            from: useCase.sendVideo(
+                fileURL: try await makeSampleVideoFile(in: rootDirectory),
+                preferredFileExtension: "mov"
+            )
+        )
+        let messageID = try #require(rows.first?.id)
+        let storedMessage = try await repository.message(messageID: messageID)
+        let videoRows = try await databaseContext.databaseActor.query(
+            "SELECT cdn_url, upload_status FROM message_video WHERE content_id = ?;",
+            parameters: [.text("video_\(messageID.rawValue)")],
+            paths: databaseContext.paths
+        )
+
+        #expect(rows.first?.statusText == "Sending")
+        #expect(rows.first?.isVideo == true)
+        #expect(rows.first?.videoThumbnailPath != nil)
+        #expect(rows.compactMap(\.uploadProgress) == [0.2, 0.8, 1.0])
+        #expect(rows.last?.statusText == nil)
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+        #expect(videoRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
+        #expect(videoRows.first?.string("cdn_url") == storedMessage?.video?.remoteURL)
+    }
+
     @Test func chatUseCaseDoesNotSendTooShortVoice() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -1523,6 +1645,64 @@ struct AppleIMTests {
         #expect(failedMessage?.image?.uploadStatus == .failed)
         #expect(recoverableJobs.count == 1)
         #expect(recoverableJobs.first?.type == .imageUpload)
+        #expect(recoverableJobs.first?.payloadJSON.contains("timeout") == true)
+        #expect(retryRows.last?.statusText == nil)
+        #expect(storedMessages.count == 1)
+        #expect(resentMessage?.sendStatus == .success)
+        #expect(retryJob?.status == .success)
+    }
+
+    @Test func chatUseCaseQueuesVideoUploadJobWhenUploadFailsAndResendsWithoutDuplication() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "video_retry_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "video_retry_conversation", userID: "video_retry_user", title: "Video Retry", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let failingUseCase = LocalChatUseCase(
+            userID: "video_retry_user",
+            conversationID: "video_retry_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(result: .failed(.timeout), progressSteps: [0.4], delayNanoseconds: 0)
+        )
+
+        let failedRows = try await collectRows(
+            from: failingUseCase.sendVideo(
+                fileURL: try await makeSampleVideoFile(in: rootDirectory),
+                preferredFileExtension: "mov"
+            )
+        )
+        let failedMessageID = try #require(failedRows.first?.id)
+        let failedMessage = try await repository.message(messageID: failedMessageID)
+        let recoverableJobs = try await repository.recoverablePendingJobs(userID: "video_retry_user", now: Int64.max)
+
+        let retryingUseCase = LocalChatUseCase(
+            userID: "video_retry_user",
+            conversationID: "video_retry_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+        let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
+        let storedMessages = try await repository.listMessages(conversationID: "video_retry_conversation", limit: 20, beforeSortSeq: nil)
+        let resentMessage = try await repository.message(messageID: failedMessageID)
+        let retryJob = try await repository.pendingJob(id: "video_upload_\(failedMessage?.clientMessageID ?? "")")
+
+        #expect(failedRows.last?.statusText == "Failed")
+        #expect(failedRows.last?.canRetry == true)
+        #expect(failedMessage?.sendStatus == .failed)
+        #expect(failedMessage?.video?.uploadStatus == .failed)
+        #expect(recoverableJobs.count == 1)
+        #expect(recoverableJobs.first?.type == .videoUpload)
         #expect(recoverableJobs.first?.payloadJSON.contains("timeout") == true)
         #expect(retryRows.last?.statusText == nil)
         #expect(storedMessages.count == 1)
@@ -2327,6 +2507,75 @@ struct AppleIMTests {
         #expect(storedMessage?.sendStatus == .success)
         #expect(storedMessage?.image?.uploadStatus == .success)
         #expect(storedMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
+    }
+
+    @Test func pendingMessageRetryRunnerRecoversVideoUploadJob() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "video_runner_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "video_runner_conversation", userID: "video_runner_user", title: "Video Runner", sortTimestamp: 1)
+        )
+        let video = StoredVideoContent(
+            mediaID: "video_runner_media",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("video_runner.mov").path,
+            thumbnailPath: databaseContext.paths.mediaDirectory.appendingPathComponent("video_runner_thumb.jpg").path,
+            durationMilliseconds: 1_000,
+            width: 64,
+            height: 64,
+            sizeBytes: 512
+        )
+        let message = try await repository.insertOutgoingVideoMessage(
+            OutgoingVideoMessageInput(
+                userID: "video_runner_user",
+                conversationID: "video_runner_conversation",
+                senderID: "video_runner_user",
+                video: video,
+                localTime: 520,
+                messageID: "video_runner_message",
+                clientMessageID: "video_runner_client",
+                sortSequence: 520
+            )
+        )
+        try await repository.updateVideoUploadStatus(
+            messageID: message.id,
+            uploadStatus: .failed,
+            uploadAck: nil,
+            sendStatus: .failed,
+            sendAck: nil,
+            pendingJob: nil
+        )
+        _ = try await repository.upsertPendingJob(
+            PendingJobInput(
+                id: "video_upload_video_runner_client",
+                userID: "video_runner_user",
+                type: .videoUpload,
+                bizKey: "video_runner_client",
+                payloadJSON: #"{"messageID":"video_runner_message","conversationID":"video_runner_conversation","clientMessageID":"video_runner_client","mediaID":"video_runner_media","lastFailureReason":"offline"}"#,
+                maxRetryCount: 3,
+                nextRetryAt: 100
+            )
+        )
+        let runner = PendingMessageRetryRunner(
+            userID: "video_runner_user",
+            messageRepository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+
+        let result = try await runner.runDueJobs(now: 100)
+        let job = try await repository.pendingJob(id: "video_upload_video_runner_client")
+        let storedMessage = try await repository.message(messageID: message.id)
+
+        #expect(result.successCount == 1)
+        #expect(job?.status == .success)
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.video?.uploadStatus == .success)
+        #expect(storedMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
     }
 
     @Test func pendingMessageRetryRunnerStopsImageUploadAtRetryLimit() async throws {
@@ -4511,6 +4760,20 @@ private enum TestChatError: Error {
     case paginationFailed
 }
 
+private extension ChatUseCase {
+    func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+}
+
 private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
@@ -4564,6 +4827,100 @@ private func makeVoiceRecordingFile(in directory: URL) throws -> URL {
     let url = directory.appendingPathComponent("sample-\(UUID().uuidString)").appendingPathExtension("m4a")
     try Data("mock voice recording".utf8).write(to: url, options: [.atomic])
     return url
+}
+
+private func makeSampleVideoFile(in directory: URL) async throws -> URL {
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("sample-\(UUID().uuidString)").appendingPathExtension("mov")
+    let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+    let videoSettings: [String: Any] = [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: 64,
+        AVVideoHeightKey: 64
+    ]
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+    input.expectsMediaDataInRealTime = false
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: input,
+        sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+            kCVPixelBufferWidthKey as String: 64,
+            kCVPixelBufferHeightKey as String: 64
+        ]
+    )
+
+    guard writer.canAdd(input) else {
+        Issue.record("Unable to add video writer input")
+        return url
+    }
+
+    writer.add(input)
+    writer.startWriting()
+    writer.startSession(atSourceTime: .zero)
+
+    let firstPixelBuffer = try makePixelBuffer(width: 64, height: 64, colorOffset: 0)
+    let secondPixelBuffer = try makePixelBuffer(width: 64, height: 64, colorOffset: 48)
+    while !input.isReadyForMoreMediaData {
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    guard adaptor.append(firstPixelBuffer, withPresentationTime: .zero) else {
+        throw writer.error ?? MediaFileError.invalidVideoFile
+    }
+
+    while !input.isReadyForMoreMediaData {
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    guard adaptor.append(secondPixelBuffer, withPresentationTime: CMTime(value: 1, timescale: 1)) else {
+        throw writer.error ?? MediaFileError.invalidVideoFile
+    }
+
+    input.markAsFinished()
+    await writer.finishWriting()
+
+    if writer.status == .failed {
+        throw writer.error ?? MediaFileError.invalidVideoFile
+    }
+
+    return url
+}
+
+private func makePixelBuffer(width: Int, height: Int, colorOffset: UInt8) throws -> CVPixelBuffer {
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width,
+        height,
+        kCVPixelFormatType_32ARGB,
+        nil,
+        &pixelBuffer
+    )
+
+    guard status == kCVReturnSuccess, let pixelBuffer else {
+        throw MediaFileError.invalidVideoFile
+    }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+    }
+
+    let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+    guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else {
+        throw MediaFileError.invalidVideoFile
+    }
+
+    let buffer = baseAddress.assumingMemoryBound(to: UInt8.self)
+    for y in 0..<height {
+        for x in 0..<width {
+            let offset = y * bytesPerRow + x * 4
+            buffer[offset] = 255
+            buffer[offset + 1] = UInt8((x * 4 + Int(colorOffset)) % 256)
+            buffer[offset + 2] = UInt8((y * 4 + Int(colorOffset)) % 256)
+            buffer[offset + 3] = 180
+        }
+    }
+
+    return pixelBuffer
 }
 
 private func makeJPEGData(width: Int, height: Int, quality: Double) -> Data {
