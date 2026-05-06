@@ -13,6 +13,7 @@ nonisolated enum AppUITestConfiguration {
     private static let runIDEnvironmentKey = "CHATBRIDGE_UI_TEST_RUN_ID"
     private static let storageRootEnvironmentKey = "CHATBRIDGE_UI_TEST_STORAGE_ROOT"
     private static let sendModeEnvironmentKey = "CHATBRIDGE_UI_TEST_SEND_MODE"
+    private static let resetSessionEnvironmentKey = "CHATBRIDGE_UI_TEST_RESET_SESSION"
 
     enum SendMode: String {
         case success
@@ -22,10 +23,7 @@ nonisolated enum AppUITestConfiguration {
     struct Configuration {
         let runID: String
         let sendMode: SendMode
-
-        var demoUserID: UserID {
-            "ui_test_user"
-        }
+        let resetSession: Bool
     }
 
     static var current: Configuration? {
@@ -41,8 +39,9 @@ nonisolated enum AppUITestConfiguration {
         let sendMode = environment[sendModeEnvironmentKey]
             .flatMap(SendMode.init(rawValue:))
             ?? .success
+        let resetSession = environment[resetSessionEnvironmentKey] != "0"
 
-        return Configuration(runID: runID, sendMode: sendMode)
+        return Configuration(runID: runID, sendMode: sendMode, resetSession: resetSession)
     }
 
     @MainActor

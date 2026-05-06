@@ -12,9 +12,18 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
-    func testLaunchShowsSeededConversations() throws {
+    func testLaunchShowsLoginWhenNoSession() throws {
         let app = makeUITestApplication()
         app.launch()
+
+        waitForLogin(in: app)
+    }
+
+    @MainActor
+    func testLoginShowsSeededConversations() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
 
         waitForConversationList(in: app)
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
@@ -22,9 +31,82 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testLoginWithWrongPasswordShowsError() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        waitForLogin(in: app)
+
+        app.textFields["login.accountTextField"].tap()
+        app.textFields["login.accountTextField"].typeText("ui_test_user")
+        app.secureTextFields["login.passwordTextField"].tap()
+        app.secureTextFields["login.passwordTextField"].typeText("wrong_password")
+        app.buttons["login.submitButton"].tap()
+
+        XCTAssertTrue(app.staticTexts["login.errorLabel"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.collectionViews["conversationList.collection"].exists)
+    }
+
+    @MainActor
+    func testStoredLoginSessionSkipsLogin() throws {
+        let runID = UUID().uuidString
+        let app = makeUITestApplication(runID: runID)
+        app.launch()
+        loginAsUITestUser(in: app)
+        app.terminate()
+
+        let relaunchedApp = makeUITestApplication(runID: runID, resetSession: false)
+        relaunchedApp.launch()
+
+        waitForConversationList(in: relaunchedApp)
+        XCTAssertFalse(relaunchedApp.textFields["login.accountTextField"].exists)
+    }
+
+    @MainActor
+    func testLogOutReturnsToLogin() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+
+        logOut(in: app)
+
+        XCTAssertFalse(app.collectionViews["conversationList.collection"].exists)
+    }
+
+    @MainActor
+    func testSwitchAccountCanLoginAsDifferentUser() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+
+        switchAccount(in: app)
+        login(account: "demo_user", password: "password123", in: app)
+
+        XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
+        XCTAssertTrue(app.navigationBars["ChatBridge"].exists)
+    }
+
+    @MainActor
+    func testSwitchedAccountSessionPersistsAfterRelaunch() throws {
+        let runID = UUID().uuidString
+        let app = makeUITestApplication(runID: runID)
+        app.launch()
+        loginAsUITestUser(in: app)
+        switchAccount(in: app)
+        login(account: "demo_user", password: "password123", in: app)
+        app.terminate()
+
+        let relaunchedApp = makeUITestApplication(runID: runID, resetSession: false)
+        relaunchedApp.launch()
+
+        waitForConversationList(in: relaunchedApp)
+        XCTAssertFalse(relaunchedApp.textFields["login.accountTextField"].exists)
+    }
+
+    @MainActor
     func testOpenConversationAndSendTextMessage() throws {
         let app = makeUITestApplication()
         app.launch()
+        loginAsUITestUser(in: app)
         openSondraConversation(in: app)
 
         let message = "UI test message \(UUID().uuidString)"
@@ -43,6 +125,7 @@ final class AppleIMUITests: XCTestCase {
     func testSearchFindsSeededConversation() throws {
         let app = makeUITestApplication()
         app.launch()
+        loginAsUITestUser(in: app)
         waitForConversationList(in: app)
 
         let searchField = app.searchFields["conversationList.searchField"]
@@ -62,6 +145,7 @@ final class AppleIMUITests: XCTestCase {
     func testConversationCanBePinnedAndUnpinned() throws {
         let app = makeUITestApplication()
         app.launch()
+        loginAsUITestUser(in: app)
         waitForConversationList(in: app)
 
         let conversation = conversationCell(containing: "Sondra", in: app)
@@ -83,6 +167,7 @@ final class AppleIMUITests: XCTestCase {
     func testConversationCanBeMutedAndUnmuted() throws {
         let app = makeUITestApplication()
         app.launch()
+        loginAsUITestUser(in: app)
         waitForConversationList(in: app)
 
         let conversation = conversationCell(containing: "Sondra", in: app)
@@ -103,6 +188,7 @@ final class AppleIMUITests: XCTestCase {
     func testFailedSendCanBeRetried() throws {
         let app = makeUITestApplication(sendMode: .failFirst)
         app.launch()
+        loginAsUITestUser(in: app)
         openSondraConversation(in: app)
 
         let message = "UI test retry \(UUID().uuidString)"

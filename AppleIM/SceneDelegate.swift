@@ -16,30 +16,26 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     /// 依赖容器
     private var dependencies: AppDependencyContainer?
+    /// 登录态缓存
+    private let sessionStore: any AccountSessionStore = UserDefaultsAccountSessionStore()
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         let window = UIWindow(windowScene: windowScene)
+        self.window = window
 
-        do {
-            let dependencies = try AppDependencyContainer()
-            self.dependencies = dependencies
-            if !dependencies.isUITesting {
-                dependencies.requestLocalNotificationAuthorization()
-                dependencies.startNetworkRecovery()
-            }
-            dependencies.refreshApplicationBadge()
-            dependencies.runStartupDataRepair()
-            window.rootViewController = UINavigationController(
-                rootViewController: dependencies.makeConversationListViewController()
-            )
-        } catch {
-            window.rootViewController = makeStartupErrorViewController()
+        if AppUITestConfiguration.current?.resetSession == true {
+            sessionStore.clearSession()
+        }
+
+        if let accountSession = sessionStore.loadSession() {
+            showMainInterface(for: accountSession, in: window)
+        } else {
+            showLoginInterface(in: window)
         }
 
         window.makeKeyAndVisible()
-        self.window = window
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
@@ -73,6 +69,56 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
+    }
+
+    private func showLoginInterface(in window: UIWindow) {
+        dependencies = nil
+        window.rootViewController = makeLoginViewController()
+    }
+
+    private func endCurrentSession() {
+        sessionStore.clearSession()
+        guard let window else {
+            dependencies = nil
+            return
+        }
+
+        showLoginInterface(in: window)
+    }
+
+    private func makeLoginViewController() -> UIViewController {
+        let viewModel = LoginViewModel(
+            authService: LocalAccountAuthService(),
+            sessionStore: sessionStore
+        )
+        return LoginViewController(viewModel: viewModel) { [weak self] session in
+            guard let self, let window = self.window else {
+                return
+            }
+
+            self.showMainInterface(for: session, in: window)
+        }
+    }
+
+    private func showMainInterface(for session: AccountSession, in window: UIWindow) {
+        do {
+            let dependencies = try AppDependencyContainer(accountID: session.userID)
+            self.dependencies = dependencies
+            if !dependencies.isUITesting {
+                dependencies.requestLocalNotificationAuthorization()
+                dependencies.startNetworkRecovery()
+            }
+            dependencies.refreshApplicationBadge()
+            dependencies.runStartupDataRepair()
+            let rootViewController = UINavigationController(
+                rootViewController: dependencies.makeConversationListViewController { [weak self] _ in
+                    self?.endCurrentSession()
+                }
+            )
+            window.rootViewController = rootViewController
+        } catch {
+            window.rootViewController = makeStartupErrorViewController()
+        }
     }
 }
 

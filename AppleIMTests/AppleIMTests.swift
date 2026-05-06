@@ -125,6 +125,122 @@ struct AppleIMTests {
         #endif
     }
 
+    @Test func bundleAccountCatalogReadsMockAccounts() async throws {
+        let bundle = Bundle.main.url(forResource: "mock_accounts", withExtension: "json") != nil
+            ? Bundle.main
+            : Bundle(identifier: "com.sondra.AppleIM") ?? Bundle.main
+        let catalog = BundleAccountCatalog(bundle: bundle)
+
+        let accounts = try await catalog.accounts()
+
+        #expect(accounts.contains { $0.userID == "demo_user" })
+        #expect(accounts.contains { $0.userID == "ui_test_user" })
+    }
+
+    @Test func localAccountAuthServiceLogsInWithAccountPassword() async throws {
+        let catalog = BundleAccountCatalog(resourceURL: try makeMockAccountsFile())
+        let authService = LocalAccountAuthService(catalog: catalog)
+
+        let session = try await authService.login(identifier: "mock_user", password: "password123")
+
+        #expect(session.userID == "mock_user")
+        #expect(session.displayName == "Mock User")
+        #expect(session.token.contains("mock_token_mock_user"))
+    }
+
+    @Test func localAccountAuthServiceRejectsInvalidLoginInputs() async throws {
+        let catalog = BundleAccountCatalog(resourceURL: try makeMockAccountsFile())
+        let authService = LocalAccountAuthService(catalog: catalog)
+
+        await #expect(throws: AccountAuthError.emptyIdentifier) {
+            _ = try await authService.login(identifier: "  ", password: "password123")
+        }
+        await #expect(throws: AccountAuthError.emptyPassword) {
+            _ = try await authService.login(identifier: "mock_user", password: "")
+        }
+        await #expect(throws: AccountAuthError.accountNotFound) {
+            _ = try await authService.login(identifier: "missing_user", password: "password123")
+        }
+        await #expect(throws: AccountAuthError.invalidPassword) {
+            _ = try await authService.login(identifier: "mock_user", password: "wrong")
+        }
+    }
+
+    @Test func accountSessionStoreSavesLoadsAndClearsSession() throws {
+        let suiteName = "AppleIMTests.AccountSession.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+        let store = UserDefaultsAccountSessionStore(userDefaults: userDefaults)
+        let session = AccountSession(
+            userID: "session_user",
+            displayName: "Session User",
+            token: "mock_token",
+            loggedInAt: 1_777_777_777
+        )
+
+        try store.saveSession(session)
+        #expect(store.loadSession() == session)
+
+        store.clearSession()
+        #expect(store.loadSession() == nil)
+    }
+
+    @Test func clearingSessionDoesNotDeleteIsolatedAccountDirectories() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+        let suiteName = "AppleIMTests.AccountSwitch.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+        let store = UserDefaultsAccountSessionStore(userDefaults: userDefaults)
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+
+        let firstPaths = try await storageService.prepareStorage(for: "first_account")
+        let secondPaths = try await storageService.prepareStorage(for: "second_account")
+        try store.saveSession(
+            AccountSession(
+                userID: "first_account",
+                displayName: "First Account",
+                token: "mock_token",
+                loggedInAt: 1
+            )
+        )
+
+        store.clearSession()
+
+        #expect(store.loadSession() == nil)
+        #expect(firstPaths.rootDirectory != secondPaths.rootDirectory)
+        #expect(FileManager.default.fileExists(atPath: firstPaths.rootDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: secondPaths.rootDirectory.path))
+    }
+
+    @MainActor
+    @Test func appDependencyContainerUsesLoginAccountStorage() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let container = try AppDependencyContainer(
+            accountID: "login_container_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore(),
+            applicationBadgeManager: CapturingApplicationBadgeManager()
+        )
+
+        let paths = try await container.prepareCurrentAccountStorage()
+
+        #expect(container.accountID == "login_container_user")
+        #expect(paths.rootDirectory.lastPathComponent == "account_login_container_user")
+        #expect(FileManager.default.fileExists(atPath: paths.mainDatabase.path))
+    }
+
     @MainActor
     @Test func accountDatabaseKeyStoreGeneratesStableIsolatedKeys() async throws {
         let keyStore = InMemoryAccountDatabaseKeyStore()
@@ -4816,6 +4932,26 @@ private func makeVoiceRow(id: MessageID, sortSequence: Int64, isUnplayed: Bool) 
 private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("AppleIMTests-\(UUID().uuidString)", isDirectory: true)
+}
+
+private func makeMockAccountsFile() throws -> URL {
+    let directory = temporaryDirectory()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("mock_accounts.json")
+    let json = """
+    [
+      {
+        "userID": "mock_user",
+        "loginName": "mock_user",
+        "password": "password123",
+        "displayName": "Mock User",
+        "mobile": "13700000000",
+        "avatarURL": null
+      }
+    ]
+    """
+    try Data(json.utf8).write(to: url, options: [.atomic])
+    return url
 }
 
 private func samplePNGData() -> Data {

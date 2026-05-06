@@ -13,11 +13,17 @@ private let searchContactsSection = "search_contacts"
 private let searchConversationsSection = "search_conversations"
 private let searchMessagesSection = "search_messages"
 
+nonisolated enum ConversationListAccountAction: Sendable {
+    case switchAccount
+    case logOut
+}
+
 @MainActor
 final class ConversationListViewController: UIViewController {
     private let viewModel: ConversationListViewModel
     private let searchViewModel: SearchViewModel
     private let onSelectConversation: (ConversationListRowState) -> Void
+    private let onAccountAction: (ConversationListAccountAction) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
     private var rowsByID: [String: ConversationListRowState] = [:]
@@ -38,11 +44,13 @@ final class ConversationListViewController: UIViewController {
     init(
         viewModel: ConversationListViewModel,
         searchViewModel: SearchViewModel,
-        onSelectConversation: @escaping (ConversationListRowState) -> Void
+        onSelectConversation: @escaping (ConversationListRowState) -> Void,
+        onAccountAction: @escaping (ConversationListAccountAction) -> Void = { _ in }
     ) {
         self.viewModel = viewModel
         self.searchViewModel = searchViewModel
         self.onSelectConversation = onSelectConversation
+        self.onAccountAction = onAccountAction
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -79,6 +87,13 @@ final class ConversationListViewController: UIViewController {
         searchController.searchBar.accessibilityIdentifier = "conversationList.searchBar"
         searchController.searchBar.searchTextField.accessibilityIdentifier = "conversationList.searchField"
         definesPresentationContext = true
+
+        let accountButton = UIButton(type: .system)
+        accountButton.setTitle("Account", for: .normal)
+        accountButton.accessibilityIdentifier = "conversationList.accountButton"
+        accountButton.addTarget(self, action: #selector(accountButtonTapped), for: .touchUpInside)
+        accountButton.frame = CGRect(x: 0, y: 0, width: 72, height: 44)
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: accountButton)
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .systemGroupedBackground
@@ -402,6 +417,32 @@ final class ConversationListViewController: UIViewController {
             isPinned: false,
             isMuted: false
         )
+    }
+
+    @objc private func accountButtonTapped() {
+        let alertController = UIAlertController(
+            title: "Account",
+            message: nil,
+            preferredStyle: .alert
+        )
+
+        let switchAction = UIAlertAction(title: "Switch Account", style: .default) { [weak self] _ in
+            self?.onAccountAction(.switchAccount)
+        }
+        switchAction.setValue("accountAction.switchAccount", forKey: "accessibilityIdentifier")
+
+        let logOutAction = UIAlertAction(title: "Log Out", style: .destructive) { [weak self] _ in
+            self?.onAccountAction(.logOut)
+        }
+        logOutAction.setValue("accountAction.logOut", forKey: "accessibilityIdentifier")
+
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+
+        alertController.addAction(switchAction)
+        alertController.addAction(logOutAction)
+        alertController.addAction(cancelAction)
+
+        present(alertController, animated: true)
     }
 }
 
