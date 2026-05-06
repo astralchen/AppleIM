@@ -152,6 +152,10 @@ nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let image: StoredImageContent?
     /// 语音内容（仅语音消息）
     let voice: StoredVoiceContent?
+    /// 视频内容（仅视频消息）
+    let video: StoredVideoContent?
+    /// 文件内容（仅文件消息）
+    let file: StoredFileContent?
     /// 排序序号
     let sortSequence: Int64
     /// 本地时间戳（毫秒）

@@ -24,7 +24,7 @@ nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
     let conversationID: ConversationID
     let clientMessageID: String?
     let type: MessageType
-    let imageMediaID: String?
+    let mediaID: String?
 }
 
 /// 本地聊天仓储
@@ -189,6 +189,22 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         return result.message
     }
 
+    func insertOutgoingVideoMessage(_ input: OutgoingVideoMessageInput) async throws -> StoredMessage {
+        let result = MessageDAO.insertOutgoingVideoStatements(input)
+        try await database.performTransaction(result.statements, paths: paths)
+        try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.video, userID: input.userID, createdAt: input.localTime))
+        scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
+        return result.message
+    }
+
+    func insertOutgoingFileMessage(_ input: OutgoingFileMessageInput) async throws -> StoredMessage {
+        let result = MessageDAO.insertOutgoingFileStatements(input)
+        try await database.performTransaction(result.statements, paths: paths)
+        try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.file, userID: input.userID, createdAt: input.localTime))
+        scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
+        return result.message
+    }
+
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
         try await messageDAO.listMessages(
             conversationID: conversationID,
@@ -286,7 +302,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 recoveredMessageCount += 1
                 pendingJobCount += 1
             case .image:
-                guard let clientMessageID = message.clientMessageID, let imageMediaID = message.imageMediaID else {
+                guard let clientMessageID = message.clientMessageID, let mediaID = message.mediaID else {
                     statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
                     statements += Self.updateImageUploadStatusStatements(
                         messageID: message.messageID,
@@ -302,7 +318,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                     messageID: message.messageID,
                     conversationID: message.conversationID,
                     clientMessageID: clientMessageID,
-                    mediaID: imageMediaID,
+                    mediaID: mediaID,
                     userID: userID,
                     failureReason: "interrupted",
                     maxRetryCount: retryPolicy.maxRetryCount,
@@ -310,6 +326,88 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 )
                 statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
                 statements += Self.updateImageUploadStatusStatements(
+                    messageID: message.messageID,
+                    status: .pending,
+                    uploadAck: nil,
+                    updatedAt: now
+                )
+                statements.append(
+                    Self.upsertPendingJobStatement(
+                        pendingJob,
+                        status: .pending,
+                        retryCount: 0,
+                        updatedAt: now,
+                        createdAt: now
+                    )
+                )
+                recoveredMessageCount += 1
+                pendingJobCount += 1
+            case .video:
+                guard let clientMessageID = message.clientMessageID, let mediaID = message.mediaID else {
+                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                    statements += Self.updateVideoUploadStatusStatements(
+                        messageID: message.messageID,
+                        status: .failed,
+                        uploadAck: nil,
+                        updatedAt: now
+                    )
+                    failedMessageCount += 1
+                    continue
+                }
+
+                let pendingJob = try PendingMessageJobFactory.videoUploadInput(
+                    messageID: message.messageID,
+                    conversationID: message.conversationID,
+                    clientMessageID: clientMessageID,
+                    mediaID: mediaID,
+                    userID: userID,
+                    failureReason: "interrupted",
+                    maxRetryCount: retryPolicy.maxRetryCount,
+                    nextRetryAt: now
+                )
+                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
+                statements += Self.updateVideoUploadStatusStatements(
+                    messageID: message.messageID,
+                    status: .pending,
+                    uploadAck: nil,
+                    updatedAt: now
+                )
+                statements.append(
+                    Self.upsertPendingJobStatement(
+                        pendingJob,
+                        status: .pending,
+                        retryCount: 0,
+                        updatedAt: now,
+                        createdAt: now
+                    )
+                )
+                recoveredMessageCount += 1
+                pendingJobCount += 1
+            case .file:
+                guard let clientMessageID = message.clientMessageID, let mediaID = message.mediaID else {
+                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                    statements += Self.updateFileUploadStatusStatements(
+                        messageID: message.messageID,
+                        status: .failed,
+                        uploadAck: nil,
+                        updatedAt: now
+                    )
+                    failedMessageCount += 1
+                    continue
+                }
+
+                let pendingJob = try PendingMessageJobFactory.fileUploadInput(
+                    messageID: message.messageID,
+                    conversationID: message.conversationID,
+                    clientMessageID: clientMessageID,
+                    mediaID: mediaID,
+                    userID: userID,
+                    failureReason: "interrupted",
+                    maxRetryCount: retryPolicy.maxRetryCount,
+                    nextRetryAt: now
+                )
+                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
+                statements += Self.updateFileUploadStatusStatements(
                     messageID: message.messageID,
                     status: .pending,
                     uploadAck: nil,
@@ -387,6 +485,53 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         return updatedMessage
     }
 
+    func resendVideoMessage(messageID: MessageID) async throws -> StoredMessage {
+        try await prepareMediaMessageForResend(
+            messageID: messageID,
+            expectedType: .video,
+            uploadStatements: Self.updateVideoUploadStatusStatements
+        )
+    }
+
+    func resendFileMessage(messageID: MessageID) async throws -> StoredMessage {
+        try await prepareMediaMessageForResend(
+            messageID: messageID,
+            expectedType: .file,
+            uploadStatements: Self.updateFileUploadStatusStatements
+        )
+    }
+
+    private func prepareMediaMessageForResend(
+        messageID: MessageID,
+        expectedType: MessageType,
+        uploadStatements: (MessageID, MediaUploadStatus, MediaUploadAck?, Int64) -> [SQLiteStatement]
+    ) async throws -> StoredMessage {
+        guard let existingMessage = try await messageDAO.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        guard
+            existingMessage.type == expectedType,
+            existingMessage.sendStatus == .failed,
+            !existingMessage.isRevoked,
+            !existingMessage.isDeleted
+        else {
+            throw ChatStoreError.messageCannotBeResent(messageID)
+        }
+
+        try await database.performTransaction(
+            [Self.updateMessageSendStatusStatement(messageID: messageID, status: .sending, ack: nil)]
+                + uploadStatements(messageID, .uploading, nil, Self.currentTimestamp()),
+            paths: paths
+        )
+
+        guard let updatedMessage = try await messageDAO.message(messageID: messageID) else {
+            throw ChatStoreError.messageNotFound(messageID)
+        }
+
+        return updatedMessage
+    }
+
     func updateImageUploadStatus(
         messageID: MessageID,
         uploadStatus: MediaUploadStatus,
@@ -437,6 +582,73 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             uploadAck: uploadAck,
             updatedAt: now
         )
+
+        try await database.performTransaction(statements, paths: paths)
+    }
+
+    func updateVideoUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws {
+        try await updateMediaUploadStatus(
+            messageID: messageID,
+            uploadStatus: uploadStatus,
+            uploadAck: uploadAck,
+            sendStatus: sendStatus,
+            sendAck: sendAck,
+            pendingJob: pendingJob,
+            uploadStatements: Self.updateVideoUploadStatusStatements
+        )
+    }
+
+    func updateFileUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws {
+        try await updateMediaUploadStatus(
+            messageID: messageID,
+            uploadStatus: uploadStatus,
+            uploadAck: uploadAck,
+            sendStatus: sendStatus,
+            sendAck: sendAck,
+            pendingJob: pendingJob,
+            uploadStatements: Self.updateFileUploadStatusStatements
+        )
+    }
+
+    private func updateMediaUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?,
+        uploadStatements: (MessageID, MediaUploadStatus, MediaUploadAck?, Int64) -> [SQLiteStatement]
+    ) async throws {
+        let now = Self.currentTimestamp()
+        var statements = [
+            Self.updateMessageSendStatusStatement(messageID: messageID, status: sendStatus, ack: sendAck)
+        ] + uploadStatements(messageID, uploadStatus, uploadAck, now)
+
+        if let pendingJob {
+            statements.append(
+                Self.upsertPendingJobStatement(
+                    pendingJob,
+                    status: .pending,
+                    retryCount: 0,
+                    updatedAt: now,
+                    createdAt: now
+                )
+            )
+        }
 
         try await database.performTransaction(statements, paths: paths)
     }
@@ -1167,10 +1379,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 message.conversation_id,
                 message.client_msg_id,
                 message.msg_type,
-                message_image.media_id AS image_media_id
+                COALESCE(message_image.media_id, message_video.media_id, message_file.media_id) AS media_id
             FROM message
             INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
             LEFT JOIN message_image ON message_image.content_id = message.content_id
+            LEFT JOIN message_video ON message_video.content_id = message.content_id
+            LEFT JOIN message_file ON message_file.content_id = message.content_id
             WHERE conversation.user_id = ?
             AND message.direction = ?
             AND message.send_status = ?
@@ -1298,10 +1512,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                             WHEN message.revoke_status = 1 THEN COALESCE(message_revoke.replace_text, '')
                             WHEN message.msg_type = ? THEN '[图片]'
                             WHEN message.msg_type = ? THEN '[语音]'
+                            WHEN message.msg_type = ? THEN '[视频]'
+                            WHEN message.msg_type = ? THEN '[文件] ' || COALESCE(message_file.file_name, '')
                             ELSE COALESCE(message_text.text, '')
                         END
                     FROM message
                     LEFT JOIN message_text ON message_text.content_id = message.content_id
+                    LEFT JOIN message_file ON message_file.content_id = message.content_id
                     LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
                     WHERE message.conversation_id = conversation.conversation_id
                     AND message.is_deleted = 0
@@ -1322,6 +1539,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             parameters: [
                 .integer(Int64(MessageType.image.rawValue)),
                 .integer(Int64(MessageType.voice.rawValue)),
+                .integer(Int64(MessageType.video.rawValue)),
+                .integer(Int64(MessageType.file.rawValue)),
                 .integer(updatedAt),
                 .text(conversationID.rawValue),
                 .text(userID.rawValue)
@@ -1438,7 +1657,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
             clientMessageID: row.string("client_msg_id"),
             type: type,
-            imageMediaID: row.string("image_media_id")
+            mediaID: row.string("media_id")
         )
     }
 
@@ -1487,6 +1706,57 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 fileExtension: fileExtension(from: voice.localPath, fallback: voice.format),
                 sizeBytes: voice.sizeBytes,
                 md5: nil,
+                lastAccessAt: createdAt,
+                createdAt: createdAt
+            )
+        ]
+    }
+
+    private static func mediaIndexRecords(
+        for video: StoredVideoContent,
+        userID: UserID,
+        createdAt: Int64
+    ) -> [MediaIndexRecord] {
+        [
+            MediaIndexRecord(
+                mediaID: video.mediaID,
+                userID: userID,
+                localPath: video.localPath,
+                fileName: fileName(from: video.localPath),
+                fileExtension: fileExtension(from: video.localPath, fallback: nil),
+                sizeBytes: video.sizeBytes,
+                md5: video.md5,
+                lastAccessAt: createdAt,
+                createdAt: createdAt
+            ),
+            MediaIndexRecord(
+                mediaID: "\(video.mediaID)_thumb",
+                userID: userID,
+                localPath: video.thumbnailPath,
+                fileName: fileName(from: video.thumbnailPath),
+                fileExtension: fileExtension(from: video.thumbnailPath, fallback: "jpg"),
+                sizeBytes: existingFileSize(atPath: video.thumbnailPath),
+                md5: nil,
+                lastAccessAt: createdAt,
+                createdAt: createdAt
+            )
+        ]
+    }
+
+    private static func mediaIndexRecords(
+        for file: StoredFileContent,
+        userID: UserID,
+        createdAt: Int64
+    ) -> [MediaIndexRecord] {
+        [
+            MediaIndexRecord(
+                mediaID: file.mediaID,
+                userID: userID,
+                localPath: file.localPath,
+                fileName: file.fileName,
+                fileExtension: file.fileExtension,
+                sizeBytes: file.sizeBytes,
+                md5: file.md5,
                 lastAccessAt: createdAt,
                 createdAt: createdAt
             )
@@ -1738,6 +2008,104 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                 parameters: [
                     .integer(Int64(status.rawValue)),
                     .optionalText(uploadAck?.cdnURL),
+                    .text(messageID.rawValue)
+                ]
+            ),
+            SQLiteStatement(
+                """
+                UPDATE media_resource
+                SET
+                    upload_status = ?,
+                    remote_url = COALESCE(?, remote_url),
+                    md5 = COALESCE(?, md5),
+                    updated_at = ?
+                WHERE owner_message_id = ?;
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
+                    .integer(updatedAt),
+                    .text(messageID.rawValue)
+                ]
+            )
+        ]
+    }
+
+    private static func updateVideoUploadStatusStatements(
+        messageID: MessageID,
+        status: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        updatedAt: Int64
+    ) -> [SQLiteStatement] {
+        [
+            SQLiteStatement(
+                """
+                UPDATE message_video
+                SET
+                    upload_status = ?,
+                    cdn_url = COALESCE(?, cdn_url),
+                    md5 = COALESCE(?, md5)
+                WHERE content_id = (
+                    SELECT content_id
+                    FROM message
+                    WHERE message_id = ?
+                    LIMIT 1
+                );
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
+                    .text(messageID.rawValue)
+                ]
+            ),
+            SQLiteStatement(
+                """
+                UPDATE media_resource
+                SET
+                    upload_status = ?,
+                    remote_url = COALESCE(?, remote_url),
+                    md5 = COALESCE(?, md5),
+                    updated_at = ?
+                WHERE owner_message_id = ?;
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
+                    .integer(updatedAt),
+                    .text(messageID.rawValue)
+                ]
+            )
+        ]
+    }
+
+    private static func updateFileUploadStatusStatements(
+        messageID: MessageID,
+        status: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        updatedAt: Int64
+    ) -> [SQLiteStatement] {
+        [
+            SQLiteStatement(
+                """
+                UPDATE message_file
+                SET
+                    upload_status = ?,
+                    cdn_url = COALESCE(?, cdn_url),
+                    md5 = COALESCE(?, md5)
+                WHERE content_id = (
+                    SELECT content_id
+                    FROM message
+                    WHERE message_id = ?
+                    LIMIT 1
+                );
+                """,
+                parameters: [
+                    .integer(Int64(status.rawValue)),
+                    .optionalText(uploadAck?.cdnURL),
+                    .optionalText(uploadAck?.md5),
                     .text(messageID.rawValue)
                 ]
             ),

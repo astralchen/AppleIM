@@ -230,6 +230,94 @@ nonisolated struct StoredVoiceContent: Equatable, Sendable {
     }
 }
 
+/// 存储的视频内容
+nonisolated struct StoredVideoContent: Equatable, Sendable {
+    /// 媒体 ID
+    let mediaID: String
+    /// 视频本地路径
+    let localPath: String
+    /// 缩略图本地路径
+    let thumbnailPath: String
+    /// 时长（毫秒）
+    let durationMilliseconds: Int
+    /// 宽度（像素）
+    let width: Int
+    /// 高度（像素）
+    let height: Int
+    /// 文件大小（字节）
+    let sizeBytes: Int64
+    /// 远程 CDN URL
+    let remoteURL: String?
+    /// 文件摘要
+    let md5: String?
+    /// 上传状态
+    let uploadStatus: MediaUploadStatus
+
+    init(
+        mediaID: String,
+        localPath: String,
+        thumbnailPath: String,
+        durationMilliseconds: Int,
+        width: Int,
+        height: Int,
+        sizeBytes: Int64,
+        remoteURL: String? = nil,
+        md5: String? = nil,
+        uploadStatus: MediaUploadStatus = .pending
+    ) {
+        self.mediaID = mediaID
+        self.localPath = localPath
+        self.thumbnailPath = thumbnailPath
+        self.durationMilliseconds = durationMilliseconds
+        self.width = width
+        self.height = height
+        self.sizeBytes = sizeBytes
+        self.remoteURL = remoteURL
+        self.md5 = md5
+        self.uploadStatus = uploadStatus
+    }
+}
+
+/// 存储的文件内容
+nonisolated struct StoredFileContent: Equatable, Sendable {
+    /// 媒体 ID
+    let mediaID: String
+    /// 文件本地路径
+    let localPath: String
+    /// 文件名
+    let fileName: String
+    /// 文件扩展名
+    let fileExtension: String?
+    /// 文件大小（字节）
+    let sizeBytes: Int64
+    /// 远程 CDN URL
+    let remoteURL: String?
+    /// 文件摘要
+    let md5: String?
+    /// 上传状态
+    let uploadStatus: MediaUploadStatus
+
+    init(
+        mediaID: String,
+        localPath: String,
+        fileName: String,
+        fileExtension: String?,
+        sizeBytes: Int64,
+        remoteURL: String? = nil,
+        md5: String? = nil,
+        uploadStatus: MediaUploadStatus = .pending
+    ) {
+        self.mediaID = mediaID
+        self.localPath = localPath
+        self.fileName = fileName
+        self.fileExtension = fileExtension
+        self.sizeBytes = sizeBytes
+        self.remoteURL = remoteURL
+        self.md5 = md5
+        self.uploadStatus = uploadStatus
+    }
+}
+
 /// 媒体上传状态
 nonisolated enum MediaUploadStatus: Int, Codable, Sendable {
     /// 待上传
@@ -315,6 +403,70 @@ nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable {
         self.conversationID = conversationID
         self.senderID = senderID
         self.voice = voice
+        self.localTime = localTime
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.sortSequence = sortSequence
+    }
+}
+
+/// 发出的视频消息输入参数
+nonisolated struct OutgoingVideoMessageInput: Equatable, Sendable {
+    let userID: UserID
+    let conversationID: ConversationID
+    let senderID: UserID
+    let video: StoredVideoContent
+    let localTime: Int64
+    let messageID: MessageID?
+    let clientMessageID: String?
+    let sortSequence: Int64?
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        video: StoredVideoContent,
+        localTime: Int64,
+        messageID: MessageID? = nil,
+        clientMessageID: String? = nil,
+        sortSequence: Int64? = nil
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.video = video
+        self.localTime = localTime
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.sortSequence = sortSequence
+    }
+}
+
+/// 发出的文件消息输入参数
+nonisolated struct OutgoingFileMessageInput: Equatable, Sendable {
+    let userID: UserID
+    let conversationID: ConversationID
+    let senderID: UserID
+    let file: StoredFileContent
+    let localTime: Int64
+    let messageID: MessageID?
+    let clientMessageID: String?
+    let sortSequence: Int64?
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        file: StoredFileContent,
+        localTime: Int64,
+        messageID: MessageID? = nil,
+        clientMessageID: String? = nil,
+        sortSequence: Int64? = nil
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.file = file
         self.localTime = localTime
         self.messageID = messageID
         self.clientMessageID = clientMessageID
@@ -437,6 +589,24 @@ nonisolated struct ImageUploadPendingJobPayload: Codable, Equatable, Sendable {
     let lastFailureReason: String?
 }
 
+/// 视频上传待处理任务载荷
+nonisolated struct VideoUploadPendingJobPayload: Codable, Equatable, Sendable {
+    let messageID: String
+    let conversationID: String
+    let clientMessageID: String
+    let mediaID: String
+    let lastFailureReason: String?
+}
+
+/// 文件上传待处理任务载荷
+nonisolated struct FileUploadPendingJobPayload: Codable, Equatable, Sendable {
+    let messageID: String
+    let conversationID: String
+    let clientMessageID: String
+    let mediaID: String
+    let lastFailureReason: String?
+}
+
 /// 消息待处理任务构造器
 nonisolated enum PendingMessageJobFactory {
     static func messageResendJobID(clientMessageID: String) -> String {
@@ -445,6 +615,14 @@ nonisolated enum PendingMessageJobFactory {
 
     static func imageUploadJobID(clientMessageID: String) -> String {
         "image_upload_\(clientMessageID)"
+    }
+
+    static func videoUploadJobID(clientMessageID: String) -> String {
+        "video_upload_\(clientMessageID)"
+    }
+
+    static func fileUploadJobID(clientMessageID: String) -> String {
+        "file_upload_\(clientMessageID)"
     }
 
     static func messageResendInput(
@@ -496,6 +674,64 @@ nonisolated enum PendingMessageJobFactory {
             id: imageUploadJobID(clientMessageID: clientMessageID),
             userID: userID,
             type: .imageUpload,
+            bizKey: clientMessageID,
+            payloadJSON: try payloadJSON(from: payload),
+            maxRetryCount: maxRetryCount,
+            nextRetryAt: nextRetryAt
+        )
+    }
+
+    static func videoUploadInput(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        clientMessageID: String,
+        mediaID: String,
+        userID: UserID,
+        failureReason: String?,
+        maxRetryCount: Int,
+        nextRetryAt: Int64?
+    ) throws -> PendingJobInput {
+        let payload = VideoUploadPendingJobPayload(
+            messageID: messageID.rawValue,
+            conversationID: conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            mediaID: mediaID,
+            lastFailureReason: failureReason
+        )
+
+        return PendingJobInput(
+            id: videoUploadJobID(clientMessageID: clientMessageID),
+            userID: userID,
+            type: .videoUpload,
+            bizKey: clientMessageID,
+            payloadJSON: try payloadJSON(from: payload),
+            maxRetryCount: maxRetryCount,
+            nextRetryAt: nextRetryAt
+        )
+    }
+
+    static func fileUploadInput(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        clientMessageID: String,
+        mediaID: String,
+        userID: UserID,
+        failureReason: String?,
+        maxRetryCount: Int,
+        nextRetryAt: Int64?
+    ) throws -> PendingJobInput {
+        let payload = FileUploadPendingJobPayload(
+            messageID: messageID.rawValue,
+            conversationID: conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            mediaID: mediaID,
+            lastFailureReason: failureReason
+        )
+
+        return PendingJobInput(
+            id: fileUploadJobID(clientMessageID: clientMessageID),
+            userID: userID,
+            type: .fileUpload,
             bizKey: clientMessageID,
             payloadJSON: try payloadJSON(from: payload),
             maxRetryCount: maxRetryCount,
@@ -642,6 +878,10 @@ protocol MessageRepository: Sendable {
     func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage
     /// 插入发出的语音消息
     func insertOutgoingVoiceMessage(_ input: OutgoingVoiceMessageInput) async throws -> StoredMessage
+    /// 插入发出的视频消息
+    func insertOutgoingVideoMessage(_ input: OutgoingVideoMessageInput) async throws -> StoredMessage
+    /// 插入发出的文件消息
+    func insertOutgoingFileMessage(_ input: OutgoingFileMessageInput) async throws -> StoredMessage
     /// 查询消息列表
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
     /// 查询单条消息
@@ -652,6 +892,10 @@ protocol MessageRepository: Sendable {
     func resendTextMessage(messageID: MessageID) async throws -> StoredMessage
     /// 重发图片消息
     func resendImageMessage(messageID: MessageID) async throws -> StoredMessage
+    /// 重发视频消息
+    func resendVideoMessage(messageID: MessageID) async throws -> StoredMessage
+    /// 重发文件消息
+    func resendFileMessage(messageID: MessageID) async throws -> StoredMessage
     /// 更新图片上传和消息发送状态
     func updateImageUploadStatus(
         messageID: MessageID,
@@ -668,6 +912,24 @@ protocol MessageRepository: Sendable {
         uploadAck: MediaUploadAck?,
         sendStatus: MessageSendStatus,
         sendAck: MessageSendAck?
+    ) async throws
+    /// 更新视频上传和消息发送状态
+    func updateVideoUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws
+    /// 更新文件上传和消息发送状态
+    func updateFileUploadStatus(
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
     ) async throws
     /// 标记语音消息已播放
     func markVoicePlayed(messageID: MessageID) async throws

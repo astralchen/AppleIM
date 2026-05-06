@@ -49,6 +49,10 @@ protocol MediaUploadService: Sendable {
     /// - Parameter message: 已落盘并入库的语音消息
     /// - Returns: 上传事件流
     nonisolated func uploadVoice(message: StoredMessage) -> AsyncStream<MediaUploadEvent>
+    /// 上传视频
+    nonisolated func uploadVideo(message: StoredMessage) -> AsyncStream<MediaUploadEvent>
+    /// 上传文件
+    nonisolated func uploadFile(message: StoredMessage) -> AsyncStream<MediaUploadEvent>
 }
 
 /// Mock 媒体上传服务
@@ -81,6 +85,14 @@ nonisolated struct MockMediaUploadService: MediaUploadService {
 
     nonisolated func uploadVoice(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
         upload(kind: "voice", message: message, mediaID: message.voice?.mediaID)
+    }
+
+    nonisolated func uploadVideo(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
+        upload(kind: "video", message: message, mediaID: message.video?.mediaID)
+    }
+
+    nonisolated func uploadFile(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
+        upload(kind: "file", message: message, mediaID: message.file?.mediaID)
     }
 
     private nonisolated func upload(kind: String, message: StoredMessage, mediaID: String?) -> AsyncStream<MediaUploadEvent> {

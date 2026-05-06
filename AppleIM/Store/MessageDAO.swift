@@ -76,11 +76,31 @@ nonisolated struct MessageDAO: Sendable {
             message_voice.local_path AS voice_local_path,
             message_voice.cdn_url AS voice_cdn_url,
             message_voice.format AS voice_format,
-            message_voice.upload_status AS voice_upload_status
+            message_voice.upload_status AS voice_upload_status,
+            message_video.media_id AS video_media_id,
+            message_video.duration_ms AS video_duration_ms,
+            message_video.width AS video_width,
+            message_video.height AS video_height,
+            message_video.size_bytes AS video_size_bytes,
+            message_video.local_path AS video_local_path,
+            message_video.thumb_path AS video_thumb_path,
+            message_video.cdn_url AS video_cdn_url,
+            message_video.md5 AS video_md5,
+            message_video.upload_status AS video_upload_status,
+            message_file.media_id AS file_media_id,
+            message_file.file_name AS file_name,
+            message_file.file_ext AS file_ext,
+            message_file.size_bytes AS file_size_bytes,
+            message_file.local_path AS file_local_path,
+            message_file.cdn_url AS file_cdn_url,
+            message_file.md5 AS file_md5,
+            message_file.upload_status AS file_upload_status
         FROM message INDEXED BY idx_message_conversation_visible_sort
         LEFT JOIN message_text ON message_text.content_id = message.content_id
         LEFT JOIN message_image ON message_image.content_id = message.content_id
         LEFT JOIN message_voice ON message_voice.content_id = message.content_id
+        LEFT JOIN message_video ON message_video.content_id = message.content_id
+        LEFT JOIN message_file ON message_file.content_id = message.content_id
         LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
         WHERE message.conversation_id = ?
         AND message.is_deleted = 0\(cursorPredicate)
@@ -126,11 +146,31 @@ nonisolated struct MessageDAO: Sendable {
                 message_voice.local_path AS voice_local_path,
                 message_voice.cdn_url AS voice_cdn_url,
                 message_voice.format AS voice_format,
-                message_voice.upload_status AS voice_upload_status
+                message_voice.upload_status AS voice_upload_status,
+                message_video.media_id AS video_media_id,
+                message_video.duration_ms AS video_duration_ms,
+                message_video.width AS video_width,
+                message_video.height AS video_height,
+                message_video.size_bytes AS video_size_bytes,
+                message_video.local_path AS video_local_path,
+                message_video.thumb_path AS video_thumb_path,
+                message_video.cdn_url AS video_cdn_url,
+                message_video.md5 AS video_md5,
+                message_video.upload_status AS video_upload_status,
+                message_file.media_id AS file_media_id,
+                message_file.file_name AS file_name,
+                message_file.file_ext AS file_ext,
+                message_file.size_bytes AS file_size_bytes,
+                message_file.local_path AS file_local_path,
+                message_file.cdn_url AS file_cdn_url,
+                message_file.md5 AS file_md5,
+                message_file.upload_status AS file_upload_status
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
             LEFT JOIN message_image ON message_image.content_id = message.content_id
             LEFT JOIN message_voice ON message_voice.content_id = message.content_id
+            LEFT JOIN message_video ON message_video.content_id = message.content_id
+            LEFT JOIN message_file ON message_file.content_id = message.content_id
             LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
             WHERE message.message_id = ?
             AND message.is_deleted = 0
@@ -236,6 +276,8 @@ nonisolated struct MessageDAO: Sendable {
             text: input.text,
             image: nil,
             voice: nil,
+            video: nil,
+            file: nil,
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -347,6 +389,8 @@ nonisolated struct MessageDAO: Sendable {
             text: nil,
             image: input.image,
             voice: nil,
+            video: nil,
+            file: nil,
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -511,6 +555,8 @@ nonisolated struct MessageDAO: Sendable {
             text: nil,
             image: nil,
             voice: input.voice,
+            video: nil,
+            file: nil,
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -636,6 +682,353 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    static func insertOutgoingVideoStatements(_ input: OutgoingVideoMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
+        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
+        let clientMessageID = input.clientMessageID ?? messageID.rawValue
+        let contentID = "video_\(messageID.rawValue)"
+        let sortSequence = input.sortSequence ?? input.localTime
+
+        let message = StoredMessage(
+            id: messageID,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            clientMessageID: clientMessageID,
+            serverMessageID: nil,
+            sequence: nil,
+            type: .video,
+            direction: .outgoing,
+            sendStatus: .sending,
+            readStatus: .read,
+            serverTime: nil,
+            isRevoked: false,
+            isDeleted: false,
+            revokeReplacementText: nil,
+            text: nil,
+            image: nil,
+            voice: nil,
+            video: input.video,
+            file: nil,
+            sortSequence: sortSequence,
+            localTime: input.localTime
+        )
+
+        return (
+            message,
+            [
+                SQLiteStatement(
+                    """
+                    INSERT INTO message_video (
+                        content_id,
+                        media_id,
+                        duration_ms,
+                        width,
+                        height,
+                        size_bytes,
+                        local_path,
+                        thumb_path,
+                        cdn_url,
+                        md5,
+                        upload_status,
+                        download_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0);
+                    """,
+                    parameters: [
+                        .text(contentID),
+                        .text(input.video.mediaID),
+                        .integer(Int64(input.video.durationMilliseconds)),
+                        .integer(Int64(input.video.width)),
+                        .integer(Int64(input.video.height)),
+                        .integer(input.video.sizeBytes),
+                        .text(input.video.localPath),
+                        .text(input.video.thumbnailPath),
+                        .optionalText(input.video.md5),
+                        .integer(Int64(MediaUploadStatus.pending.rawValue))
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO message (
+                        message_id,
+                        conversation_id,
+                        sender_id,
+                        client_msg_id,
+                        msg_type,
+                        direction,
+                        send_status,
+                        delivery_status,
+                        read_status,
+                        revoke_status,
+                        is_deleted,
+                        content_table,
+                        content_id,
+                        sort_seq,
+                        local_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
+                    """,
+                    parameters: [
+                        .text(message.id.rawValue),
+                        .text(input.conversationID.rawValue),
+                        .text(input.senderID.rawValue),
+                        .text(clientMessageID),
+                        .integer(Int64(MessageType.video.rawValue)),
+                        .integer(Int64(MessageDirection.outgoing.rawValue)),
+                        .integer(Int64(MessageSendStatus.sending.rawValue)),
+                        .text("message_video"),
+                        .text(contentID),
+                        .integer(sortSequence),
+                        .integer(input.localTime)
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO media_resource (
+                        media_id,
+                        user_id,
+                        owner_message_id,
+                        local_path,
+                        remote_url,
+                        thumb_path,
+                        size_bytes,
+                        md5,
+                        upload_status,
+                        download_status,
+                        updated_at,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)
+                    ON CONFLICT(media_id) DO UPDATE SET
+                        owner_message_id = excluded.owner_message_id,
+                        local_path = excluded.local_path,
+                        thumb_path = excluded.thumb_path,
+                        size_bytes = excluded.size_bytes,
+                        md5 = COALESCE(excluded.md5, media_resource.md5),
+                        upload_status = excluded.upload_status,
+                        updated_at = excluded.updated_at;
+                    """,
+                    parameters: [
+                        .text(input.video.mediaID),
+                        .text(input.userID.rawValue),
+                        .text(message.id.rawValue),
+                        .text(input.video.localPath),
+                        .text(input.video.thumbnailPath),
+                        .integer(input.video.sizeBytes),
+                        .optionalText(input.video.md5),
+                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
+                        .integer(input.localTime),
+                        .integer(input.localTime)
+                    ]
+                ),
+                conversationUpdateStatement(
+                    messageID: message.id,
+                    input: input,
+                    digest: "[视频]",
+                    sortSequence: sortSequence
+                )
+            ]
+        )
+    }
+
+    static func insertOutgoingFileStatements(_ input: OutgoingFileMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
+        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
+        let clientMessageID = input.clientMessageID ?? messageID.rawValue
+        let contentID = "file_\(messageID.rawValue)"
+        let sortSequence = input.sortSequence ?? input.localTime
+
+        let message = StoredMessage(
+            id: messageID,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            clientMessageID: clientMessageID,
+            serverMessageID: nil,
+            sequence: nil,
+            type: .file,
+            direction: .outgoing,
+            sendStatus: .sending,
+            readStatus: .read,
+            serverTime: nil,
+            isRevoked: false,
+            isDeleted: false,
+            revokeReplacementText: nil,
+            text: nil,
+            image: nil,
+            voice: nil,
+            video: nil,
+            file: input.file,
+            sortSequence: sortSequence,
+            localTime: input.localTime
+        )
+
+        return (
+            message,
+            [
+                SQLiteStatement(
+                    """
+                    INSERT INTO message_file (
+                        content_id,
+                        media_id,
+                        file_name,
+                        file_ext,
+                        size_bytes,
+                        local_path,
+                        cdn_url,
+                        md5,
+                        upload_status,
+                        download_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0);
+                    """,
+                    parameters: [
+                        .text(contentID),
+                        .text(input.file.mediaID),
+                        .text(input.file.fileName),
+                        .optionalText(input.file.fileExtension),
+                        .integer(input.file.sizeBytes),
+                        .text(input.file.localPath),
+                        .optionalText(input.file.md5),
+                        .integer(Int64(MediaUploadStatus.pending.rawValue))
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO message (
+                        message_id,
+                        conversation_id,
+                        sender_id,
+                        client_msg_id,
+                        msg_type,
+                        direction,
+                        send_status,
+                        delivery_status,
+                        read_status,
+                        revoke_status,
+                        is_deleted,
+                        content_table,
+                        content_id,
+                        sort_seq,
+                        local_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
+                    """,
+                    parameters: [
+                        .text(message.id.rawValue),
+                        .text(input.conversationID.rawValue),
+                        .text(input.senderID.rawValue),
+                        .text(clientMessageID),
+                        .integer(Int64(MessageType.file.rawValue)),
+                        .integer(Int64(MessageDirection.outgoing.rawValue)),
+                        .integer(Int64(MessageSendStatus.sending.rawValue)),
+                        .text("message_file"),
+                        .text(contentID),
+                        .integer(sortSequence),
+                        .integer(input.localTime)
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO media_resource (
+                        media_id,
+                        user_id,
+                        owner_message_id,
+                        local_path,
+                        remote_url,
+                        thumb_path,
+                        size_bytes,
+                        md5,
+                        upload_status,
+                        download_status,
+                        updated_at,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, 0, ?, ?)
+                    ON CONFLICT(media_id) DO UPDATE SET
+                        owner_message_id = excluded.owner_message_id,
+                        local_path = excluded.local_path,
+                        size_bytes = excluded.size_bytes,
+                        md5 = COALESCE(excluded.md5, media_resource.md5),
+                        upload_status = excluded.upload_status,
+                        updated_at = excluded.updated_at;
+                    """,
+                    parameters: [
+                        .text(input.file.mediaID),
+                        .text(input.userID.rawValue),
+                        .text(message.id.rawValue),
+                        .text(input.file.localPath),
+                        .integer(input.file.sizeBytes),
+                        .optionalText(input.file.md5),
+                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
+                        .integer(input.localTime),
+                        .integer(input.localTime)
+                    ]
+                ),
+                conversationUpdateStatement(
+                    messageID: message.id,
+                    input: input,
+                    digest: "[文件] \(input.file.fileName)",
+                    sortSequence: sortSequence
+                )
+            ]
+        )
+    }
+
+    private static func conversationUpdateStatement(
+        messageID: MessageID,
+        input: OutgoingVideoMessageInput,
+        digest: String,
+        sortSequence: Int64
+    ) -> SQLiteStatement {
+        conversationUpdateStatement(
+            messageID: messageID,
+            conversationID: input.conversationID,
+            userID: input.userID,
+            localTime: input.localTime,
+            digest: digest,
+            sortSequence: sortSequence
+        )
+    }
+
+    private static func conversationUpdateStatement(
+        messageID: MessageID,
+        input: OutgoingFileMessageInput,
+        digest: String,
+        sortSequence: Int64
+    ) -> SQLiteStatement {
+        conversationUpdateStatement(
+            messageID: messageID,
+            conversationID: input.conversationID,
+            userID: input.userID,
+            localTime: input.localTime,
+            digest: digest,
+            sortSequence: sortSequence
+        )
+    }
+
+    private static func conversationUpdateStatement(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        userID: UserID,
+        localTime: Int64,
+        digest: String,
+        sortSequence: Int64
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            UPDATE conversation
+            SET
+                last_message_id = ?,
+                last_message_time = ?,
+                last_message_digest = ?,
+                sort_ts = ?,
+                updated_at = ?
+            WHERE conversation_id = ? AND user_id = ?;
+            """,
+            parameters: [
+                .text(messageID.rawValue),
+                .integer(localTime),
+                .text(digest),
+                .integer(sortSequence),
+                .integer(localTime),
+                .text(conversationID.rawValue),
+                .text(userID.rawValue)
+            ]
+        )
+    }
+
     /// 从数据库行构建消息对象
     ///
     /// - Parameter row: 数据库查询结果行
@@ -681,6 +1074,8 @@ nonisolated struct MessageDAO: Sendable {
             text: row.string("text"),
             image: try image(from: row),
             voice: try voice(from: row),
+            video: try video(from: row),
+            file: try file(from: row),
             sortSequence: try row.requiredInt64("sort_seq"),
             localTime: try row.requiredInt64("local_time")
         )
@@ -742,6 +1137,60 @@ nonisolated struct MessageDAO: Sendable {
             sizeBytes: row.int64("voice_size_bytes") ?? 0,
             remoteURL: row.string("voice_cdn_url"),
             format: row.string("voice_format") ?? "m4a",
+            uploadStatus: uploadStatus
+        )
+    }
+
+    private static func video(from row: SQLiteRow) throws -> StoredVideoContent? {
+        guard
+            let mediaID = row.string("video_media_id"),
+            let localPath = row.string("video_local_path"),
+            let thumbnailPath = row.string("video_thumb_path")
+        else {
+            return nil
+        }
+
+        let uploadStatusRawValue = row.int("video_upload_status") ?? MediaUploadStatus.pending.rawValue
+        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
+            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
+        }
+
+        return StoredVideoContent(
+            mediaID: mediaID,
+            localPath: localPath,
+            thumbnailPath: thumbnailPath,
+            durationMilliseconds: row.int("video_duration_ms") ?? 0,
+            width: row.int("video_width") ?? 0,
+            height: row.int("video_height") ?? 0,
+            sizeBytes: row.int64("video_size_bytes") ?? 0,
+            remoteURL: row.string("video_cdn_url"),
+            md5: row.string("video_md5"),
+            uploadStatus: uploadStatus
+        )
+    }
+
+    private static func file(from row: SQLiteRow) throws -> StoredFileContent? {
+        guard
+            let mediaID = row.string("file_media_id"),
+            let localPath = row.string("file_local_path"),
+            let fileName = row.string("file_name")
+        else {
+            return nil
+        }
+
+        let uploadStatusRawValue = row.int("file_upload_status") ?? MediaUploadStatus.pending.rawValue
+        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
+            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
+        }
+
+        return StoredFileContent(
+            mediaID: mediaID,
+            localPath: localPath,
+            fileName: fileName,
+            fileExtension: row.string("file_ext"),
+            sizeBytes: row.int64("file_size_bytes") ?? 0,
+            remoteURL: row.string("file_cdn_url"),
+            md5: row.string("file_md5"),
             uploadStatus: uploadStatus
         )
     }
