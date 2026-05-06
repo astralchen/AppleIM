@@ -369,7 +369,7 @@ nonisolated struct MessageDAO: Sendable {
                         format,
                         upload_status,
                         download_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, 0);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0);
                     """,
                     parameters: [
                         .text(contentID),
@@ -379,6 +379,7 @@ nonisolated struct MessageDAO: Sendable {
                         .integer(input.image.sizeBytes),
                         .text(input.image.localPath),
                         .text(input.image.thumbnailPath),
+                        .optionalText(input.image.md5),
                         .text(input.image.format),
                         .integer(Int64(MediaUploadStatus.pending.rawValue))
                     ]
@@ -432,12 +433,13 @@ nonisolated struct MessageDAO: Sendable {
                         download_status,
                         updated_at,
                         created_at
-                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, ?, 0, ?, ?)
+                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)
                     ON CONFLICT(media_id) DO UPDATE SET
                         owner_message_id = excluded.owner_message_id,
                         local_path = excluded.local_path,
                         thumb_path = excluded.thumb_path,
                         size_bytes = excluded.size_bytes,
+                        md5 = COALESCE(excluded.md5, media_resource.md5),
                         upload_status = excluded.upload_status,
                         updated_at = excluded.updated_at;
                     """,
@@ -448,6 +450,7 @@ nonisolated struct MessageDAO: Sendable {
                         .text(input.image.localPath),
                         .text(input.image.thumbnailPath),
                         .integer(input.image.sizeBytes),
+                        .optionalText(input.image.md5),
                         .integer(Int64(MediaUploadStatus.pending.rawValue)),
                         .integer(input.localTime),
                         .integer(input.localTime)

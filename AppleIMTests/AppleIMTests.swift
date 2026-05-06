@@ -103,12 +103,24 @@ struct AppleIMTests {
         for url in protectedURLs {
             let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
             let protection = attributes[.protectionKey] as? FileProtectionType
+            #if targetEnvironment(simulator)
+            if let protection {
+                #expect(protection == .completeUntilFirstUserAuthentication)
+            }
+            #else
             #expect(protection == .completeUntilFirstUserAuthentication)
+            #endif
         }
 
         let cacheAttributes = try FileManager.default.attributesOfItem(atPath: paths.cacheDirectory.path)
         let cacheProtection = cacheAttributes[.protectionKey] as? FileProtectionType
+        #if targetEnvironment(simulator)
+        if let cacheProtection {
+            #expect(cacheProtection == FileProtectionType.none)
+        }
+        #else
         #expect(cacheProtection == FileProtectionType.none)
+        #endif
         #endif
     }
 
