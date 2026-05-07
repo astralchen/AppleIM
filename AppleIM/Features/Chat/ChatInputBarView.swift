@@ -6,11 +6,21 @@
 import UIKit
 
 @MainActor
+struct ChatPendingAttachmentPreviewItem {
+    let id: String
+    let image: UIImage?
+    let title: String
+    let durationText: String?
+    let isVideo: Bool
+    let isLoading: Bool
+}
+
+@MainActor
 final class ChatInputBarView: UIView {
     var onTextChanged: ((String) -> Void)?
     var onSend: ((String) -> Void)?
     var onPhotoTapped: (() -> Void)?
-    var onAttachmentRemoved: (() -> Void)?
+    var onAttachmentRemoved: ((String) -> Void)?
     var onVoiceTouchDown: (() -> Void)?
     var onVoiceTouchDragExit: (() -> Void)?
     var onVoiceTouchDragEnter: (() -> Void)?
@@ -24,13 +34,8 @@ final class ChatInputBarView: UIView {
     private let contentStackView = UIStackView()
     private let recordingStatusLabel = UILabel()
     private let attachmentPreviewView = UIView()
-    private let attachmentPreviewImageView = UIImageView()
-    private let attachmentPreviewOverlayView = UIView()
-    private let attachmentPreviewIconView = UIImageView()
-    private let attachmentPreviewTitleLabel = UILabel()
-    private let attachmentPreviewDurationLabel = UILabel()
-    private let attachmentPreviewSpinner = UIActivityIndicatorView(style: .medium)
-    private let attachmentRemoveButton = UIButton(type: .system)
+    private let attachmentPreviewScrollView = UIScrollView()
+    private let attachmentPreviewStackView = UIStackView()
     private let inputStackView = UIStackView()
     private let moreButton = UIButton(type: .system)
     private let textInputContainerView = UIView()
@@ -53,6 +58,7 @@ final class ChatInputBarView: UIView {
     private var isShowingPhotoLibraryInput = false
     private var hasPendingAttachment = false
     private var isPendingAttachmentLoading = false
+    private var pendingAttachmentPreviewItems: [ChatPendingAttachmentPreviewItem] = []
     private var lastMeasuredTextWidth: CGFloat = 0
     private var statusHideTask: Task<Void, Never>?
 
@@ -104,6 +110,7 @@ final class ChatInputBarView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        defer { normalizeAttachmentPreviewScrollOffset() }
 
         let width = textView.bounds.width
         guard abs(width - lastMeasuredTextWidth) > 0.5 else { return }
@@ -174,31 +181,38 @@ final class ChatInputBarView: UIView {
         isLoading: Bool,
         animated: Bool
     ) {
-        hasPendingAttachment = true
-        isPendingAttachmentLoading = isLoading
-        attachmentPreviewImageView.image = image
-        attachmentPreviewIconView.image = UIImage(systemName: isVideo ? "play.fill" : "photo.fill")
-        attachmentPreviewTitleLabel.text = title
-        attachmentPreviewDurationLabel.text = durationText
-        attachmentPreviewDurationLabel.isHidden = durationText == nil
-        attachmentPreviewSpinner.isHidden = !isLoading
-        attachmentRemoveButton.isEnabled = !isLoading
-        if isLoading {
-            attachmentPreviewSpinner.startAnimating()
-        } else {
-            attachmentPreviewSpinner.stopAnimating()
-        }
-        setAttachmentPreviewHidden(false, animated: animated)
+        setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "single",
+                image: image,
+                title: title,
+                durationText: durationText,
+                isVideo: isVideo,
+                isLoading: isLoading
+            )
+        ], animated: animated)
+    }
+
+    func setPendingAttachmentPreviews(_ items: [ChatPendingAttachmentPreviewItem], animated: Bool) {
+        pendingAttachmentPreviewItems = items
+        hasPendingAttachment = !items.isEmpty
+        isPendingAttachmentLoading = items.contains { $0.isLoading }
+        rebuildAttachmentPreviewItems()
+        normalizeAttachmentPreviewScrollOffset()
+        setAttachmentPreviewHidden(items.isEmpty, animated: animated)
         renderTrailingActionState()
     }
 
     func clearPendingAttachmentPreview(animated: Bool) {
+        clearPendingAttachmentPreviews(animated: animated)
+    }
+
+    func clearPendingAttachmentPreviews(animated: Bool) {
+        pendingAttachmentPreviewItems.removeAll()
         hasPendingAttachment = false
         isPendingAttachmentLoading = false
-        attachmentPreviewSpinner.stopAnimating()
-        attachmentPreviewImageView.image = nil
-        attachmentPreviewTitleLabel.text = nil
-        attachmentPreviewDurationLabel.text = nil
+        rebuildAttachmentPreviewItems()
+        normalizeAttachmentPreviewScrollOffset()
         setAttachmentPreviewHidden(true, animated: animated)
         renderTrailingActionState()
     }
@@ -251,37 +265,17 @@ final class ChatInputBarView: UIView {
             contentStackView.topAnchor.constraint(equalTo: layoutMarginsGuide.topAnchor),
             contentStackView.bottomAnchor.constraint(equalTo: layoutMarginsGuide.bottomAnchor),
 
-            attachmentPreviewImageView.topAnchor.constraint(equalTo: attachmentPreviewView.topAnchor, constant: 4),
-            attachmentPreviewImageView.leadingAnchor.constraint(equalTo: attachmentPreviewView.leadingAnchor),
-            attachmentPreviewImageView.bottomAnchor.constraint(equalTo: attachmentPreviewView.bottomAnchor, constant: -4),
-            attachmentPreviewImageView.widthAnchor.constraint(equalToConstant: 72),
-            attachmentPreviewImageView.heightAnchor.constraint(equalToConstant: 72),
+            attachmentPreviewScrollView.topAnchor.constraint(equalTo: attachmentPreviewView.topAnchor, constant: 4),
+            attachmentPreviewScrollView.leadingAnchor.constraint(equalTo: attachmentPreviewView.leadingAnchor),
+            attachmentPreviewScrollView.trailingAnchor.constraint(equalTo: attachmentPreviewView.trailingAnchor),
+            attachmentPreviewScrollView.bottomAnchor.constraint(equalTo: attachmentPreviewView.bottomAnchor, constant: -4),
+            attachmentPreviewScrollView.heightAnchor.constraint(equalToConstant: 82),
 
-            attachmentPreviewOverlayView.leadingAnchor.constraint(equalTo: attachmentPreviewImageView.leadingAnchor),
-            attachmentPreviewOverlayView.trailingAnchor.constraint(equalTo: attachmentPreviewImageView.trailingAnchor),
-            attachmentPreviewOverlayView.bottomAnchor.constraint(equalTo: attachmentPreviewImageView.bottomAnchor),
-            attachmentPreviewOverlayView.heightAnchor.constraint(equalToConstant: 24),
-
-            attachmentPreviewIconView.leadingAnchor.constraint(equalTo: attachmentPreviewOverlayView.leadingAnchor, constant: 7),
-            attachmentPreviewIconView.centerYAnchor.constraint(equalTo: attachmentPreviewOverlayView.centerYAnchor),
-            attachmentPreviewIconView.widthAnchor.constraint(equalToConstant: 13),
-            attachmentPreviewIconView.heightAnchor.constraint(equalToConstant: 13),
-
-            attachmentPreviewDurationLabel.trailingAnchor.constraint(equalTo: attachmentPreviewOverlayView.trailingAnchor, constant: -6),
-            attachmentPreviewDurationLabel.centerYAnchor.constraint(equalTo: attachmentPreviewOverlayView.centerYAnchor),
-            attachmentPreviewDurationLabel.leadingAnchor.constraint(greaterThanOrEqualTo: attachmentPreviewIconView.trailingAnchor, constant: 4),
-
-            attachmentPreviewSpinner.centerXAnchor.constraint(equalTo: attachmentPreviewImageView.centerXAnchor),
-            attachmentPreviewSpinner.centerYAnchor.constraint(equalTo: attachmentPreviewImageView.centerYAnchor),
-
-            attachmentRemoveButton.centerXAnchor.constraint(equalTo: attachmentPreviewImageView.trailingAnchor),
-            attachmentRemoveButton.centerYAnchor.constraint(equalTo: attachmentPreviewImageView.topAnchor),
-            attachmentRemoveButton.widthAnchor.constraint(equalToConstant: 30),
-            attachmentRemoveButton.heightAnchor.constraint(equalToConstant: 30),
-
-            attachmentPreviewTitleLabel.leadingAnchor.constraint(equalTo: attachmentPreviewImageView.trailingAnchor, constant: 12),
-            attachmentPreviewTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: attachmentPreviewView.trailingAnchor),
-            attachmentPreviewTitleLabel.centerYAnchor.constraint(equalTo: attachmentPreviewImageView.centerYAnchor),
+            attachmentPreviewStackView.topAnchor.constraint(equalTo: attachmentPreviewScrollView.contentLayoutGuide.topAnchor),
+            attachmentPreviewStackView.leadingAnchor.constraint(equalTo: attachmentPreviewScrollView.contentLayoutGuide.leadingAnchor),
+            attachmentPreviewStackView.trailingAnchor.constraint(equalTo: attachmentPreviewScrollView.contentLayoutGuide.trailingAnchor),
+            attachmentPreviewStackView.bottomAnchor.constraint(equalTo: attachmentPreviewScrollView.contentLayoutGuide.bottomAnchor),
+            attachmentPreviewStackView.heightAnchor.constraint(equalTo: attachmentPreviewScrollView.frameLayoutGuide.heightAnchor),
 
             moreButton.widthAnchor.constraint(equalToConstant: 44),
             moreButton.heightAnchor.constraint(equalToConstant: 44),
@@ -343,56 +337,19 @@ final class ChatInputBarView: UIView {
         attachmentPreviewView.translatesAutoresizingMaskIntoConstraints = false
         attachmentPreviewView.accessibilityIdentifier = "chat.pendingAttachmentPreview"
 
-        attachmentPreviewImageView.translatesAutoresizingMaskIntoConstraints = false
-        attachmentPreviewImageView.backgroundColor = .secondarySystemGroupedBackground
-        attachmentPreviewImageView.clipsToBounds = true
-        attachmentPreviewImageView.contentMode = .scaleAspectFill
-        attachmentPreviewImageView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.media
+        attachmentPreviewScrollView.translatesAutoresizingMaskIntoConstraints = false
+        attachmentPreviewScrollView.showsHorizontalScrollIndicator = false
+        attachmentPreviewScrollView.alwaysBounceHorizontal = true
+        attachmentPreviewScrollView.alwaysBounceVertical = false
+        attachmentPreviewScrollView.contentInsetAdjustmentBehavior = .never
 
-        attachmentPreviewOverlayView.translatesAutoresizingMaskIntoConstraints = false
-        attachmentPreviewOverlayView.backgroundColor = UIColor.black.withAlphaComponent(0.46)
-        attachmentPreviewOverlayView.isUserInteractionEnabled = false
+        attachmentPreviewStackView.translatesAutoresizingMaskIntoConstraints = false
+        attachmentPreviewStackView.axis = .horizontal
+        attachmentPreviewStackView.alignment = .top
+        attachmentPreviewStackView.spacing = 8
 
-        attachmentPreviewIconView.translatesAutoresizingMaskIntoConstraints = false
-        attachmentPreviewIconView.contentMode = .scaleAspectFit
-        attachmentPreviewIconView.tintColor = .white
-
-        attachmentPreviewTitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        attachmentPreviewTitleLabel.font = .preferredFont(forTextStyle: .subheadline)
-        attachmentPreviewTitleLabel.adjustsFontForContentSizeCategory = true
-        attachmentPreviewTitleLabel.textColor = .secondaryLabel
-        attachmentPreviewTitleLabel.numberOfLines = 1
-
-        attachmentPreviewDurationLabel.translatesAutoresizingMaskIntoConstraints = false
-        attachmentPreviewDurationLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-        attachmentPreviewDurationLabel.textColor = .white
-        attachmentPreviewDurationLabel.adjustsFontSizeToFitWidth = true
-        attachmentPreviewDurationLabel.minimumScaleFactor = 0.76
-        attachmentPreviewDurationLabel.textAlignment = .right
-
-        attachmentPreviewSpinner.translatesAutoresizingMaskIntoConstraints = false
-        attachmentPreviewSpinner.hidesWhenStopped = true
-        attachmentPreviewSpinner.color = .white
-
-        attachmentRemoveButton.translatesAutoresizingMaskIntoConstraints = false
-        attachmentRemoveButton.accessibilityLabel = "Remove Attachment"
-        attachmentRemoveButton.accessibilityIdentifier = "chat.removeAttachmentButton"
-        var removeConfiguration = UIButton.Configuration.filled()
-        removeConfiguration.image = UIImage(systemName: "xmark")
-        removeConfiguration.cornerStyle = .capsule
-        removeConfiguration.baseForegroundColor = .white
-        removeConfiguration.baseBackgroundColor = UIColor.black.withAlphaComponent(0.56)
-        removeConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 7, bottom: 7, trailing: 7)
-        attachmentRemoveButton.configuration = removeConfiguration
-        attachmentRemoveButton.addTarget(self, action: #selector(removeAttachmentButtonTapped), for: .touchUpInside)
-
-        attachmentPreviewView.addSubview(attachmentPreviewImageView)
-        attachmentPreviewView.addSubview(attachmentPreviewTitleLabel)
-        attachmentPreviewImageView.addSubview(attachmentPreviewOverlayView)
-        attachmentPreviewOverlayView.addSubview(attachmentPreviewIconView)
-        attachmentPreviewOverlayView.addSubview(attachmentPreviewDurationLabel)
-        attachmentPreviewImageView.addSubview(attachmentPreviewSpinner)
-        attachmentPreviewView.addSubview(attachmentRemoveButton)
+        attachmentPreviewView.addSubview(attachmentPreviewScrollView)
+        attachmentPreviewScrollView.addSubview(attachmentPreviewStackView)
     }
 
     private func configureTextView() {
@@ -498,9 +455,36 @@ final class ChatInputBarView: UIView {
         recordingStatusLabel.isHidden = true
     }
 
-    @objc private func removeAttachmentButtonTapped() {
-        clearPendingAttachmentPreview(animated: true)
-        onAttachmentRemoved?()
+    private func rebuildAttachmentPreviewItems() {
+        attachmentPreviewStackView.arrangedSubviews.forEach { view in
+            attachmentPreviewStackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        for item in pendingAttachmentPreviewItems {
+            let itemView = PendingAttachmentPreviewItemView(item: item)
+            itemView.onRemove = { [weak self] id in
+                self?.removeAttachmentPreviewItem(id: id)
+            }
+            attachmentPreviewStackView.addArrangedSubview(itemView)
+        }
+    }
+
+    private func normalizeAttachmentPreviewScrollOffset() {
+        let offset = attachmentPreviewScrollView.contentOffset
+        guard abs(offset.y) > 0.5 else { return }
+        attachmentPreviewScrollView.contentOffset = CGPoint(x: offset.x, y: 0)
+    }
+
+    private func removeAttachmentPreviewItem(id: String) {
+        guard pendingAttachmentPreviewItems.contains(where: { $0.id == id }) else { return }
+        pendingAttachmentPreviewItems.removeAll { $0.id == id }
+        hasPendingAttachment = !pendingAttachmentPreviewItems.isEmpty
+        isPendingAttachmentLoading = pendingAttachmentPreviewItems.contains { $0.isLoading }
+        rebuildAttachmentPreviewItems()
+        setAttachmentPreviewHidden(pendingAttachmentPreviewItems.isEmpty, animated: true)
+        renderTrailingActionState()
+        onAttachmentRemoved?(id)
     }
 
     @objc private func voiceButtonTouchDown() {
@@ -734,6 +718,138 @@ extension ChatInputBarView: UITextViewDelegate {
 
         sendCurrentComposition()
         return false
+    }
+}
+
+@MainActor
+private final class PendingAttachmentPreviewItemView: UIView {
+    var onRemove: ((String) -> Void)?
+
+    private let itemID: String
+    private let imageView = UIImageView()
+    private let overlayView = UIView()
+    private let iconView = UIImageView()
+    private let durationLabel = UILabel()
+    private let spinner = UIActivityIndicatorView(style: .medium)
+    private let removeButton = UIButton(type: .system)
+
+    init(item: ChatPendingAttachmentPreviewItem) {
+        itemID = item.id
+        super.init(frame: .zero)
+        configureView()
+        configure(item: item)
+    }
+
+    required init?(coder: NSCoder) {
+        itemID = ""
+        super.init(coder: coder)
+        configureView()
+    }
+
+    private func configure(item: ChatPendingAttachmentPreviewItem) {
+        accessibilityIdentifier = "chat.pendingAttachmentPreviewItem.\(item.id)"
+        accessibilityLabel = item.title
+        imageView.image = item.image
+        iconView.image = UIImage(systemName: item.isVideo ? "play.fill" : "photo.fill")
+        durationLabel.text = item.durationText
+        durationLabel.isHidden = item.durationText == nil
+        removeButton.isEnabled = !item.isLoading
+        removeButton.alpha = item.isLoading ? 0.45 : 1
+
+        if item.isLoading {
+            spinner.startAnimating()
+        } else {
+            spinner.stopAnimating()
+        }
+    }
+
+    private func configureView() {
+        translatesAutoresizingMaskIntoConstraints = false
+        clipsToBounds = false
+
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.backgroundColor = .secondarySystemGroupedBackground
+        imageView.clipsToBounds = true
+        imageView.contentMode = .scaleAspectFill
+        imageView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.media
+
+        overlayView.translatesAutoresizingMaskIntoConstraints = false
+        overlayView.backgroundColor = UIColor.black.withAlphaComponent(0.46)
+        overlayView.isUserInteractionEnabled = false
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.contentMode = .scaleAspectFit
+        iconView.tintColor = .white
+
+        durationLabel.translatesAutoresizingMaskIntoConstraints = false
+        durationLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        durationLabel.textColor = .white
+        durationLabel.adjustsFontSizeToFitWidth = true
+        durationLabel.minimumScaleFactor = 0.76
+        durationLabel.textAlignment = .right
+
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.hidesWhenStopped = true
+        spinner.color = .white
+
+        removeButton.translatesAutoresizingMaskIntoConstraints = false
+        removeButton.accessibilityLabel = "Remove Attachment"
+        removeButton.accessibilityIdentifier = "chat.removeAttachmentButton.\(itemID)"
+        removeButton.configuration = nil
+        removeButton.backgroundColor = UIColor.black.withAlphaComponent(0.56)
+        removeButton.tintColor = .white
+        removeButton.clipsToBounds = true
+        removeButton.layer.cornerRadius = 15
+        removeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+        removeButton.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold),
+            forImageIn: .normal
+        )
+        removeButton.addTarget(self, action: #selector(removeButtonTapped), for: .touchUpInside)
+
+        addSubview(imageView)
+        imageView.addSubview(overlayView)
+        overlayView.addSubview(iconView)
+        overlayView.addSubview(durationLabel)
+        imageView.addSubview(spinner)
+        addSubview(removeButton)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: 82),
+            heightAnchor.constraint(equalToConstant: 82),
+
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            imageView.widthAnchor.constraint(equalToConstant: 72),
+            imageView.heightAnchor.constraint(equalToConstant: 72),
+
+            overlayView.leadingAnchor.constraint(equalTo: imageView.leadingAnchor),
+            overlayView.trailingAnchor.constraint(equalTo: imageView.trailingAnchor),
+            overlayView.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
+            overlayView.heightAnchor.constraint(equalToConstant: 24),
+
+            iconView.leadingAnchor.constraint(equalTo: overlayView.leadingAnchor, constant: 7),
+            iconView.centerYAnchor.constraint(equalTo: overlayView.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 13),
+            iconView.heightAnchor.constraint(equalToConstant: 13),
+
+            durationLabel.trailingAnchor.constraint(equalTo: overlayView.trailingAnchor, constant: -6),
+            durationLabel.centerYAnchor.constraint(equalTo: overlayView.centerYAnchor),
+            durationLabel.leadingAnchor.constraint(greaterThanOrEqualTo: iconView.trailingAnchor, constant: 4),
+
+            spinner.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: imageView.centerYAnchor),
+
+            removeButton.topAnchor.constraint(equalTo: topAnchor),
+            removeButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            removeButton.widthAnchor.constraint(equalToConstant: 30),
+            removeButton.heightAnchor.constraint(equalToConstant: 30)
+        ])
+    }
+
+    @objc private func removeButtonTapped() {
+        guard removeButton.isEnabled else { return }
+        onRemove?(itemID)
     }
 }
 

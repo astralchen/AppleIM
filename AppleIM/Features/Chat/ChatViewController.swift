@@ -28,7 +28,8 @@ final class ChatViewController: UIViewController {
     private lazy var photoLibraryInputView = makePhotoLibraryInputView()
     private let voiceRecorder = VoiceRecordingController()
     private let voicePlaybackController = VoicePlaybackController()
-    private var pendingComposerMedia: ChatComposerMedia?
+    private var pendingAttachmentPreviews: [ChatPendingAttachmentPreviewItem] = []
+    private var pendingComposerMediaByID: [String: ChatComposerMedia] = [:]
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -114,8 +115,9 @@ final class ChatViewController: UIViewController {
         inputBarView.onPhotoTapped = { [weak self] in
             self?.showPhotoLibraryInput()
         }
-        inputBarView.onAttachmentRemoved = { [weak self] in
-            self?.pendingComposerMedia = nil
+        inputBarView.onAttachmentRemoved = { [weak self] id in
+            self?.removePendingAttachment(id: id)
+            self?.photoLibraryInputView.removeSelection(assetID: id)
         }
         inputBarView.onVoiceTouchDown = { [weak self] in
             self?.voiceButtonTouchDown()
@@ -148,30 +150,38 @@ final class ChatViewController: UIViewController {
         let inputView = ChatPhotoLibraryInputView(frame: .zero, inputViewStyle: .keyboard)
 
         inputView.onSelectionStarted = { [weak self] preview in
-            self?.pendingComposerMedia = nil
-            self?.inputBarView.setPendingAttachmentPreview(
-                image: preview.image,
-                title: preview.title,
-                durationText: preview.durationText,
-                isVideo: preview.isVideo,
-                isLoading: true,
-                animated: true
+            self?.upsertPendingAttachmentPreview(
+                ChatPendingAttachmentPreviewItem(
+                    id: preview.id,
+                    image: preview.image,
+                    title: preview.title,
+                    durationText: preview.durationText,
+                    isVideo: preview.isVideo,
+                    isLoading: true
+                )
             )
         }
         inputView.onSelectionPrepared = { [weak self] preparedMedia in
-            self?.pendingComposerMedia = preparedMedia.media
-            self?.inputBarView.setPendingAttachmentPreview(
-                image: preparedMedia.preview.image,
-                title: preparedMedia.preview.title,
-                durationText: preparedMedia.preview.durationText,
-                isVideo: preparedMedia.preview.isVideo,
-                isLoading: false,
-                animated: true
+            self?.pendingComposerMediaByID[preparedMedia.id] = preparedMedia.media
+            self?.upsertPendingAttachmentPreview(
+                ChatPendingAttachmentPreviewItem(
+                    id: preparedMedia.id,
+                    image: preparedMedia.preview.image,
+                    title: preparedMedia.preview.title,
+                    durationText: preparedMedia.preview.durationText,
+                    isVideo: preparedMedia.preview.isVideo,
+                    isLoading: false
+                )
             )
         }
-        inputView.onSelectionFailed = { [weak self] message in
-            self?.pendingComposerMedia = nil
-            self?.inputBarView.clearPendingAttachmentPreview(animated: true)
+        inputView.onSelectionRemoved = { [weak self] id in
+            self?.removePendingAttachment(id: id)
+        }
+        inputView.onSelectionFailed = { [weak self] id, message in
+            self?.removePendingAttachment(id: id)
+            self?.showTransientRecordingMessage(message)
+        }
+        inputView.onSelectionLimitReached = { [weak self] message in
             self?.showTransientRecordingMessage(message)
         }
 
@@ -185,10 +195,27 @@ final class ChatViewController: UIViewController {
     }
 
     private func sendComposer(text: String) {
-        let media = pendingComposerMedia
-        pendingComposerMedia = nil
-        inputBarView.clearPendingAttachmentPreview(animated: true)
+        let media = pendingAttachmentPreviews.compactMap { pendingComposerMediaByID[$0.id] }
+        pendingAttachmentPreviews.removeAll()
+        pendingComposerMediaByID.removeAll()
+        inputBarView.clearPendingAttachmentPreviews(animated: true)
+        photoLibraryInputView.clearSelection()
         viewModel.sendComposer(media: media, text: text)
+    }
+
+    private func upsertPendingAttachmentPreview(_ item: ChatPendingAttachmentPreviewItem) {
+        if let index = pendingAttachmentPreviews.firstIndex(where: { $0.id == item.id }) {
+            pendingAttachmentPreviews[index] = item
+        } else {
+            pendingAttachmentPreviews.append(item)
+        }
+        inputBarView.setPendingAttachmentPreviews(pendingAttachmentPreviews, animated: true)
+    }
+
+    private func removePendingAttachment(id: String) {
+        pendingAttachmentPreviews.removeAll { $0.id == id }
+        pendingComposerMediaByID[id] = nil
+        inputBarView.setPendingAttachmentPreviews(pendingAttachmentPreviews, animated: true)
     }
 
     private func configureVoiceRecorder() {

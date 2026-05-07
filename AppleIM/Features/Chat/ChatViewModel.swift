@@ -298,8 +298,16 @@ final class ChatViewModel {
     /// 当前版本不扩展消息 schema；媒体和文本同时存在时，按“媒体消息 -> 文本消息”
     /// 拆成两条消息发送。
     func sendComposer(media: ChatComposerMedia?, text: String) {
+        sendComposer(media: media.map { [$0] } ?? [], text: text)
+    }
+
+    /// 发送输入栏组合内容。
+    ///
+    /// 当前版本不扩展消息 schema；多个媒体和文本同时存在时，按选择顺序发送媒体，
+    /// 最后再发送文本消息。
+    func sendComposer(media: [ChatComposerMedia], text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard media != nil || !trimmedText.isEmpty else { return }
+        guard !media.isEmpty || !trimmedText.isEmpty else { return }
 
         sendTask?.cancel()
         sendTask = Task { [weak self] in
@@ -310,8 +318,8 @@ final class ChatViewModel {
                     state.draftText = ""
                 }
 
-                if let media {
-                    switch media {
+                for mediaItem in media {
+                    switch mediaItem {
                     case let .image(data, preferredFileExtension):
                         for try await row in useCase.sendImage(
                             data: data,
