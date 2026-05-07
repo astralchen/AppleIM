@@ -293,6 +293,67 @@ final class ChatViewModel {
         }
     }
 
+    /// 发送输入栏组合内容。
+    ///
+    /// 当前版本不扩展消息 schema；媒体和文本同时存在时，按“媒体消息 -> 文本消息”
+    /// 拆成两条消息发送。
+    func sendComposer(media: ChatComposerMedia?, text: String) {
+        sendComposer(media: media.map { [$0] } ?? [], text: text)
+    }
+
+    /// 发送输入栏组合内容。
+    ///
+    /// 当前版本不扩展消息 schema；多个媒体和文本同时存在时，按选择顺序发送媒体，
+    /// 最后再发送文本消息。
+    func sendComposer(media: [ChatComposerMedia], text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !media.isEmpty || !trimmedText.isEmpty else { return }
+
+        sendTask?.cancel()
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                publish { state in
+                    state.draftText = ""
+                }
+
+                for mediaItem in media {
+                    switch mediaItem {
+                    case let .image(data, preferredFileExtension):
+                        for try await row in useCase.sendImage(
+                            data: data,
+                            preferredFileExtension: preferredFileExtension
+                        ) {
+                            guard !Task.isCancelled else { return }
+                            upsert(row)
+                        }
+                    case let .video(fileURL, preferredFileExtension):
+                        for try await row in useCase.sendVideo(
+                            fileURL: fileURL,
+                            preferredFileExtension: preferredFileExtension
+                        ) {
+                            guard !Task.isCancelled else { return }
+                            upsert(row)
+                        }
+                    }
+                }
+
+                guard !trimmedText.isEmpty else { return }
+                for try await row in useCase.sendText(trimmedText) {
+                    guard !Task.isCancelled else { return }
+                    upsert(row)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to send message")
+                }
+            }
+        }
+    }
+
     /// 标记语音开始播放
     ///
     /// 播放启动成功后调用，立即更新播放态和未播放红点，再异步回写已播放状态。

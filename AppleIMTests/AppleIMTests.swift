@@ -11,6 +11,7 @@ import Combine
 import Foundation
 import CoreGraphics
 import ImageIO
+import UIKit
 import UniformTypeIdentifiers
 @testable import AppleIM
 
@@ -3414,6 +3415,219 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewModelSendsComposerImageThenText() async throws {
+        let useCase = ComposerSendingStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Composer")
+
+        viewModel.sendComposer(
+            media: .image(data: samplePNGData(), preferredFileExtension: "png"),
+            text: "Hello after image"
+        )
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+
+        #expect(useCase.events == ["image:png", "text:Hello after image"])
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["composer_image", "composer_text"])
+    }
+
+    @MainActor
+    @Test func chatViewModelSendsComposerVideoOnly() async throws {
+        let useCase = ComposerSendingStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Composer")
+        let videoURL = temporaryDirectory().appendingPathComponent("composer.mov")
+
+        viewModel.sendComposer(media: .video(fileURL: videoURL, preferredFileExtension: "mov"), text: "   ")
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 1
+            }
+        }
+
+        #expect(useCase.events == ["video:mov"])
+        #expect(viewModel.currentState.rows.first?.isVideo == true)
+    }
+
+    @MainActor
+    @Test func chatViewModelSendsComposerMediaInSelectionOrderThenText() async throws {
+        let useCase = ComposerSendingStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Composer")
+        let videoURL = temporaryDirectory().appendingPathComponent("composer.mov")
+
+        viewModel.sendComposer(
+            media: [
+                .image(data: samplePNGData(), preferredFileExtension: "png"),
+                .video(fileURL: videoURL, preferredFileExtension: "mov"),
+                .image(data: samplePNGData(), preferredFileExtension: "heic")
+            ],
+            text: "Media batch"
+        )
+
+        try await waitForCondition {
+            useCase.events == ["image:png", "video:mov", "image:heic", "text:Media batch"]
+        }
+    }
+
+    @MainActor
+    @Test func chatInputBarAttachmentPreviewControlsSendState() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        inputBar.layoutIfNeeded()
+
+        #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == true)
+        #expect(button(in: inputBar, identifier: "chat.sendButton") == nil)
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            ),
+            ChatPendingAttachmentPreviewItem(
+                id: "video-1",
+                image: nil,
+                title: "Preparing video...",
+                durationText: "0:03",
+                isVideo: true,
+                isLoading: true
+            )
+        ], animated: false)
+        #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == false)
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            ),
+            ChatPendingAttachmentPreviewItem(
+                id: "video-1",
+                image: nil,
+                title: "Video ready",
+                durationText: "0:03",
+                isVideo: true,
+                isLoading: false
+            )
+        ], animated: false)
+        #expect(button(in: inputBar, identifier: "chat.sendButton")?.isEnabled == true)
+
+        inputBar.clearPendingAttachmentPreviews(animated: false)
+        #expect(button(in: inputBar, identifier: "chat.sendButton") == nil)
+        #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == true)
+    }
+
+    @MainActor
+    @Test func chatInputBarRemovesSelectedAttachmentPreviewItem() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        var removedIDs: [String] = []
+        inputBar.onAttachmentRemoved = { id in
+            removedIDs.append(id)
+        }
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            ),
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-2",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        inputBar.layoutIfNeeded()
+
+        button(in: inputBar, identifier: "chat.removeAttachmentButton.photo-1")?.sendActions(for: .touchUpInside)
+
+        #expect(removedIDs == ["photo-1"])
+        #expect(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-1") == nil)
+        #expect(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-2") != nil)
+        #expect(button(in: inputBar, identifier: "chat.sendButton")?.isEnabled == true)
+
+        button(in: inputBar, identifier: "chat.removeAttachmentButton.photo-2")?.sendActions(for: .touchUpInside)
+
+        #expect(removedIDs == ["photo-1", "photo-2"])
+        #expect(findView(in: inputBar, identifier: "chat.pendingAttachmentPreview")?.isHidden == true)
+        #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == true)
+    }
+
+    @MainActor
+    @Test func chatInputBarKeepsAttachmentRemoveButtonInsidePreviewItemBounds() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        inputBar.layoutIfNeeded()
+
+        let itemView = try #require(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-1"))
+        let removeButton = try #require(button(in: inputBar, identifier: "chat.removeAttachmentButton.photo-1"))
+        let scrollView = try #require(itemView.superview?.superview as? UIScrollView)
+        itemView.layoutIfNeeded()
+        removeButton.layoutIfNeeded()
+        let buttonFrameInItem = removeButton.convert(removeButton.bounds, to: itemView)
+        let buttonFrameInScrollView = removeButton.convert(removeButton.bounds, to: scrollView)
+
+        #expect(buttonFrameInItem.width == 30)
+        #expect(buttonFrameInItem.height == 30)
+        #expect(buttonFrameInScrollView.minX >= 0)
+        #expect(buttonFrameInScrollView.minY >= 0)
+        #expect(buttonFrameInScrollView.maxX <= scrollView.bounds.maxX)
+        #expect(buttonFrameInScrollView.maxY <= scrollView.bounds.maxY)
+        #expect(removeButton.clipsToBounds == true)
+        #expect(removeButton.layer.cornerRadius == 15)
+    }
+
+    @Test func photoLibrarySelectionStateKeepsSelectionOrderAndCapsAtNine() {
+        var state = ChatPhotoLibrarySelectionState()
+        let ids = (1...10).map { "asset-\($0)" }
+
+        let firstNineResults = ids.prefix(9).map { state.toggle(assetID: $0) }
+        let tenthResult = state.toggle(assetID: ids[9])
+
+        #expect(firstNineResults.allSatisfy { $0 == .selected })
+        #expect(tenthResult == .limitReached)
+        #expect(state.selectedAssetIDs == Array(ids.prefix(9)))
+
+        let cancelResult = state.toggle(assetID: "asset-3")
+
+        #expect(cancelResult == .deselected)
+        #expect(state.selectedAssetIDs == ["asset-1", "asset-2", "asset-4", "asset-5", "asset-6", "asset-7", "asset-8", "asset-9"])
+    }
+
+    @MainActor
+    @Test func chatInputBarKeepsReturnSendsMenuAction() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        inputBar.layoutIfNeeded()
+
+        let menuChildren = button(in: inputBar, identifier: "chat.moreButton")?.menu?.children ?? []
+
+        #expect(menuChildren.contains { $0.title == "Choose Photo or Video" })
+        #expect(menuChildren.contains { $0.title == "Return Sends" })
+    }
+
+    @MainActor
     @Test func chatViewModelTracksOnlyActiveVoicePlaybackRow() async throws {
         let voiceA = makeVoiceRow(id: "voice_a", sortSequence: 1, isUnplayed: true)
         let voiceB = makeVoiceRow(id: "voice_b", sortSequence: 2, isUnplayed: true)
@@ -4353,6 +4567,29 @@ struct AppleIMTests {
         #expect(messages.map(\.text) == ["Still has more"])
         #expect(checkpoint?.cursor == "cursor_limit")
     }
+
+    @Test func photoLibraryVideoDataHandlerWritesChunksFromDetachedExecutor() async throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("picked-video.mov")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let task = Task.detached {
+            let fileHandle = try FileHandle(forWritingTo: url)
+            let dataHandler = ChatPhotoLibraryVideoFileIO.makeDataReceivedHandler(fileHandle: fileHandle)
+
+            dataHandler(Data([0x01, 0x02]))
+            dataHandler(Data([0x03]))
+            try fileHandle.close()
+        }
+        try await task.value
+
+        let data = try Data(contentsOf: url)
+        #expect(data == Data([0x01, 0x02, 0x03]))
+    }
 }
 
 private actor ScriptedSyncDeltaService: SyncDeltaService {
@@ -4790,6 +5027,114 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
     }
 
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class ComposerSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private(set) var events: [String] = []
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        events.append("text:\(text)")
+
+        return AsyncThrowingStream { continuation in
+            continuation.yield(
+                makeChatRow(id: "composer_text", text: text, sortSequence: 2)
+            )
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        events.append("image:\(preferredFileExtension ?? "")")
+
+        return AsyncThrowingStream { continuation in
+            continuation.yield(
+                ChatMessageRowState(
+                    id: "composer_image",
+                    text: "",
+                    imageThumbnailPath: "/tmp/composer-image.jpg",
+                    voiceDurationMilliseconds: nil,
+                    sortSequence: 1,
+                    timeText: "Now",
+                    statusText: nil,
+                    uploadProgress: nil,
+                    isOutgoing: true,
+                    canRetry: false,
+                    canDelete: true,
+                    canRevoke: false,
+                    isRevoked: false
+                )
+            )
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        events.append("video:\(preferredFileExtension ?? "")")
+
+        return AsyncThrowingStream { continuation in
+            continuation.yield(
+                ChatMessageRowState(
+                    id: "composer_video",
+                    text: "",
+                    imageThumbnailPath: nil,
+                    videoThumbnailPath: "/tmp/composer-video.jpg",
+                    videoLocalPath: fileURL.path,
+                    videoDurationMilliseconds: 1_000,
+                    voiceDurationMilliseconds: nil,
+                    sortSequence: 1,
+                    timeText: "Now",
+                    statusText: nil,
+                    uploadProgress: nil,
+                    isOutgoing: true,
+                    canRetry: false,
+                    canDelete: true,
+                    canRevoke: false,
+                    isRevoked: false
+                )
+            )
+            continuation.finish()
+        }
+    }
+
+    func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
         }
@@ -5282,6 +5627,36 @@ private func makeConversationRecord(
         updatedAt: sortTimestamp,
         createdAt: sortTimestamp
     )
+}
+
+@MainActor
+private func button(in view: UIView, identifier: String) -> UIButton? {
+    if let button = view as? UIButton, button.accessibilityIdentifier == identifier {
+        return button
+    }
+
+    for subview in view.subviews {
+        if let button = button(in: subview, identifier: identifier) {
+            return button
+        }
+    }
+
+    return nil
+}
+
+@MainActor
+private func findView(in view: UIView, identifier: String) -> UIView? {
+    if view.accessibilityIdentifier == identifier {
+        return view
+    }
+
+    for subview in view.subviews {
+        if let matchingView = findView(in: subview, identifier: identifier) {
+            return matchingView
+        }
+    }
+
+    return nil
 }
 
 private actor CapturingLocalNotificationManager: LocalNotificationManaging {
