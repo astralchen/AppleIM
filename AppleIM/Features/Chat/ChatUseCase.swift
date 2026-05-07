@@ -33,6 +33,12 @@ nonisolated struct VoiceRecordingFile: Equatable, Sendable {
     }
 }
 
+/// 输入栏中待发送的媒体附件草稿。
+nonisolated enum ChatComposerMedia: Sendable {
+    case image(data: Data, preferredFileExtension: String?)
+    case video(fileURL: URL, preferredFileExtension: String?)
+}
+
 /// 待处理消息重试运行结果
 nonisolated struct PendingMessageRetryRunResult: Equatable, Sendable {
     /// 扫描的任务数

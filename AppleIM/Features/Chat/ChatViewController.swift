@@ -5,9 +5,7 @@
 
 import Combine
 import AVKit
-import PhotosUI
 import UIKit
-import UniformTypeIdentifiers
 
 private let chatSection = "messages"
 
@@ -27,8 +25,10 @@ final class ChatViewController: UIViewController {
     )
     private let emptyLabel = UILabel()
     private let inputBarView = ChatInputBarView()
+    private lazy var photoLibraryInputView = makePhotoLibraryInputView()
     private let voiceRecorder = VoiceRecordingController()
     private let voicePlaybackController = VoicePlaybackController()
+    private var pendingComposerMedia: ChatComposerMedia?
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -109,10 +109,13 @@ final class ChatViewController: UIViewController {
             self?.viewModel.saveDraft(text)
         }
         inputBarView.onSend = { [weak self] text in
-            self?.viewModel.sendText(text)
+            self?.sendComposer(text: text)
         }
         inputBarView.onPhotoTapped = { [weak self] in
-            self?.presentMediaPicker()
+            self?.showPhotoLibraryInput()
+        }
+        inputBarView.onAttachmentRemoved = { [weak self] in
+            self?.pendingComposerMedia = nil
         }
         inputBarView.onVoiceTouchDown = { [weak self] in
             self?.voiceButtonTouchDown()
@@ -139,6 +142,53 @@ final class ChatViewController: UIViewController {
             guard shouldStickToBottom else { return }
             self?.scrollToBottom(animated: false)
         }
+    }
+
+    private func makePhotoLibraryInputView() -> ChatPhotoLibraryInputView {
+        let inputView = ChatPhotoLibraryInputView(frame: .zero, inputViewStyle: .keyboard)
+
+        inputView.onSelectionStarted = { [weak self] preview in
+            self?.pendingComposerMedia = nil
+            self?.inputBarView.setPendingAttachmentPreview(
+                image: preview.image,
+                title: preview.title,
+                durationText: preview.durationText,
+                isVideo: preview.isVideo,
+                isLoading: true,
+                animated: true
+            )
+        }
+        inputView.onSelectionPrepared = { [weak self] preparedMedia in
+            self?.pendingComposerMedia = preparedMedia.media
+            self?.inputBarView.setPendingAttachmentPreview(
+                image: preparedMedia.preview.image,
+                title: preparedMedia.preview.title,
+                durationText: preparedMedia.preview.durationText,
+                isVideo: preparedMedia.preview.isVideo,
+                isLoading: false,
+                animated: true
+            )
+        }
+        inputView.onSelectionFailed = { [weak self] message in
+            self?.pendingComposerMedia = nil
+            self?.inputBarView.clearPendingAttachmentPreview(animated: true)
+            self?.showTransientRecordingMessage(message)
+        }
+
+        return inputView
+    }
+
+    private func showPhotoLibraryInput() {
+        inputBarView.setPhotoLibraryInputView(photoLibraryInputView)
+        photoLibraryInputView.refreshAuthorization()
+        inputBarView.showPhotoLibraryInput()
+    }
+
+    private func sendComposer(text: String) {
+        let media = pendingComposerMedia
+        pendingComposerMedia = nil
+        inputBarView.clearPendingAttachmentPreview(animated: true)
+        viewModel.sendComposer(media: media, text: text)
     }
 
     private func configureVoiceRecorder() {
@@ -347,17 +397,6 @@ final class ChatViewController: UIViewController {
         return UICollectionViewCompositionalLayout(section: section)
     }
 
-    private func presentMediaPicker() {
-        var configuration = PHPickerConfiguration(photoLibrary: .shared())
-        configuration.filter = .any(of: [.images, .videos])
-        configuration.selectionLimit = 1
-        configuration.preferredAssetRepresentationMode = .current
-
-        let picker = PHPickerViewController(configuration: configuration)
-        picker.delegate = self
-        present(picker, animated: true)
-    }
-
     @objc private func voiceButtonTouchDown() {
         isVoiceTouchActive = true
         Task { [weak self] in
@@ -455,59 +494,6 @@ final class ChatViewController: UIViewController {
         guard !lastRenderedRowIDs.isEmpty else { return }
         let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
         collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
-    }
-}
-
-extension ChatViewController: PHPickerViewControllerDelegate {
-    func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-        picker.dismiss(animated: true)
-
-        guard let provider = results.first?.itemProvider else {
-            return
-        }
-
-        if let videoTypeIdentifier = provider.registeredTypeIdentifiers.first(where: { identifier in
-            UTType(identifier)?.conforms(to: .movie) == true
-        }) {
-            let fileExtension = UTType(videoTypeIdentifier)?.preferredFilenameExtension
-            provider.loadFileRepresentation(forTypeIdentifier: videoTypeIdentifier) { [weak self] url, _ in
-                guard let self, let url else { return }
-
-                let temporaryURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("ChatBridgeVideoPick-\(UUID().uuidString)")
-                    .appendingPathExtension(fileExtension ?? url.pathExtension)
-
-                do {
-                    if FileManager.default.fileExists(atPath: temporaryURL.path) {
-                        try FileManager.default.removeItem(at: temporaryURL)
-                    }
-                    try FileManager.default.copyItem(at: url, to: temporaryURL)
-                } catch {
-                    Task { @MainActor in
-                        self.showTransientRecordingMessage("Unable to load video")
-                    }
-                    return
-                }
-
-                Task { @MainActor in
-                    self.viewModel.sendVideo(fileURL: temporaryURL, preferredFileExtension: fileExtension)
-                }
-            }
-            return
-        }
-
-        let typeIdentifier = provider.registeredTypeIdentifiers.first { identifier in
-            UTType(identifier)?.conforms(to: .image) == true
-        } ?? UTType.image.identifier
-        let fileExtension = UTType(typeIdentifier)?.preferredFilenameExtension
-
-        provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] data, _ in
-            guard let data else { return }
-
-            Task { @MainActor in
-                self?.viewModel.sendImage(data: data, preferredFileExtension: fileExtension)
-            }
-        }
     }
 }
 

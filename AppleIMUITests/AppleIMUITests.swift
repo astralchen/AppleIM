@@ -111,14 +111,21 @@ final class AppleIMUITests: XCTestCase {
 
         let message = "UI test message \(UUID().uuidString)"
         let input = app.textViews["chat.messageInput"]
+        XCTAssertTrue(app.buttons["chat.voiceButton"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["chat.sendButton"].exists)
+
         input.tap()
         input.typeText(message)
+        XCTAssertTrue(app.buttons["chat.sendButton"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["chat.voiceButton"].exists)
         app.buttons["chat.sendButton"].tap()
 
         XCTAssertTrue(
             messageCell(containing: message, in: app).waitForExistence(timeout: 5),
             "Expected sent message to appear in chat"
         )
+        XCTAssertTrue(app.buttons["chat.voiceButton"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["chat.sendButton"].exists)
     }
 
     @MainActor
