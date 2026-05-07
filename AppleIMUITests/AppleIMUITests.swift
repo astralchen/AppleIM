@@ -110,7 +110,7 @@ final class AppleIMUITests: XCTestCase {
         openSondraConversation(in: app)
 
         let message = "UI test message \(UUID().uuidString)"
-        let input = app.textFields["chat.messageInput"]
+        let input = app.textViews["chat.messageInput"]
         input.tap()
         input.typeText(message)
         app.buttons["chat.sendButton"].tap()
@@ -118,6 +118,51 @@ final class AppleIMUITests: XCTestCase {
         XCTAssertTrue(
             messageCell(containing: message, in: app).waitForExistence(timeout: 5),
             "Expected sent message to appear in chat"
+        )
+    }
+
+    @MainActor
+    func testMultilineTextMessageKeepsLineBreaks() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        let uniqueText = "UI multiline \(UUID().uuidString)"
+        let message = "\(uniqueText)\nsecond line"
+        let input = app.textViews["chat.messageInput"]
+        input.tap()
+        input.typeText(message)
+        app.buttons["chat.sendButton"].tap()
+
+        XCTAssertTrue(
+            messageCell(containing: uniqueText, in: app).waitForExistence(timeout: 5),
+            "Expected multiline message to appear in chat"
+        )
+        XCTAssertTrue(
+            messageCell(containing: "second line", in: app).exists,
+            "Expected multiline message to keep its second line"
+        )
+    }
+
+    @MainActor
+    func testReturnKeyCanSendTextMessage() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        let message = "UI return send \(UUID().uuidString)"
+        let input = app.textViews["chat.messageInput"]
+        input.tap()
+        app.buttons["chat.moreButton"].tap()
+        app.buttons["Return Sends"].tap()
+        input.typeText(message)
+        app.keyboards.buttons["Send"].tap()
+
+        XCTAssertTrue(
+            messageCell(containing: message, in: app).waitForExistence(timeout: 5),
+            "Expected Return key to send message when send mode is enabled"
         )
     }
 
@@ -192,7 +237,7 @@ final class AppleIMUITests: XCTestCase {
         openSondraConversation(in: app)
 
         let message = "UI test retry \(UUID().uuidString)"
-        let input = app.textFields["chat.messageInput"]
+        let input = app.textViews["chat.messageInput"]
         input.tap()
         input.typeText(message)
         app.buttons["chat.sendButton"].tap()

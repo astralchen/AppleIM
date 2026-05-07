@@ -142,15 +142,38 @@ func waitForConversationList(in app: XCUIApplication, file: StaticString = #file
 @MainActor
 func openSondraConversation(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
     waitForConversationList(in: app, file: file, line: line)
-    sondraConversationElement(in: app).tap()
 
-    let messageInput = app.textFields["chat.messageInput"]
-    XCTAssertTrue(messageInput.waitForExistence(timeout: 5), "Expected chat message input", file: file, line: line)
+    let messageInput = app.textViews["chat.messageInput"]
+    if messageInput.waitForExistence(timeout: 1) {
+        return
+    }
+
+    let candidates = [
+        app.cells["conversationList.cell.single_sondra"].firstMatch,
+        app.staticTexts["Sondra"].firstMatch
+    ]
+    for _ in 0..<3 {
+        for conversation in candidates where conversation.exists {
+            if conversation.isHittable {
+                conversation.tap()
+            } else {
+                conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            }
+
+            if messageInput.waitForExistence(timeout: 3) {
+                return
+            }
+        }
+    }
+
+    XCTFail("Expected chat message input", file: file, line: line)
 }
 
 @MainActor
 func messageCell(containing text: String, in app: XCUIApplication) -> XCUIElement {
-    app.staticTexts[text]
+    app.staticTexts
+        .matching(NSPredicate(format: "label CONTAINS %@", text))
+        .firstMatch
 }
 
 @MainActor

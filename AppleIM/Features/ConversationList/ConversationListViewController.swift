@@ -40,6 +40,7 @@ final class ConversationListViewController: UIViewController {
 
     private let emptyLabel = UILabel()
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
+    private let backgroundView = GradientBackgroundView()
 
     init(
         viewModel: ConversationListViewModel,
@@ -79,6 +80,9 @@ final class ConversationListViewController: UIViewController {
     private func configureView() {
         title = "ChatBridge"
         view.backgroundColor = .systemBackground
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(backgroundView)
+
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
         searchController.searchResultsUpdater = self
@@ -86,17 +90,24 @@ final class ConversationListViewController: UIViewController {
         searchController.searchBar.placeholder = "Search"
         searchController.searchBar.accessibilityIdentifier = "conversationList.searchBar"
         searchController.searchBar.searchTextField.accessibilityIdentifier = "conversationList.searchField"
+        searchController.searchBar.searchTextField.backgroundColor = ChatBridgeDesignSystem.ColorToken.elevatedCard
+        searchController.searchBar.searchTextField.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.field
+        searchController.searchBar.searchTextField.layer.masksToBounds = true
         definesPresentationContext = true
 
         let accountButton = UIButton(type: .system)
-        accountButton.setTitle("Account", for: .normal)
+        var accountConfiguration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .circularTool)
+        accountConfiguration.image = UIImage(systemName: "person.crop.circle.fill")
+        accountConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        accountButton.configuration = accountConfiguration
         accountButton.accessibilityIdentifier = "conversationList.accountButton"
+        accountButton.accessibilityLabel = "Account"
         accountButton.addTarget(self, action: #selector(accountButtonTapped), for: .touchUpInside)
-        accountButton.frame = CGRect(x: 0, y: 0, width: 72, height: 44)
+        accountButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         navigationItem.rightBarButtonItem = UIBarButtonItem(customView: accountButton)
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
-        collectionView.backgroundColor = .systemGroupedBackground
+        collectionView.backgroundColor = .clear
         collectionView.delegate = self
         collectionView.accessibilityIdentifier = "conversationList.collection"
 
@@ -114,6 +125,11 @@ final class ConversationListViewController: UIViewController {
         view.addSubview(loadingIndicator)
 
         NSLayoutConstraint.activate([
+            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
+            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
             collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -130,34 +146,20 @@ final class ConversationListViewController: UIViewController {
     }
 
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, rowID in
+        let cellRegistration = UICollectionView.CellRegistration<RoundedConversationCell, String> { [weak self] cell, _, rowID in
             guard let self else { return }
 
-            var content = cell.defaultContentConfiguration()
             if let row = rowsByID[rowID] {
-                content.text = row.title
-                content.secondaryText = row.subtitle
-                content.secondaryTextProperties.color = .secondaryLabel
-                cell.accessories = self.accessories(for: row)
+                cell.configure(row: row)
                 cell.isAccessibilityElement = true
                 cell.accessibilityIdentifier = "conversationList.cell.\(row.id.rawValue)"
                 cell.accessibilityLabel = self.accessibilityLabel(for: row)
-
-                var background = UIBackgroundConfiguration.listGroupedCell()
-                background.backgroundColor = row.isPinned ? .secondarySystemGroupedBackground : .systemBackground
-                cell.backgroundConfiguration = background
             } else if let row = searchRowsByID[rowID] {
-                content.text = row.title
-                content.secondaryText = row.subtitle
-                content.secondaryTextProperties.color = .secondaryLabel
-                cell.accessories = row.conversationID == nil ? [] : [.disclosureIndicator()]
+                cell.configure(searchRow: row)
                 cell.isAccessibilityElement = true
                 cell.accessibilityIdentifier = "conversationList.searchCell.\(rowID)"
                 cell.accessibilityLabel = [row.title, row.subtitle].compactMap { $0 }.joined(separator: ", ")
-                cell.backgroundConfiguration = UIBackgroundConfiguration.listGroupedCell()
             }
-
-            cell.contentConfiguration = content
         }
 
         let headerRegistration = UICollectionView.SupplementaryRegistration<ConversationListHeaderView>(
@@ -317,7 +319,8 @@ final class ConversationListViewController: UIViewController {
     private func makeLayout() -> UICollectionViewLayout {
         var configuration = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
         configuration.headerMode = .supplementary
-        configuration.showsSeparators = true
+        configuration.showsSeparators = false
+        configuration.backgroundColor = .clear
         configuration.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
             self?.swipeActionsConfiguration(at: indexPath)
         }
@@ -421,9 +424,9 @@ final class ConversationListViewController: UIViewController {
 
     @objc private func accountButtonTapped() {
         let alertController = UIAlertController(
-            title: "Account",
-            message: nil,
-            preferredStyle: .alert
+            title: "ChatBridge Account",
+            message: "Manage your local session",
+            preferredStyle: .actionSheet
         )
 
         let switchAction = UIAlertAction(title: "Switch Account", style: .default) { [weak self] _ in
@@ -441,6 +444,10 @@ final class ConversationListViewController: UIViewController {
         alertController.addAction(switchAction)
         alertController.addAction(logOutAction)
         alertController.addAction(cancelAction)
+
+        if let popover = alertController.popoverPresentationController {
+            popover.barButtonItem = navigationItem.rightBarButtonItem
+        }
 
         present(alertController, animated: true)
     }

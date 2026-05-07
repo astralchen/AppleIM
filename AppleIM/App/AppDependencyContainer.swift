@@ -37,7 +37,7 @@ final class AppDependencyContainer {
     private(set) var lastDataRepairReport: DataRepairReport?
 
     init(
-        accountID: UserID = "demo_user",
+        accountID: UserID,
         storageService: (any AccountStorageService)? = nil,
         database: DatabaseActor = DatabaseActor(),
         databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
