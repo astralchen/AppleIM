@@ -680,20 +680,7 @@ final class ChatInputBarView: UIView {
             }
         }
 
-        let returnAction = UIAction(
-            title: "Return Sends",
-            image: UIImage(systemName: isReturnKeySending ? "paperplane.fill" : "arrow.turn.down.left"),
-            state: isReturnKeySending ? .on : .off
-        ) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.isReturnKeySending.toggle()
-                self.renderReturnMode()
-                self.textView.reloadInputViews()
-            }
-        }
-
-        return UIMenu(children: [photoAction, returnAction])
+        return UIMenu(children: [photoAction])
     }
 }
 
