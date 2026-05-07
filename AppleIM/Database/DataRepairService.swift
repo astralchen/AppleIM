@@ -85,6 +85,16 @@ nonisolated struct DataRepairService: Sendable {
         )
     }
 
+    func runStartupIfNeeded() async -> DataRepairReport? {
+        if let metadata = try? await database.loadMigrationMetadata(paths: paths),
+           metadata.lastIntegrityCheckAt != nil,
+           metadata.ftsRebuildVersion > 0 {
+            return nil
+        }
+
+        return await run()
+    }
+
     private static func success(_ step: DataRepairStep) -> DataRepairStepReport {
         DataRepairStepReport(step: step, isSuccessful: true, errorDescription: nil)
     }

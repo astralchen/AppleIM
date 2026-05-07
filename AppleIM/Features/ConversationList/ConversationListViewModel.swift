@@ -21,6 +21,8 @@ final class ConversationListViewModel {
     private let pageSize: Int
     /// 状态发布器
     private let stateSubject: CurrentValueSubject<ConversationListViewState, Never>
+    /// 加载诊断日志
+    private let diagnostics: any ConversationListLoadingDiagnostics
     /// 加载任务
     private var loadTask: Task<Void, Never>?
     /// 分页加载任务
@@ -29,6 +31,8 @@ final class ConversationListViewModel {
     private var settingTask: Task<Void, Never>?
     /// 下一页偏移量
     private var nextOffset = 0
+    /// 首屏加载代次，用于忽略已取消的旧任务回调
+    private var loadGeneration = 0
 
     /// 状态发布器，UI 订阅此 Publisher
     var statePublisher: AnyPublisher<ConversationListViewState, Never> {
@@ -43,17 +47,43 @@ final class ConversationListViewModel {
     init(
         useCase: any ConversationListUseCase,
         initialState: ConversationListViewState = ConversationListViewState(),
-        pageSize: Int = ConversationListViewModel.defaultPageSize
+        pageSize: Int = ConversationListViewModel.defaultPageSize,
+        diagnostics: any ConversationListLoadingDiagnostics = AppConversationListLoadingDiagnostics()
     ) {
         self.useCase = useCase
         self.pageSize = max(pageSize, 1)
+        self.diagnostics = diagnostics
         self.stateSubject = CurrentValueSubject(initialState)
     }
 
+    func loadIfNeeded() {
+        let state = stateSubject.value
+        diagnostics.log(
+            "ConversationList loadIfNeeded called phase=\(state.phase.logDescription) rows=\(state.rows.count) hasTask=\(loadTask != nil)"
+        )
+
+        guard loadTask == nil else {
+            diagnostics.log("ConversationList loadIfNeeded skipped reason=active-load-task")
+            return
+        }
+
+        guard state.phase != .loaded || state.rows.isEmpty else {
+            diagnostics.log("ConversationList loadIfNeeded skipped reason=already-loaded rows=\(state.rows.count)")
+            return
+        }
+
+        load()
+    }
+
     func load() {
+        loadGeneration += 1
+        let currentGeneration = loadGeneration
+
         loadTask?.cancel()
         loadMoreTask?.cancel()
         nextOffset = 0
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        diagnostics.log("ConversationList initial load started generation=\(currentGeneration) pageSize=\(pageSize)")
 
         publish { state in
             state.phase = .loading
@@ -67,7 +97,8 @@ final class ConversationListViewModel {
 
             do {
                 let page = try await useCase.loadConversationPage(limit: pageSize, offset: 0)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, loadGeneration == currentGeneration else { return }
+                let elapsed = AppLogger.elapsedMilliseconds(since: startUptime)
 
                 publish { state in
                     state.phase = .loaded
@@ -76,14 +107,28 @@ final class ConversationListViewModel {
                     state.isLoadingMore = false
                 }
                 nextOffset = page.rows.count
+                loadTask = nil
+                diagnostics.log(
+                    "ConversationList initial load completed generation=\(currentGeneration) rows=\(page.rows.count) hasMore=\(page.hasMore) elapsed=\(elapsed)"
+                )
             } catch is CancellationError {
+                guard loadGeneration == currentGeneration else { return }
+                loadTask = nil
+                diagnostics.log(
+                    "ConversationList initial load cancelled generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                )
                 return
             } catch {
+                guard loadGeneration == currentGeneration else { return }
                 publish { state in
                     state.phase = .failed("Unable to load conversations")
                     state.isLoadingMore = false
                     state.hasMoreRows = false
                 }
+                loadTask = nil
+                diagnostics.log(
+                    "ConversationList initial load failed generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime)) error=\(error)"
+                )
             }
         }
     }
@@ -154,6 +199,7 @@ final class ConversationListViewModel {
     }
 
     func cancel() {
+        loadGeneration += 1
         loadTask?.cancel()
         loadTask = nil
         loadMoreTask?.cancel()
@@ -184,6 +230,21 @@ final class ConversationListViewModel {
                     state.phase = .failed("Unable to update conversation")
                 }
             }
+        }
+    }
+}
+
+private extension ConversationListViewState.LoadingPhase {
+    var logDescription: String {
+        switch self {
+        case .idle:
+            "idle"
+        case .loading:
+            "loading"
+        case .loaded:
+            "loaded"
+        case .failed:
+            "failed"
         }
     }
 }

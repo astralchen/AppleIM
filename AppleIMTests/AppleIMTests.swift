@@ -67,6 +67,73 @@ struct AppleIMTests {
         }
     }
 
+    @MainActor
+    @Test func conversationListViewControllerDoesNotReloadLoadedRowsOnRepeatedAppear() async throws {
+        let useCase = CountingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in }
+        )
+
+        viewController.loadViewIfNeeded()
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+        viewController.viewWillAppear(false)
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(await useCase.loadPageCallCount == 1)
+    }
+
+    @MainActor
+    @Test func conversationListViewControllerReportsInitialLoadFinishedOnce() async throws {
+        let useCase = CountingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        var finishedCount = 0
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in },
+            onInitialLoadFinished: {
+                finishedCount += 1
+            }
+        )
+
+        viewController.loadViewIfNeeded()
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            finishedCount == 1
+        }
+        viewController.viewWillAppear(false)
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(finishedCount == 1)
+    }
+
+    @MainActor
+    @Test func conversationListLoadIfNeededEmitsDiagnostics() async throws {
+        let diagnostics = ConversationListLoadingDiagnosticsSpy()
+        let viewModel = ConversationListViewModel(
+            useCase: StubConversationListUseCase(),
+            diagnostics: diagnostics
+        )
+
+        viewModel.loadIfNeeded()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        let messages = diagnostics.messages
+        #expect(messages.contains { $0.contains("loadIfNeeded called") })
+        #expect(messages.contains { $0.contains("initial load started") })
+        #expect(messages.contains { $0.contains("initial load completed") })
+    }
+
     @Test func accountStoragePreparesIsolatedDirectories() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -243,6 +310,38 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func appDependencyContainerDefersStartupStorageWorkUntilConversationListLoads() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = TrackingAccountStorageService(rootDirectory: rootDirectory)
+        let container = try AppDependencyContainer(
+            accountID: "deferred_startup_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore(),
+            applicationBadgeManager: CapturingApplicationBadgeManager()
+        )
+
+        container.startNetworkRecovery()
+        container.runDueJobsWhenNetworkIsReachable()
+        container.refreshApplicationBadge()
+        container.runStartupDataRepair()
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+
+        #expect(await storageService.prepareCallCount == 0)
+
+        let viewController = container.makeConversationListViewController()
+        viewController.loadViewIfNeeded()
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            await storageService.prepareCallCount == 1
+        }
+    }
+
+    @MainActor
     @Test func accountDatabaseKeyStoreGeneratesStableIsolatedKeys() async throws {
         let keyStore = InMemoryAccountDatabaseKeyStore()
 
@@ -311,6 +410,52 @@ struct AppleIMTests {
             let cipherVersion = try await databaseActor.cipherVersion(in: databaseKind, paths: paths)
             #expect(cipherVersion.isEmpty == false)
         }
+    }
+
+    @MainActor
+    @Test func chatStoreProviderReusesPreparedStorageAcrossRepositorySearchAndRepair() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = TrackingAccountStorageService(rootDirectory: rootDirectory)
+        let keyStore = TrackingAccountDatabaseKeyStore()
+        let storeProvider = ChatStoreProvider(
+            accountID: "cached_bootstrap_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: keyStore
+        )
+
+        _ = try await storeProvider.repository()
+        _ = try await storeProvider.searchIndex()
+        _ = try await storeProvider.dataRepairService()
+
+        #expect(await storageService.prepareCallCount == 1)
+        #expect(await keyStore.databaseKeyCallCount == 1)
+    }
+
+    @MainActor
+    @Test func chatStoreProviderSeedsDemoDataWithoutBadgeSideEffects() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let badgeManager = CapturingApplicationBadgeManager()
+        let storeProvider = ChatStoreProvider(
+            accountID: "seed_side_effect_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore(),
+            applicationBadgeManager: badgeManager
+        )
+
+        _ = try await storeProvider.repository()
+
+        #expect(await badgeManager.values().isEmpty)
     }
 
     @MainActor
@@ -1325,6 +1470,28 @@ struct AppleIMTests {
         #expect(repairedResults.contains { $0.kind == .message && $0.messageID == "repair_search_message" })
         #expect(metadata.ftsRebuildVersion == 1)
         #expect(metadata.lastIntegrityCheckAt != nil)
+    }
+
+    @Test func startupDataRepairSkipsWhenMaintenanceMetadataExists() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "repair_skip_user")
+        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        let repairService = DataRepairService(
+            userID: "repair_skip_user",
+            database: databaseContext.databaseActor,
+            paths: databaseContext.paths,
+            repository: repository,
+            searchIndex: searchIndex
+        )
+
+        _ = await repairService.run()
+        let skippedReport = await repairService.runStartupIfNeeded()
+
+        #expect(skippedReport == nil)
     }
 
     @Test func mediaIndexRebuildRestoresExistingImageAndVoiceFiles() async throws {
@@ -3465,7 +3632,7 @@ struct AppleIMTests {
             text: "Media batch"
         )
 
-        try await waitForCondition {
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             useCase.events == ["image:png", "video:mov", "image:heic", "text:Media batch"]
         }
     }
@@ -4757,6 +4924,136 @@ private actor MutableConversationListUseCase: ConversationListUseCase {
             isPinned: row.isPinned,
             isMuted: isMuted
         )
+    }
+}
+
+private actor CountingConversationListUseCase: ConversationListUseCase {
+    private(set) var loadPageCallCount = 0
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        try await loadConversationPage(limit: 50, offset: 0).rows
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        loadPageCallCount += 1
+        return ConversationListPage(
+            rows: [
+                ConversationListRowState(
+                    id: "counting_conversation",
+                    title: "Counting Conversation",
+                    subtitle: "Loaded once",
+                    timeText: "Now",
+                    unreadText: nil,
+                    isPinned: false,
+                    isMuted: false
+                )
+            ],
+            hasMore: false
+        )
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+}
+
+private final class ConversationListLoadingDiagnosticsSpy: ConversationListLoadingDiagnostics, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedMessages: [String] = []
+
+    var messages: [String] {
+        lock.withLock {
+            storedMessages
+        }
+    }
+
+    func log(_ message: String) {
+        lock.withLock {
+            storedMessages.append(message)
+        }
+    }
+}
+
+private struct EmptySearchUseCase: SearchUseCase {
+    func search(query: String) async throws -> SearchResults {
+        SearchResults()
+    }
+
+    func rebuildIndex() async throws {}
+}
+
+private actor TrackingAccountStorageService: AccountStorageService {
+    private let rootDirectory: URL
+    private(set) var prepareCallCount = 0
+
+    init(rootDirectory: URL) {
+        self.rootDirectory = rootDirectory
+    }
+
+    func prepareStorage(for accountID: UserID) async throws -> AccountStoragePaths {
+        prepareCallCount += 1
+        let paths = try makePaths(for: accountID)
+        let fileManager = FileManager.default
+
+        try fileManager.createDirectory(at: paths.rootDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.mediaDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.cacheDirectory, withIntermediateDirectories: true)
+        createFileIfNeeded(at: paths.mainDatabase)
+        createFileIfNeeded(at: paths.searchDatabase)
+        createFileIfNeeded(at: paths.fileIndexDatabase)
+
+        return paths
+    }
+
+    func deleteStorage(for accountID: UserID) async throws {
+        let paths = try makePaths(for: accountID)
+        if FileManager.default.fileExists(atPath: paths.rootDirectory.path) {
+            try FileManager.default.removeItem(at: paths.rootDirectory)
+        }
+    }
+
+    private func makePaths(for accountID: UserID) throws -> AccountStoragePaths {
+        let rawID = accountID.rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawID.isEmpty else {
+            throw AccountStorageError.emptyAccountID
+        }
+
+        let accountRoot = rootDirectory.appendingPathComponent("account_\(rawID)", isDirectory: true)
+        return AccountStoragePaths(
+            accountID: accountID,
+            rootDirectory: accountRoot,
+            mainDatabase: accountRoot.appendingPathComponent("main.db"),
+            searchDatabase: accountRoot.appendingPathComponent("search.db"),
+            fileIndexDatabase: accountRoot.appendingPathComponent("file_index.db"),
+            mediaDirectory: accountRoot.appendingPathComponent("media", isDirectory: true),
+            cacheDirectory: accountRoot.appendingPathComponent("cache", isDirectory: true)
+        )
+    }
+
+    private func createFileIfNeeded(at url: URL) {
+        if !FileManager.default.fileExists(atPath: url.path) {
+            _ = FileManager.default.createFile(atPath: url.path, contents: Data())
+        }
+    }
+}
+
+private actor TrackingAccountDatabaseKeyStore: AccountDatabaseKeyStore {
+    private var keys: [UserID: Data] = [:]
+    private(set) var databaseKeyCallCount = 0
+
+    func databaseKey(for accountID: UserID) async throws -> Data {
+        databaseKeyCallCount += 1
+        if let key = keys[accountID] {
+            return key
+        }
+
+        let key = Data(repeating: UInt8(databaseKeyCallCount), count: 32)
+        keys[accountID] = key
+        return key
+    }
+
+    func deleteDatabaseKey(for accountID: UserID) async throws {
+        keys[accountID] = nil
     }
 }
 

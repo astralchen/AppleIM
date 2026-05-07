@@ -23,6 +23,7 @@ final class ConversationListViewController: UIViewController {
     private let viewModel: ConversationListViewModel
     private let searchViewModel: SearchViewModel
     private let onSelectConversation: (ConversationListRowState) -> Void
+    private let onInitialLoadFinished: () -> Void
     private let onAccountAction: (ConversationListAccountAction) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
@@ -31,6 +32,7 @@ final class ConversationListViewController: UIViewController {
     private var renderedConversationIDs: [String] = []
     private var lastConversationState = ConversationListViewState()
     private var lastSearchState = SearchViewState()
+    private var didReportInitialLoadFinished = false
 
     private lazy var collectionView = UICollectionView(
         frame: .zero,
@@ -46,11 +48,13 @@ final class ConversationListViewController: UIViewController {
         viewModel: ConversationListViewModel,
         searchViewModel: SearchViewModel,
         onSelectConversation: @escaping (ConversationListRowState) -> Void,
+        onInitialLoadFinished: @escaping () -> Void = {},
         onAccountAction: @escaping (ConversationListAccountAction) -> Void = { _ in }
     ) {
         self.viewModel = viewModel
         self.searchViewModel = searchViewModel
         self.onSelectConversation = onSelectConversation
+        self.onInitialLoadFinished = onInitialLoadFinished
         self.onAccountAction = onAccountAction
         super.init(nibName: nil, bundle: nil)
     }
@@ -68,7 +72,7 @@ final class ConversationListViewController: UIViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        viewModel.load()
+        viewModel.loadIfNeeded()
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -204,6 +208,7 @@ final class ConversationListViewController: UIViewController {
                 self?.lastConversationState = state
                 guard self?.lastSearchState.isSearching != true else { return }
                 self?.renderConversations(state)
+                self?.reportInitialLoadFinishedIfNeeded(for: state)
             }
             .store(in: &cancellables)
 
@@ -259,6 +264,18 @@ final class ConversationListViewController: UIViewController {
         }
 
         renderedConversationIDs = rowIDs
+    }
+
+    private func reportInitialLoadFinishedIfNeeded(for state: ConversationListViewState) {
+        guard !didReportInitialLoadFinished else { return }
+
+        switch state.phase {
+        case .loaded, .failed:
+            didReportInitialLoadFinished = true
+            onInitialLoadFinished()
+        case .idle, .loading:
+            break
+        }
     }
 
     private func renderSearch(_ state: SearchViewState) {

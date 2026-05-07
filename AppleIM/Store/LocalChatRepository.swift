@@ -77,6 +77,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         _ = try await refreshApplicationBadge(userID: record.userID)
     }
 
+    func insertInitialConversations(_ records: [ConversationRecord]) async throws {
+        guard !records.isEmpty else { return }
+
+        try await database.performTransaction(
+            records.map(ConversationDAO.insertOrUpdateStatement(for:)),
+            paths: paths
+        )
+    }
+
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
         try await conversationDAO.markRead(conversationID: conversationID, userID: userID)
         _ = try await refreshApplicationBadge(userID: userID)

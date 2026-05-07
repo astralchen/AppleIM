@@ -85,8 +85,6 @@ nonisolated enum DemoDataSeeder {
             )
         ]
 
-        for record in records {
-            try await repository.upsertConversation(record)
-        }
+        try await repository.insertInitialConversations(records)
     }
 }

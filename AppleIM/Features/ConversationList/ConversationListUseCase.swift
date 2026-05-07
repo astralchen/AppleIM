@@ -30,28 +30,57 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     private let userID: UserID
     /// 存储提供者
     private let storeProvider: ChatStoreProvider
+    /// 日志
+    private let logger: AppLogger
 
-    init(userID: UserID, storeProvider: ChatStoreProvider) {
+    init(
+        userID: UserID,
+        storeProvider: ChatStoreProvider,
+        logger: AppLogger = AppLogger(category: .conversationList)
+    ) {
         self.userID = userID
         self.storeProvider = storeProvider
+        self.logger = logger
     }
 
     func loadConversations() async throws -> [ConversationListRowState] {
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ConversationList useCase loadConversations requested")
         let repository = try await storeProvider.repository()
         let conversations = try await repository.listConversations(for: userID)
+        logger.info(
+            "ConversationList useCase loadConversations completed count=\(conversations.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        )
 
         return Self.rowStates(from: conversations)
     }
 
     func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ConversationList useCase page requested limit=\(limit) offset=\(offset)")
+        let repositoryStartUptime = ProcessInfo.processInfo.systemUptime
         let repository = try await storeProvider.repository()
+        logger.info(
+            "ConversationList useCase repository ready elapsed=\(AppLogger.elapsedMilliseconds(since: repositoryStartUptime))"
+        )
+
         let requestedLimit = max(limit, 0)
+        let queryStartUptime = ProcessInfo.processInfo.systemUptime
         let conversations = try await repository.listConversations(for: userID, limit: requestedLimit + 1, offset: offset)
+        logger.info(
+            "ConversationList useCase query completed fetched=\(conversations.count) requestedLimit=\(requestedLimit) elapsed=\(AppLogger.elapsedMilliseconds(since: queryStartUptime))"
+        )
+
         let pageConversations = Array(conversations.prefix(requestedLimit))
+        let rows = Self.rowStates(from: pageConversations)
+        let hasMore = conversations.count > requestedLimit
+        logger.info(
+            "ConversationList useCase page completed rows=\(rows.count) hasMore=\(hasMore) totalElapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        )
 
         return ConversationListPage(
-            rows: Self.rowStates(from: pageConversations),
-            hasMore: conversations.count > requestedLimit
+            rows: rows,
+            hasMore: hasMore
         )
     }
 

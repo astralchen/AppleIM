@@ -35,6 +35,12 @@ final class AppDependencyContainer {
     let isUITesting: Bool
     /// 最近一次后台数据修复报告
     private(set) var lastDataRepairReport: DataRepairReport?
+    private var didFinishInitialConversationListLoad = false
+    private var shouldStartNetworkRecoveryAfterInitialLoad = false
+    private var shouldRunDueJobsAfterInitialLoad = false
+    private var shouldRefreshBadgeAfterInitialLoad = false
+    private var shouldRunDataRepairAfterInitialLoad = false
+    private var didStartNetworkRecovery = false
 
     init(
         accountID: UserID,
@@ -82,6 +88,18 @@ final class AppDependencyContainer {
     }
 
     func startNetworkRecovery() {
+        guard didFinishInitialConversationListLoad else {
+            shouldStartNetworkRecoveryAfterInitialLoad = true
+            return
+        }
+
+        startNetworkRecoveryNow()
+    }
+
+    private func startNetworkRecoveryNow() {
+        guard !didStartNetworkRecovery else { return }
+
+        didStartNetworkRecovery = true
         networkRecoveryCoordinator.start()
     }
 
@@ -93,10 +111,24 @@ final class AppDependencyContainer {
     }
 
     func runDueJobsWhenNetworkIsReachable() {
+        guard didFinishInitialConversationListLoad else {
+            shouldRunDueJobsAfterInitialLoad = true
+            return
+        }
+
         networkRecoveryCoordinator.runDueJobsWhenReachable()
     }
 
     func refreshApplicationBadge() {
+        guard didFinishInitialConversationListLoad else {
+            shouldRefreshBadgeAfterInitialLoad = true
+            return
+        }
+
+        refreshApplicationBadgeNow()
+    }
+
+    private func refreshApplicationBadgeNow() {
         let storeProvider = storeProvider
         let userID = accountID
         Task {
@@ -109,16 +141,56 @@ final class AppDependencyContainer {
     }
 
     func runStartupDataRepair() {
+        guard didFinishInitialConversationListLoad else {
+            shouldRunDataRepairAfterInitialLoad = true
+            return
+        }
+
+        runStartupDataRepairNow()
+    }
+
+    private func runStartupDataRepairNow() {
         let storeProvider = storeProvider
         Task { [weak self] in
             guard let repairService = try? await storeProvider.dataRepairService() else {
                 return
             }
 
-            let report = await repairService.run()
+            guard let report = await repairService.runStartupIfNeeded() else {
+                return
+            }
+
             await MainActor.run {
                 self?.lastDataRepairReport = report
             }
+        }
+    }
+
+    private func finishInitialConversationListLoadIfNeeded() {
+        guard !didFinishInitialConversationListLoad else {
+            return
+        }
+
+        didFinishInitialConversationListLoad = true
+
+        if shouldStartNetworkRecoveryAfterInitialLoad {
+            shouldStartNetworkRecoveryAfterInitialLoad = false
+            startNetworkRecoveryNow()
+        }
+
+        if shouldRunDueJobsAfterInitialLoad {
+            shouldRunDueJobsAfterInitialLoad = false
+            networkRecoveryCoordinator.runDueJobsWhenReachable()
+        }
+
+        if shouldRefreshBadgeAfterInitialLoad {
+            shouldRefreshBadgeAfterInitialLoad = false
+            refreshApplicationBadgeNow()
+        }
+
+        if shouldRunDataRepairAfterInitialLoad {
+            shouldRunDataRepairAfterInitialLoad = false
+            runStartupDataRepairNow()
         }
     }
 
@@ -147,6 +219,9 @@ final class AppDependencyContainer {
                     .topVisibleViewController
                     .navigationController?
                     .pushViewController(chatViewController, animated: true)
+            },
+            onInitialLoadFinished: { [weak self] in
+                self?.finishInitialConversationListLoadIfNeeded()
             },
             onAccountAction: onAccountAction
         )
