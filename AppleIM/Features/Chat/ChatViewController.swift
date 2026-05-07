@@ -554,6 +554,7 @@ private extension ChatMessageRowState {
             videoDurationText,
             voiceLocalPath ?? "",
             voiceDurationText,
+            senderAvatarURL ?? "",
             statusText ?? "",
             progressText,
             retryText,
@@ -566,6 +567,11 @@ private extension ChatMessageRowState {
 }
 
 private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDelegate {
+    private static let avatarImageCache = NSCache<NSString, UIImage>()
+
+    private let avatarView = GradientBackgroundView()
+    private let avatarImageView = UIImageView()
+    private let avatarInitialLabel = UILabel()
     private let bubbleView = ChatBubbleBackgroundView()
     private let stackView = UIStackView()
     private let thumbnailImageView = UIImageView()
@@ -579,8 +585,12 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
     private let messageLabel = UILabel()
     private let metadataLabel = UILabel()
     private let retryButton = UIButton(type: .system)
-    private var leadingConstraint: NSLayoutConstraint?
-    private var trailingConstraint: NSLayoutConstraint?
+    private var incomingAvatarLeadingConstraint: NSLayoutConstraint?
+    private var incomingBubbleLeadingConstraint: NSLayoutConstraint?
+    private var outgoingAvatarTrailingConstraint: NSLayoutConstraint?
+    private var outgoingBubbleTrailingConstraint: NSLayoutConstraint?
+    private var avatarDataTask: URLSessionDataTask?
+    private var expectedAvatarURL: String?
     private var row: ChatMessageRowState?
     private var retryMessageID: MessageID?
     private var onRetry: ((MessageID) -> Void)?
@@ -611,6 +621,11 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         accessibilityIdentifier = nil
         accessibilityLabel = nil
         retryButton.accessibilityIdentifier = nil
+        avatarDataTask?.cancel()
+        avatarDataTask = nil
+        expectedAvatarURL = nil
+        avatarImageView.image = nil
+        avatarImageView.isHidden = true
     }
 
     func configure(
@@ -630,6 +645,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         self.onPlayVideo = onPlayVideo
         accessibilityIdentifier = "chat.messageCell.\(row.id.rawValue)"
         accessibilityLabel = Self.accessibilityLabel(for: row)
+        configureAvatar(for: row)
 
         let mediaTintColor: UIColor = row.isOutgoing && !row.isRevoked ? .white : .systemBlue
         videoStackView.isHidden = !row.isVideo
@@ -668,13 +684,34 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         retryButton.tintColor = row.isOutgoing ? .white : .systemBlue
         retryButton.accessibilityIdentifier = "chat.retryButton.\(row.id.rawValue)"
 
-        leadingConstraint?.isActive = !row.isOutgoing
-        trailingConstraint?.isActive = row.isOutgoing
+        incomingAvatarLeadingConstraint?.isActive = !row.isOutgoing
+        incomingBubbleLeadingConstraint?.isActive = !row.isOutgoing
+        outgoingAvatarTrailingConstraint?.isActive = row.isOutgoing
+        outgoingBubbleTrailingConstraint?.isActive = row.isOutgoing
     }
 
     private func configureView() {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
+
+        avatarView.translatesAutoresizingMaskIntoConstraints = false
+        avatarView.setColors(ChatBridgeDesignSystem.GradientToken.playfulAvatar)
+        avatarView.layer.cornerRadius = 18
+        avatarView.layer.masksToBounds = true
+        avatarView.isAccessibilityElement = false
+
+        avatarImageView.translatesAutoresizingMaskIntoConstraints = false
+        avatarImageView.contentMode = .scaleAspectFill
+        avatarImageView.clipsToBounds = true
+        avatarImageView.isHidden = true
+        avatarImageView.isAccessibilityElement = false
+
+        avatarInitialLabel.translatesAutoresizingMaskIntoConstraints = false
+        avatarInitialLabel.font = .preferredFont(forTextStyle: .caption1)
+        avatarInitialLabel.adjustsFontForContentSizeCategory = true
+        avatarInitialLabel.textColor = .white
+        avatarInitialLabel.textAlignment = .center
+        avatarInitialLabel.isAccessibilityElement = false
 
         bubbleView.translatesAutoresizingMaskIntoConstraints = false
         bubbleView.isUserInteractionEnabled = true
@@ -734,6 +771,9 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         retryButton.contentHorizontalAlignment = .leading
         retryButton.addTarget(self, action: #selector(retryButtonTapped), for: .touchUpInside)
 
+        contentView.addSubview(avatarView)
+        avatarView.addSubview(avatarInitialLabel)
+        avatarView.addSubview(avatarImageView)
         contentView.addSubview(bubbleView)
         bubbleView.addSubview(stackView)
         videoStackView.addArrangedSubview(videoPlaybackButton)
@@ -748,13 +788,29 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         stackView.addArrangedSubview(metadataLabel)
         stackView.addArrangedSubview(retryButton)
 
-        leadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
-        trailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+        incomingAvatarLeadingConstraint = avatarView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
+        incomingBubbleLeadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 8)
+        outgoingAvatarTrailingConstraint = avatarView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+        outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: avatarView.leadingAnchor, constant: -8)
 
         NSLayoutConstraint.activate([
+            avatarView.topAnchor.constraint(equalTo: bubbleView.topAnchor),
+            avatarView.widthAnchor.constraint(equalToConstant: 36),
+            avatarView.heightAnchor.constraint(equalToConstant: 36),
+
+            avatarInitialLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            avatarInitialLabel.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),
+            avatarInitialLabel.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
+            avatarInitialLabel.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
+
+            avatarImageView.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            avatarImageView.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),
+            avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
+            avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
+
             bubbleView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
             bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
-            bubbleView.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.72),
+            bubbleView.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.64),
 
             stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10),
             stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 12),
@@ -770,6 +826,67 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
             voiceUnreadDotView.widthAnchor.constraint(equalToConstant: 8),
             voiceUnreadDotView.heightAnchor.constraint(equalToConstant: 8)
         ])
+    }
+
+    private func configureAvatar(for row: ChatMessageRowState) {
+        avatarDataTask?.cancel()
+        avatarDataTask = nil
+        expectedAvatarURL = row.senderAvatarURL
+        avatarInitialLabel.text = row.isOutgoing ? "Me" : "C"
+        avatarImageView.image = nil
+        avatarImageView.isHidden = true
+
+        guard let avatarURL = row.senderAvatarURL?.trimmingCharacters(in: .whitespacesAndNewlines), !avatarURL.isEmpty else {
+            return
+        }
+
+        let cacheKey = avatarURL as NSString
+        if let cachedImage = Self.avatarImageCache.object(forKey: cacheKey) {
+            avatarImageView.image = cachedImage
+            avatarImageView.isHidden = false
+            return
+        }
+
+        if let localImage = Self.localAvatarImage(from: avatarURL) {
+            Self.avatarImageCache.setObject(localImage, forKey: cacheKey)
+            avatarImageView.image = localImage
+            avatarImageView.isHidden = false
+            return
+        }
+
+        guard let url = URL(string: avatarURL), ["http", "https"].contains(url.scheme?.lowercased()) else {
+            return
+        }
+
+        avatarDataTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data, let image = UIImage(data: data) else {
+                return
+            }
+
+            Self.avatarImageCache.setObject(image, forKey: cacheKey)
+
+            DispatchQueue.main.async {
+                guard let self, self.expectedAvatarURL == avatarURL else {
+                    return
+                }
+
+                self.avatarImageView.image = image
+                self.avatarImageView.isHidden = false
+            }
+        }
+        avatarDataTask?.resume()
+    }
+
+    private static func localAvatarImage(from value: String) -> UIImage? {
+        if let url = URL(string: value), url.isFileURL {
+            return UIImage(contentsOfFile: url.path)
+        }
+
+        guard !value.hasPrefix("http://"), !value.hasPrefix("https://") else {
+            return nil
+        }
+
+        return UIImage(contentsOfFile: value)
     }
 
     @objc private func voicePlaybackButtonTapped() {

@@ -431,6 +431,7 @@ final class ConversationListViewController: UIViewController {
         return ConversationListRowState(
             id: conversationID,
             title: searchRow.kind == .message ? "Search Result" : searchRow.title,
+            avatarURL: nil,
             subtitle: searchRow.kind == .message ? searchRow.title : searchRow.subtitle,
             timeText: "",
             unreadText: nil,

@@ -65,6 +65,7 @@ nonisolated struct LocalAccountAuthService: AccountAuthService {
         return AccountSession(
             userID: account.userID,
             displayName: account.displayName,
+            avatarURL: account.avatarURL,
             token: "mock_token_\(account.userID.rawValue)_\(UUID().uuidString)",
             loggedInAt: Int64(Date().timeIntervalSince1970)
         )

@@ -64,19 +64,22 @@ nonisolated struct MockAccount: Codable, Equatable, Sendable {
 nonisolated struct AccountSession: Codable, Equatable, Sendable {
     let userID: UserID
     let displayName: String
+    let avatarURL: String?
     let token: String
     let loggedInAt: Int64
 
     enum CodingKeys: String, CodingKey {
         case userID
         case displayName
+        case avatarURL
         case token
         case loggedInAt
     }
 
-    init(userID: UserID, displayName: String, token: String, loggedInAt: Int64) {
+    init(userID: UserID, displayName: String, avatarURL: String? = nil, token: String, loggedInAt: Int64) {
         self.userID = userID
         self.displayName = displayName
+        self.avatarURL = avatarURL
         self.token = token
         self.loggedInAt = loggedInAt
     }
@@ -85,6 +88,7 @@ nonisolated struct AccountSession: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.userID = UserID(rawValue: try container.decode(String.self, forKey: .userID))
         self.displayName = try container.decode(String.self, forKey: .displayName)
+        self.avatarURL = try container.decodeIfPresent(String.self, forKey: .avatarURL)
         self.token = try container.decode(String.self, forKey: .token)
         self.loggedInAt = try container.decode(Int64.self, forKey: .loggedInAt)
     }
@@ -93,6 +97,7 @@ nonisolated struct AccountSession: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(userID.rawValue, forKey: .userID)
         try container.encode(displayName, forKey: .displayName)
+        try container.encodeIfPresent(avatarURL, forKey: .avatarURL)
         try container.encode(token, forKey: .token)
         try container.encode(loggedInAt, forKey: .loggedInAt)
     }

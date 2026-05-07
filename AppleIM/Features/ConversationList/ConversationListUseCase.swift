@@ -101,6 +101,7 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
             return ConversationListRowState(
                 id: conversation.id,
                 title: conversation.title,
+                avatarURL: conversation.avatarURL,
                 subtitle: subtitle,
                 timeText: conversation.lastMessageTimeText,
                 unreadText: conversation.unreadCount > 0 ? "\(conversation.unreadCount)" : nil,

@@ -1289,6 +1289,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             id: record.id,
             type: record.type,
             title: record.title,
+            avatarURL: record.avatarURL,
             lastMessageDigest: record.lastMessageDigest,
             lastMessageTimeText: timeText(from: record.lastMessageTime),
             unreadCount: record.unreadCount,

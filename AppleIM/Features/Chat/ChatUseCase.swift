@@ -94,6 +94,10 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private let userID: UserID
     /// 会话 ID
     private let conversationID: ConversationID
+    /// 当前账号头像 URL
+    private let currentUserAvatarURL: String?
+    /// 会话头像 URL
+    private let conversationAvatarURL: String?
     /// 消息仓储
     private let repository: any MessageRepository
     /// 会话仓储
@@ -112,6 +116,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     init(
         userID: UserID,
         conversationID: ConversationID,
+        currentUserAvatarURL: String? = nil,
+        conversationAvatarURL: String? = nil,
         repository: any MessageRepository,
         conversationRepository: (any ConversationRepository)? = nil,
         pendingJobRepository: (any PendingJobRepository)? = nil,
@@ -122,6 +128,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     ) {
         self.userID = userID
         self.conversationID = conversationID
+        self.currentUserAvatarURL = currentUserAvatarURL
+        self.conversationAvatarURL = conversationAvatarURL
         self.repository = repository
         self.conversationRepository = conversationRepository
         self.pendingJobRepository = pendingJobRepository
@@ -157,7 +165,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         let visibleMessages = Array(messages.prefix(boundedLimit))
         let rows = visibleMessages
             .sorted { $0.sortSequence < $1.sortSequence }
-            .map { Self.row(from: $0, currentUserID: userID) }
+            .map { row(from: $0, currentUserID: userID) }
 
         return ChatMessagePage(
             rows: rows,
@@ -198,7 +206,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         )
                     )
 
-                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
 
                     let result = await sendService.sendText(message: insertedMessage)
                     let finalStatus: MessageSendStatus
@@ -222,7 +230,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     )
 
                     if let updatedMessage = try await repository.message(messageID: insertedMessage.id) {
-                        continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                        continuation.yield(row(from: updatedMessage, currentUserID: userID))
                     }
 
                     continuation.finish()
@@ -263,7 +271,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         )
                     )
 
-                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
                     try await uploadAndSendImage(insertedMessage, continuation: continuation)
                     continuation.finish()
                 } catch {
@@ -309,7 +317,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         )
                     )
 
-                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
                     try await uploadAndSendVoice(insertedMessage, continuation: continuation)
                     continuation.finish()
                 } catch {
@@ -349,7 +357,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         )
                     )
 
-                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
                     try await uploadAndSendVideo(insertedMessage, continuation: continuation)
                     continuation.finish()
                 } catch {
@@ -386,7 +394,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                         )
                     )
 
-                    continuation.yield(Self.row(from: insertedMessage, currentUserID: userID))
+                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
                     try await uploadAndSendFile(insertedMessage, continuation: continuation)
                     continuation.finish()
                 } catch {
@@ -415,7 +423,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             throw ChatStoreError.messageNotFound(messageID)
         }
 
-        return Self.row(from: updatedMessage, currentUserID: userID)
+        return row(from: updatedMessage, currentUserID: userID)
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -428,7 +436,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
                     if existingMessage.type == .image {
                         let sendingMessage = try await repository.resendImageMessage(messageID: messageID)
-                        continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
+                        continuation.yield(row(from: sendingMessage, currentUserID: userID))
                         try await uploadAndSendImage(sendingMessage, continuation: continuation)
                         continuation.finish()
                         return
@@ -436,7 +444,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
                     if existingMessage.type == .video {
                         let sendingMessage = try await repository.resendVideoMessage(messageID: messageID)
-                        continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
+                        continuation.yield(row(from: sendingMessage, currentUserID: userID))
                         try await uploadAndSendVideo(sendingMessage, continuation: continuation)
                         continuation.finish()
                         return
@@ -444,14 +452,14 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
                     if existingMessage.type == .file {
                         let sendingMessage = try await repository.resendFileMessage(messageID: messageID)
-                        continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
+                        continuation.yield(row(from: sendingMessage, currentUserID: userID))
                         try await uploadAndSendFile(sendingMessage, continuation: continuation)
                         continuation.finish()
                         return
                     }
 
                     let sendingMessage = try await repository.resendTextMessage(messageID: messageID)
-                    continuation.yield(Self.row(from: sendingMessage, currentUserID: userID))
+                    continuation.yield(row(from: sendingMessage, currentUserID: userID))
 
                     let result = await sendService.sendText(message: sendingMessage)
                     let finalStatus: MessageSendStatus
@@ -475,7 +483,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     )
 
                     if let updatedMessage = try await repository.message(messageID: sendingMessage.id) {
-                        continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                        continuation.yield(row(from: updatedMessage, currentUserID: userID))
                     }
 
                     continuation.finish()
@@ -584,7 +592,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         for await event in mediaUploadService.uploadImage(message: message) {
             switch event {
             case let .progress(progress):
-                continuation.yield(Self.row(from: message, currentUserID: userID, uploadProgress: progress))
+                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
             case let .completed(uploadAck):
                 let result = await sendService.sendImage(message: message, upload: uploadAck)
                 let finalStatus: MessageSendStatus
@@ -616,7 +624,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             case let .failed(reason):
@@ -630,7 +638,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             }
@@ -646,7 +654,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
 
         if let updatedMessage = try await repository.message(messageID: message.id) {
-            continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+            continuation.yield(row(from: updatedMessage, currentUserID: userID))
         }
     }
 
@@ -668,7 +676,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         for await event in mediaUploadService.uploadVoice(message: message) {
             switch event {
             case let .progress(progress):
-                continuation.yield(Self.row(from: message, currentUserID: userID, uploadProgress: progress))
+                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
             case let .completed(uploadAck):
                 let result = await sendService.sendVoice(message: message, upload: uploadAck)
                 let finalStatus: MessageSendStatus
@@ -695,7 +703,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             case .failed:
@@ -708,7 +716,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             }
@@ -723,7 +731,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
 
         if let updatedMessage = try await repository.message(messageID: message.id) {
-            continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+            continuation.yield(row(from: updatedMessage, currentUserID: userID))
         }
     }
 
@@ -743,7 +751,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         for await event in mediaUploadService.uploadVideo(message: message) {
             switch event {
             case let .progress(progress):
-                continuation.yield(Self.row(from: message, currentUserID: userID, uploadProgress: progress))
+                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
             case let .completed(uploadAck):
                 let result = await sendService.sendVideo(message: message, upload: uploadAck)
                 let finalStatus: MessageSendStatus
@@ -775,7 +783,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             case let .failed(reason):
@@ -789,7 +797,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             }
@@ -812,7 +820,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         for await event in mediaUploadService.uploadFile(message: message) {
             switch event {
             case let .progress(progress):
-                continuation.yield(Self.row(from: message, currentUserID: userID, uploadProgress: progress))
+                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
             case let .completed(uploadAck):
                 let result = await sendService.sendFile(message: message, upload: uploadAck)
                 let finalStatus: MessageSendStatus
@@ -844,7 +852,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             case let .failed(reason):
@@ -858,7 +866,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 )
 
                 if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(Self.row(from: updatedMessage, currentUserID: userID))
+                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
                 }
                 return
             }
@@ -977,26 +985,28 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         Int64(Date().timeIntervalSince1970)
     }
 
-    nonisolated private static func row(
+    nonisolated private func row(
         from message: StoredMessage,
         currentUserID: UserID,
         uploadProgress: Double? = nil
     ) -> ChatMessageRowState {
         let isOutgoing = message.senderID == currentUserID
         let isRevoked = message.isRevoked
+        let senderAvatarURL = isOutgoing ? currentUserAvatarURL : conversationAvatarURL
 
         return ChatMessageRowState(
             id: message.id,
-            text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : rowText(for: message),
+            text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : Self.rowText(for: message),
             imageThumbnailPath: isRevoked ? nil : message.image?.thumbnailPath,
             videoThumbnailPath: isRevoked ? nil : message.video?.thumbnailPath,
             videoLocalPath: isRevoked ? nil : message.video?.localPath,
             videoDurationMilliseconds: isRevoked ? nil : message.video?.durationMilliseconds,
             voiceDurationMilliseconds: isRevoked ? nil : message.voice?.durationMilliseconds,
             sortSequence: message.sortSequence,
-            timeText: timeText(from: message.localTime),
-            statusText: isRevoked ? nil : statusText(for: message),
+            timeText: Self.timeText(from: message.localTime),
+            statusText: isRevoked ? nil : Self.statusText(for: message),
             uploadProgress: uploadProgress,
+            senderAvatarURL: senderAvatarURL,
             isOutgoing: isOutgoing,
             canRetry: isOutgoing
                 && (message.type == .text || message.type == .image || message.type == .video)
@@ -1334,6 +1344,8 @@ private extension MessageSendResult {
 nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     private let userID: UserID
     private let conversationID: ConversationID
+    private let currentUserAvatarURL: String?
+    private let conversationAvatarURL: String?
     private let storeProvider: ChatStoreProvider
     private let sendService: any MessageSendService
     private let mediaFileStore: any MediaFileStoring
@@ -1342,6 +1354,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     init(
         userID: UserID,
         conversationID: ConversationID,
+        currentUserAvatarURL: String? = nil,
+        conversationAvatarURL: String? = nil,
         storeProvider: ChatStoreProvider,
         sendService: any MessageSendService,
         mediaFileStore: any MediaFileStoring,
@@ -1349,6 +1363,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     ) {
         self.userID = userID
         self.conversationID = conversationID
+        self.currentUserAvatarURL = currentUserAvatarURL
+        self.conversationAvatarURL = conversationAvatarURL
         self.storeProvider = storeProvider
         self.sendService = sendService
         self.mediaFileStore = mediaFileStore
@@ -1357,61 +1373,25 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     func loadInitialMessages() async throws -> ChatMessagePage {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
-            userID: userID,
-            conversationID: conversationID,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
-            sendService: sendService,
-            mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
-        )
+        let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.loadInitialMessages()
     }
 
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
-            userID: userID,
-            conversationID: conversationID,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
-            sendService: sendService,
-            mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
-        )
+        let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
     }
 
     func loadDraft() async throws -> String? {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
-            userID: userID,
-            conversationID: conversationID,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
-            sendService: sendService,
-            mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
-        )
+        let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.loadDraft()
     }
 
     func saveDraft(_ text: String) async throws {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
-            userID: userID,
-            conversationID: conversationID,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
-            sendService: sendService,
-            mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
-        )
+        let useCase = makeLocalUseCase(repository: repository)
         try await useCase.saveDraft(text)
     }
 
@@ -1420,16 +1400,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
-                    let useCase = LocalChatUseCase(
-                        userID: userID,
-                        conversationID: conversationID,
-                        repository: repository,
-                        conversationRepository: repository,
-                        pendingJobRepository: repository,
-                        sendService: sendService,
-                        mediaFileStore: mediaFileStore,
-                        mediaUploadService: mediaUploadService
-                    )
+                    let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.sendText(text) {
                         continuation.yield(row)
@@ -1452,16 +1423,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
-                    let useCase = LocalChatUseCase(
-                        userID: userID,
-                        conversationID: conversationID,
-                        repository: repository,
-                        conversationRepository: repository,
-                        pendingJobRepository: repository,
-                        sendService: sendService,
-                        mediaFileStore: mediaFileStore,
-                        mediaUploadService: mediaUploadService
-                    )
+                    let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
                         continuation.yield(row)
@@ -1484,16 +1446,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
-                    let useCase = LocalChatUseCase(
-                        userID: userID,
-                        conversationID: conversationID,
-                        repository: repository,
-                        conversationRepository: repository,
-                        pendingJobRepository: repository,
-                        sendService: sendService,
-                        mediaFileStore: mediaFileStore,
-                        mediaUploadService: mediaUploadService
-                    )
+                    let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.sendVoice(recording: recording) {
                         continuation.yield(row)
@@ -1516,16 +1469,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
-                    let useCase = LocalChatUseCase(
-                        userID: userID,
-                        conversationID: conversationID,
-                        repository: repository,
-                        conversationRepository: repository,
-                        pendingJobRepository: repository,
-                        sendService: sendService,
-                        mediaFileStore: mediaFileStore,
-                        mediaUploadService: mediaUploadService
-                    )
+                    let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension) {
                         continuation.yield(row)
@@ -1548,16 +1492,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
-                    let useCase = LocalChatUseCase(
-                        userID: userID,
-                        conversationID: conversationID,
-                        repository: repository,
-                        conversationRepository: repository,
-                        pendingJobRepository: repository,
-                        sendService: sendService,
-                        mediaFileStore: mediaFileStore,
-                        mediaUploadService: mediaUploadService
-                    )
+                    let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.sendFile(fileURL: fileURL) {
                         continuation.yield(row)
@@ -1577,16 +1512,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
-            userID: userID,
-            conversationID: conversationID,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
-            sendService: sendService,
-            mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
-        )
+        let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.markVoicePlayed(messageID: messageID)
     }
 
@@ -1595,16 +1521,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
-                    let useCase = LocalChatUseCase(
-                        userID: userID,
-                        conversationID: conversationID,
-                        repository: repository,
-                        conversationRepository: repository,
-                        pendingJobRepository: repository,
-                        sendService: sendService,
-                        mediaFileStore: mediaFileStore,
-                        mediaUploadService: mediaUploadService
-                    )
+                    let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.resend(messageID: messageID) {
                         continuation.yield(row)
@@ -1624,24 +1541,22 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     func delete(messageID: MessageID) async throws {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
-            userID: userID,
-            conversationID: conversationID,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
-            sendService: sendService,
-            mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
-        )
+        let useCase = makeLocalUseCase(repository: repository)
         try await useCase.delete(messageID: messageID)
     }
 
     func revoke(messageID: MessageID) async throws {
         let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
+        let useCase = makeLocalUseCase(repository: repository)
+        try await useCase.revoke(messageID: messageID)
+    }
+
+    private func makeLocalUseCase(repository: LocalChatRepository) -> LocalChatUseCase {
+        LocalChatUseCase(
             userID: userID,
             conversationID: conversationID,
+            currentUserAvatarURL: currentUserAvatarURL,
+            conversationAvatarURL: conversationAvatarURL,
             repository: repository,
             conversationRepository: repository,
             pendingJobRepository: repository,
@@ -1649,6 +1564,5 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             mediaFileStore: mediaFileStore,
             mediaUploadService: mediaUploadService
         )
-        try await useCase.revoke(messageID: messageID)
     }
 }

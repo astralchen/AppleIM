@@ -33,6 +33,8 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let statusText: String?
     /// 上传进度（0.0-1.0）
     let uploadProgress: Double?
+    /// 发送者头像 URL
+    let senderAvatarURL: String?
     /// 是否为发出的消息
     let isOutgoing: Bool
     /// 是否可以重试
@@ -62,6 +64,7 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         timeText: String,
         statusText: String?,
         uploadProgress: Double?,
+        senderAvatarURL: String? = nil,
         isOutgoing: Bool,
         canRetry: Bool,
         canDelete: Bool,
@@ -82,6 +85,7 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         self.timeText = timeText
         self.statusText = statusText
         self.uploadProgress = uploadProgress
+        self.senderAvatarURL = senderAvatarURL
         self.isOutgoing = isOutgoing
         self.canRetry = canRetry
         self.canDelete = canDelete
@@ -120,6 +124,7 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             timeText: timeText,
             statusText: statusText,
             uploadProgress: uploadProgress,
+            senderAvatarURL: senderAvatarURL,
             isOutgoing: isOutgoing,
             canRetry: canRetry,
             canDelete: canDelete,

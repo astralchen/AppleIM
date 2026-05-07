@@ -92,6 +92,8 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
     let type: ConversationType
     /// 会话标题（单聊为对方昵称，群聊为群名）
     let title: String
+    /// 会话头像 URL
+    let avatarURL: String?
     /// 最后一条消息摘要
     let lastMessageDigest: String
     /// 最后一条消息时间文本

@@ -320,8 +320,11 @@ final class ChatBubbleBackgroundView: UIView {
 }
 
 final class RoundedConversationCell: UICollectionViewCell {
+    private static let avatarImageCache = NSCache<NSString, UIImage>()
+
     private let cardView = UIView()
     private let avatarView = GradientBackgroundView()
+    private let avatarImageView = UIImageView()
     private let avatarLabel = UILabel()
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
@@ -329,6 +332,8 @@ final class RoundedConversationCell: UICollectionViewCell {
     private let statusStackView = UIStackView()
     private let unreadLabel = ChatBridgeUnreadBadgeLabel()
     private let mutedLabel = UILabel()
+    private var avatarDataTask: URLSessionDataTask?
+    private var expectedAvatarURL: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -345,6 +350,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         unreadLabel.isHidden = true
         mutedLabel.isHidden = true
         cardView.backgroundColor = ChatBridgeDesignSystem.ColorToken.incomingCard
+        resetAvatarImage()
     }
 
     func configure(row: ConversationListRowState) {
@@ -356,6 +362,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         mutedLabel.isHidden = row.unreadText != nil || !row.isMuted
         avatarLabel.text = Self.initials(from: row.title)
         avatarView.setColors(row.isPinned ? ChatBridgeDesignSystem.GradientToken.brandButton : ChatBridgeDesignSystem.GradientToken.playfulAvatar)
+        configureAvatarImage(from: row.avatarURL)
         cardView.backgroundColor = row.isPinned ? ChatBridgeDesignSystem.ColorToken.pinnedCard : ChatBridgeDesignSystem.ColorToken.incomingCard
     }
 
@@ -367,6 +374,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         mutedLabel.isHidden = true
         avatarLabel.text = Self.initials(from: searchRow.title)
         avatarView.setColors(ChatBridgeDesignSystem.GradientToken.brandButton)
+        resetAvatarImage()
         cardView.backgroundColor = ChatBridgeDesignSystem.ColorToken.incomingCard
     }
 
@@ -383,6 +391,13 @@ final class RoundedConversationCell: UICollectionViewCell {
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.layer.cornerRadius = 24
         avatarView.layer.masksToBounds = true
+
+        avatarImageView.translatesAutoresizingMaskIntoConstraints = false
+        avatarImageView.contentMode = .scaleAspectFill
+        avatarImageView.clipsToBounds = true
+        avatarImageView.isHidden = true
+        avatarImageView.isAccessibilityElement = false
+        avatarImageView.accessibilityIdentifier = "conversation.avatarImageView"
 
         avatarLabel.translatesAutoresizingMaskIntoConstraints = false
         avatarLabel.font = .preferredFont(forTextStyle: .headline)
@@ -424,6 +439,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         contentView.addSubview(cardView)
         cardView.addSubview(avatarView)
         avatarView.addSubview(avatarLabel)
+        avatarView.addSubview(avatarImageView)
         cardView.addSubview(titleLabel)
         cardView.addSubview(subtitleLabel)
         cardView.addSubview(statusStackView)
@@ -444,6 +460,11 @@ final class RoundedConversationCell: UICollectionViewCell {
             avatarLabel.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
             avatarLabel.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
 
+            avatarImageView.topAnchor.constraint(equalTo: avatarView.topAnchor),
+            avatarImageView.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),
+            avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
+            avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
+
             statusStackView.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 14),
             statusStackView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -14),
             statusStackView.widthAnchor.constraint(greaterThanOrEqualToConstant: 52),
@@ -457,6 +478,71 @@ final class RoundedConversationCell: UICollectionViewCell {
             subtitleLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -14),
             subtitleLabel.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -12)
         ])
+    }
+
+    private func configureAvatarImage(from value: String?) {
+        resetAvatarImage()
+
+        guard let avatarURL = value?.trimmingCharacters(in: .whitespacesAndNewlines), !avatarURL.isEmpty else {
+            return
+        }
+
+        expectedAvatarURL = avatarURL
+        let cacheKey = avatarURL as NSString
+
+        if let cachedImage = Self.avatarImageCache.object(forKey: cacheKey) {
+            avatarImageView.image = cachedImage
+            avatarImageView.isHidden = false
+            return
+        }
+
+        if let localImage = Self.localAvatarImage(from: avatarURL) {
+            Self.avatarImageCache.setObject(localImage, forKey: cacheKey)
+            avatarImageView.image = localImage
+            avatarImageView.isHidden = false
+            return
+        }
+
+        guard let url = URL(string: avatarURL), ["http", "https"].contains(url.scheme?.lowercased()) else {
+            return
+        }
+
+        avatarDataTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                guard let self, self.expectedAvatarURL == avatarURL, let image = UIImage(data: data) else {
+                    return
+                }
+
+                Self.avatarImageCache.setObject(image, forKey: avatarURL as NSString)
+                self.avatarImageView.image = image
+                self.avatarImageView.isHidden = false
+            }
+        }
+        avatarDataTask?.resume()
+    }
+
+    private func resetAvatarImage() {
+        avatarDataTask?.cancel()
+        avatarDataTask = nil
+        expectedAvatarURL = nil
+        avatarImageView.image = nil
+        avatarImageView.isHidden = true
+    }
+
+    private static func localAvatarImage(from value: String) -> UIImage? {
+        if let url = URL(string: value), url.isFileURL {
+            return UIImage(contentsOfFile: url.path)
+        }
+
+        guard !value.hasPrefix("http://"), !value.hasPrefix("https://") else {
+            return nil
+        }
+
+        return UIImage(contentsOfFile: value)
     }
 
     private static func initials(from text: String) -> String {

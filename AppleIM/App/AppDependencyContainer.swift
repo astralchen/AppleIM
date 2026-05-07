@@ -27,6 +27,8 @@ final class AppDependencyContainer {
     private let applicationBadgeManager: any ApplicationBadgeManaging
     /// 当前登录用户 ID
     let accountID: UserID
+    /// 当前登录用户头像 URL
+    private let accountAvatarURL: String?
     /// 账号存储服务
     private let storageService: any AccountStorageService
     /// 网络恢复协调器
@@ -44,6 +46,7 @@ final class AppDependencyContainer {
 
     init(
         accountID: UserID,
+        accountAvatarURL: String? = nil,
         storageService: (any AccountStorageService)? = nil,
         database: DatabaseActor = DatabaseActor(),
         databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
@@ -65,6 +68,7 @@ final class AppDependencyContainer {
 
         self.isUITesting = uiTestConfiguration != nil
         self.accountID = accountID
+        self.accountAvatarURL = accountAvatarURL
         self.storageService = storageService
         self.messageSendService = resolvedMessageSendService
         self.mediaUploadService = mediaUploadService
@@ -231,6 +235,8 @@ final class AppDependencyContainer {
         let useCase = StoreBackedChatUseCase(
             userID: accountID,
             conversationID: conversation.id,
+            currentUserAvatarURL: accountAvatarURL,
+            conversationAvatarURL: conversation.avatarURL,
             storeProvider: storeProvider,
             sendService: messageSendService,
             mediaFileStore: mediaFileStore,

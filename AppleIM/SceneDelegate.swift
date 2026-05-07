@@ -102,7 +102,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private func showMainInterface(for session: AccountSession, in window: UIWindow) {
         do {
-            let dependencies = try AppDependencyContainer(accountID: session.userID)
+            let dependencies = try AppDependencyContainer(accountID: session.userID, accountAvatarURL: session.avatarURL)
             self.dependencies = dependencies
             if !dependencies.isUITesting {
                 dependencies.requestLocalNotificationAuthorization()

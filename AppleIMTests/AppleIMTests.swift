@@ -213,7 +213,26 @@ struct AppleIMTests {
 
         #expect(session.userID == "mock_user")
         #expect(session.displayName == "Mock User")
+        #expect(session.avatarURL == "https://example.com/mock-avatar.png")
         #expect(session.token.contains("mock_token_mock_user"))
+    }
+
+    @Test func accountSessionDecodesLegacyPayloadWithoutAvatarURL() throws {
+        let json = """
+        {
+          "userID": "legacy_user",
+          "displayName": "Legacy User",
+          "token": "legacy_token",
+          "loggedInAt": 1777777777
+        }
+        """
+
+        let session = try JSONDecoder().decode(AccountSession.self, from: Data(json.utf8))
+
+        #expect(session.userID == "legacy_user")
+        #expect(session.displayName == "Legacy User")
+        #expect(session.avatarURL == nil)
+        #expect(session.token == "legacy_token")
     }
 
     @Test func localAccountAuthServiceRejectsInvalidLoginInputs() async throws {
@@ -2070,6 +2089,36 @@ struct AppleIMTests {
         #expect(rows.first?.unreadText == "2")
     }
 
+    @Test func localConversationListUseCaseMapsConversationAvatarURL() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "avatar_list_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "avatar_conversation",
+                userID: "avatar_list_user",
+                title: "Avatar Target",
+                avatarURL: "https://example.com/conversation-avatar.png",
+                sortTimestamp: 9_999
+            )
+        )
+        let useCase = LocalConversationListUseCase(userID: "avatar_list_user", storeProvider: storeProvider)
+
+        let rows = try await useCase.loadConversations()
+        let avatarRow = rows.first { $0.id == "avatar_conversation" }
+
+        #expect(avatarRow?.avatarURL == "https://example.com/conversation-avatar.png")
+    }
+
     @Test func localConversationListUseCaseLoadsPagedRows() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -2199,6 +2248,55 @@ struct AppleIMTests {
         #expect(page.rows.map(\.text) == ["First", "Second"])
         #expect(page.hasMore == false)
         #expect(page.nextBeforeSortSequence == 100)
+    }
+
+    @Test func chatUseCaseMapsSenderAvatarURLsByMessageDirection() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "avatar_chat_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "avatar_chat_conversation", userID: "avatar_chat_user", title: "Avatar Chat", sortTimestamp: 1)
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "avatar_chat_user",
+                conversationID: "avatar_chat_conversation",
+                senderID: "avatar_chat_user",
+                text: "From me",
+                localTime: 100,
+                messageID: "avatar_outgoing",
+                clientMessageID: "avatar_outgoing_client",
+                sortSequence: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "avatar_chat_user",
+                conversationID: "avatar_chat_conversation",
+                senderID: "friend_user",
+                text: "From friend",
+                localTime: 200,
+                messageID: "avatar_incoming",
+                clientMessageID: "avatar_incoming_client",
+                sortSequence: 200
+            )
+        )
+
+        let useCase = LocalChatUseCase(
+            userID: "avatar_chat_user",
+            conversationID: "avatar_chat_conversation",
+            currentUserAvatarURL: "file:///tmp/current-avatar.png",
+            conversationAvatarURL: "https://example.com/friend-avatar.png",
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        let page = try await useCase.loadInitialMessages()
+
+        #expect(page.rows.first?.senderAvatarURL == "file:///tmp/current-avatar.png")
+        #expect(page.rows.last?.senderAvatarURL == "https://example.com/friend-avatar.png")
     }
 
     @Test func chatUseCaseInitialPageReturnsLatestFiftyMessagesAscending() async throws {
@@ -3764,6 +3862,92 @@ struct AppleIMTests {
         #expect(buttonFrameInScrollView.maxY <= scrollView.bounds.maxY)
         #expect(removeButton.clipsToBounds == true)
         #expect(removeButton.layer.cornerRadius == 15)
+    }
+
+    @MainActor
+    @Test func roundedConversationCellShowsFallbackAvatarWhenURLIsMissing() throws {
+        let cell = RoundedConversationCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
+
+        cell.configure(
+            row: ConversationListRowState(
+                id: "fallback_avatar",
+                title: "Sondra",
+                avatarURL: nil,
+                subtitle: "No image yet",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        )
+
+        let avatarImageView = try #require(findView(in: cell, identifier: "conversation.avatarImageView") as? UIImageView)
+
+        #expect(avatarImageView.image == nil)
+        #expect(avatarImageView.isHidden)
+        #expect(findLabel(withText: "S", in: cell) != nil)
+    }
+
+    @MainActor
+    @Test func roundedConversationCellLoadsLocalAvatarImage() throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let imageURL = directory.appendingPathComponent("conversation-avatar.jpg")
+        try makeJPEGData(width: 4, height: 4, quality: 0.8).write(to: imageURL, options: [.atomic])
+        let cell = RoundedConversationCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
+
+        cell.configure(
+            row: ConversationListRowState(
+                id: "local_avatar",
+                title: "Local Avatar",
+                avatarURL: imageURL.path,
+                subtitle: "Image from disk",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        )
+
+        let avatarImageView = try #require(findView(in: cell, identifier: "conversation.avatarImageView") as? UIImageView)
+
+        #expect(avatarImageView.image != nil)
+        #expect(avatarImageView.isHidden == false)
+        #expect(findLabel(withText: "L", in: cell) != nil)
+    }
+
+    @MainActor
+    @Test func roundedConversationCellPrepareForReuseClearsAvatarImage() throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let imageURL = directory.appendingPathComponent("reuse-avatar.jpg")
+        try makeJPEGData(width: 4, height: 4, quality: 0.8).write(to: imageURL, options: [.atomic])
+        let cell = RoundedConversationCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
+        cell.configure(
+            row: ConversationListRowState(
+                id: "reuse_avatar",
+                title: "Reuse Avatar",
+                avatarURL: imageURL.absoluteString,
+                subtitle: "Image from file URL",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        )
+        let avatarImageView = try #require(findView(in: cell, identifier: "conversation.avatarImageView") as? UIImageView)
+        #expect(avatarImageView.image != nil)
+
+        cell.prepareForReuse()
+
+        #expect(avatarImageView.image == nil)
+        #expect(avatarImageView.isHidden)
     }
 
     @Test func photoLibrarySelectionStateKeepsSelectionOrderAndCapsAtNine() {
@@ -5586,6 +5770,33 @@ private func makeVoiceRow(id: MessageID, sortSequence: Int64, isUnplayed: Bool) 
     )
 }
 
+@Test func chatMessageRowStateWithVoicePlaybackPreservesSenderAvatarURL() {
+    let row = ChatMessageRowState(
+        id: "avatar_voice",
+        text: "Voice 2s",
+        imageThumbnailPath: nil,
+        voiceDurationMilliseconds: 2_000,
+        sortSequence: 1,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        senderAvatarURL: "https://example.com/voice-avatar.png",
+        isOutgoing: false,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false,
+        isRevoked: false,
+        voiceLocalPath: "/tmp/avatar_voice.m4a",
+        isVoiceUnplayed: true,
+        isVoicePlaying: false
+    )
+
+    let updatedRow = row.withVoicePlayback(isPlaying: true)
+
+    #expect(updatedRow.senderAvatarURL == "https://example.com/voice-avatar.png")
+    #expect(updatedRow.isVoicePlaying)
+}
+
 private func temporaryDirectory() -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("AppleIMTests-\(UUID().uuidString)", isDirectory: true)
@@ -5603,7 +5814,7 @@ private func makeMockAccountsFile() throws -> URL {
         "password": "password123",
         "displayName": "Mock User",
         "mobile": "13700000000",
-        "avatarURL": null
+        "avatarURL": "https://example.com/mock-avatar.png"
       }
     ]
     """
@@ -5918,6 +6129,7 @@ private func makeConversationRecord(
     isMuted: Bool = false,
     unreadCount: Int = 0,
     draftText: String? = nil,
+    avatarURL: String? = nil,
     sortTimestamp: Int64
 ) -> ConversationRecord {
     ConversationRecord(
@@ -5926,7 +6138,7 @@ private func makeConversationRecord(
         type: .single,
         targetID: "\(id.rawValue)_target",
         title: title,
-        avatarURL: nil,
+        avatarURL: avatarURL,
         lastMessageID: nil,
         lastMessageTime: sortTimestamp,
         lastMessageDigest: "Digest \(title)",
@@ -5980,6 +6192,21 @@ private func findView<T: UIView>(ofType type: T.Type, in view: UIView) -> T? {
     for subview in view.subviews {
         if let matchingView = findView(ofType: type, in: subview) {
             return matchingView
+        }
+    }
+
+    return nil
+}
+
+@MainActor
+private func findLabel(withText text: String, in view: UIView) -> UILabel? {
+    if let label = view as? UILabel, label.text == text {
+        return label
+    }
+
+    for subview in view.subviews {
+        if let matchingLabel = findLabel(withText: text, in: subview) {
+            return matchingLabel
         }
     }
 
