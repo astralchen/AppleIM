@@ -240,8 +240,7 @@ final class ChatInputBarView: UIView {
         configureRecordingCapsuleView()
         configureRecordingStatusLabel()
 
-        addSubview(glassContainerView)
-        glassContainerView.contentView.addSubview(contentStackView)
+        addSubview(contentStackView)
 
         contentStackView.addArrangedSubview(recordingStatusLabel)
         contentStackView.addArrangedSubview(attachmentPreviewView)
@@ -250,20 +249,21 @@ final class ChatInputBarView: UIView {
 
         inputStackView.addArrangedSubview(moreButton)
         inputStackView.addArrangedSubview(textInputContainerView)
+        inputStackView.insertSubview(glassContainerView, belowSubview: textInputContainerView)
 
         let textInputHeightConstraint = textInputContainerView.heightAnchor.constraint(equalToConstant: 44)
         self.textInputHeightConstraint = textInputHeightConstraint
 
         NSLayoutConstraint.activate([
-            glassContainerView.topAnchor.constraint(equalTo: topAnchor),
-            glassContainerView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            glassContainerView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            glassContainerView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
             contentStackView.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             contentStackView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
             contentStackView.topAnchor.constraint(equalTo: layoutMarginsGuide.topAnchor),
             contentStackView.bottomAnchor.constraint(equalTo: layoutMarginsGuide.bottomAnchor),
+
+            glassContainerView.topAnchor.constraint(equalTo: textInputContainerView.topAnchor),
+            glassContainerView.leadingAnchor.constraint(equalTo: textInputContainerView.leadingAnchor),
+            glassContainerView.trailingAnchor.constraint(equalTo: textInputContainerView.trailingAnchor),
+            glassContainerView.bottomAnchor.constraint(equalTo: textInputContainerView.bottomAnchor),
 
             attachmentPreviewScrollView.topAnchor.constraint(equalTo: attachmentPreviewView.topAnchor, constant: 4),
             attachmentPreviewScrollView.leadingAnchor.constraint(equalTo: attachmentPreviewView.leadingAnchor),
@@ -322,10 +322,15 @@ final class ChatInputBarView: UIView {
 
     private func configureMoreButton() {
         moreButton.translatesAutoresizingMaskIntoConstraints = false
-        var configuration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .circularTool)
+        var configuration = UIButton.Configuration.filled()
         configuration.image = UIImage(systemName: "plus")
+        configuration.cornerStyle = .capsule
         configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        configuration.baseForegroundColor = .label
+        configuration.baseBackgroundColor = Self.defaultTextInputTintColor
         moreButton.configuration = configuration
+        moreButton.layer.cornerRadius = 22
+        ChatBridgeDesignSystem.ShadowToken.applyBubbleShadow(to: moreButton.layer)
         moreButton.accessibilityLabel = "More"
         moreButton.accessibilityIdentifier = "chat.moreButton"
         moreButton.setContentHuggingPriority(.required, for: .horizontal)

@@ -3795,6 +3795,21 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarKeepsMoreButtonOutsideInputCapsule() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        inputBar.layoutIfNeeded()
+
+        let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
+        let inputCapsule = try #require(findView(ofType: GlassContainerView.self, in: inputBar))
+
+        let moreFrame = moreButton.convert(moreButton.bounds, to: inputBar)
+        let capsuleFrame = inputCapsule.convert(inputCapsule.bounds, to: inputBar)
+
+        #expect(moreButton.isDescendant(of: inputCapsule) == false)
+        #expect(moreFrame.maxX <= capsuleFrame.minX)
+    }
+
+    @MainActor
     @Test func chatViewModelTracksOnlyActiveVoicePlaybackRow() async throws {
         let voiceA = makeVoiceRow(id: "voice_a", sortSequence: 1, isUnplayed: true)
         let voiceB = makeVoiceRow(id: "voice_b", sortSequence: 2, isUnplayed: true)
@@ -5949,6 +5964,21 @@ private func findView(in view: UIView, identifier: String) -> UIView? {
 
     for subview in view.subviews {
         if let matchingView = findView(in: subview, identifier: identifier) {
+            return matchingView
+        }
+    }
+
+    return nil
+}
+
+@MainActor
+private func findView<T: UIView>(ofType type: T.Type, in view: UIView) -> T? {
+    if let matchingView = view as? T {
+        return matchingView
+    }
+
+    for subview in view.subviews {
+        if let matchingView = findView(ofType: type, in: subview) {
             return matchingView
         }
     }
