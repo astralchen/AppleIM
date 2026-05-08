@@ -120,12 +120,12 @@ final class ChatInputBarView: UIView {
 
     /// 文本输入高度约束
     private var textInputHeightConstraint: NSLayoutConstraint?
-    /// Return 键是否发送消息
-    private var isReturnKeySending = false
     /// 是否正在录音
     private var isRecording = false
     /// 是否正在展示相册输入视图
     private var isShowingPhotoLibraryInput = false
+    /// 是否正在等待控制器完成相册面板到系统键盘的切换
+    private var isWaitingForKeyboardInputTransition = false
     /// 是否存在待发送附件
     private var hasPendingAttachment = false
     /// 待发送附件是否仍在加载
@@ -175,7 +175,6 @@ final class ChatInputBarView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         configureView()
-        renderReturnMode()
         renderTrailingActionState()
     }
 
@@ -183,7 +182,6 @@ final class ChatInputBarView: UIView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
-        renderReturnMode()
         renderTrailingActionState()
     }
 
@@ -258,6 +256,7 @@ final class ChatInputBarView: UIView {
     /// 切换到相册输入面板
     func showPhotoLibraryInput() {
         isShowingPhotoLibraryInput = true
+        isWaitingForKeyboardInputTransition = false
         textView.inputView = nil
         textView.resignFirstResponder()
     }
@@ -265,9 +264,10 @@ final class ChatInputBarView: UIView {
     /// 切换回系统键盘输入
     func showKeyboardInput() {
         isShowingPhotoLibraryInput = false
+        isWaitingForKeyboardInputTransition = false
         textView.inputView = nil
-        textView.becomeFirstResponder()
         textView.reloadInputViews()
+        textView.becomeFirstResponder()
     }
 
     /// 设置单个待发送附件预览
@@ -439,6 +439,7 @@ final class ChatInputBarView: UIView {
         moreButton.setContentHuggingPriority(.required, for: .horizontal)
         moreButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         moreButton.showsMenuAsPrimaryAction = true
+        moreButton.menu = makeMoreMenu()
     }
 
     /// 配置附件预览区域
@@ -658,13 +659,6 @@ final class ChatInputBarView: UIView {
         onSend?(trimmedText)
     }
 
-    /// 渲染 Return 键发送模式
-    private func renderReturnMode() {
-        textView.returnKeyType = isReturnKeySending ? .send : .default
-        moreButton.menu = makeMoreMenu()
-        moreButton.accessibilityValue = isReturnKeySending ? "Return Sends On" : "Return Sends Off"
-    }
-
     /// 渲染尾部按钮的发送或录音状态
     private func renderTrailingActionState() {
         let showsSend = canSendComposition && textView.isEditable
@@ -817,8 +811,14 @@ extension ChatInputBarView: UITextViewDelegate {
     /// 开始编辑时从相册输入切回键盘
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
         if isShowingPhotoLibraryInput {
-            isShowingPhotoLibraryInput = false
-            onKeyboardInputRequested?()
+            if !isWaitingForKeyboardInputTransition {
+                isWaitingForKeyboardInputTransition = true
+                onKeyboardInputRequested?()
+            }
+            return false
+        }
+        if isWaitingForKeyboardInputTransition {
+            return false
         }
         return true
     }
@@ -829,20 +829,6 @@ extension ChatInputBarView: UITextViewDelegate {
         renderTrailingActionState()
         updateTextViewHeight(animated: true)
         onTextChanged?(textView.text)
-    }
-
-    /// Return 发送模式下拦截换行并发送
-    func textView(
-        _ textView: UITextView,
-        shouldChangeTextIn range: NSRange,
-        replacementText text: String
-    ) -> Bool {
-        guard text == "\n", isReturnKeySending else {
-            return true
-        }
-
-        sendCurrentComposition()
-        return false
     }
 }
 

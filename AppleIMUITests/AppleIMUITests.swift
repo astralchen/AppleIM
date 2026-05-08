@@ -129,6 +129,40 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testKeyboardDoesNotCoverLatestMessage() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        let message = "UI keyboard visibility \(UUID().uuidString)"
+        let input = app.textViews["chat.messageInput"]
+        input.tap()
+        input.typeText(message)
+        app.buttons["chat.sendButton"].tap()
+
+        let sentMessage = messageCell(containing: message, in: app)
+        XCTAssertTrue(sentMessage.waitForExistence(timeout: 5), "Expected sent message to appear in chat")
+
+        let chatNavigationBar = app.navigationBars["Sondra"]
+        XCTAssertTrue(chatNavigationBar.waitForExistence(timeout: 5), "Expected Sondra navigation bar")
+        chatNavigationBar.buttons.firstMatch.tap()
+        waitForConversationList(in: app)
+        openSondraConversation(in: app)
+
+        input.tap()
+
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5), "Expected keyboard to appear")
+        let reopenedMessage = messageCell(containing: message, in: app)
+        XCTAssertTrue(reopenedMessage.waitForExistence(timeout: 5), "Expected latest message to remain visible")
+        XCTAssertLessThanOrEqual(
+            reopenedMessage.frame.maxY,
+            input.frame.minY,
+            "Expected latest message to stay above the input bar when the keyboard is visible"
+        )
+    }
+
+    @MainActor
     func testMultilineTextMessageKeepsLineBreaks() throws {
         let app = makeUITestApplication()
         app.launch()
@@ -149,27 +183,6 @@ final class AppleIMUITests: XCTestCase {
         XCTAssertTrue(
             messageCell(containing: "second line", in: app).exists,
             "Expected multiline message to keep its second line"
-        )
-    }
-
-    @MainActor
-    func testReturnKeyCanSendTextMessage() throws {
-        let app = makeUITestApplication()
-        app.launch()
-        loginAsUITestUser(in: app)
-        openSondraConversation(in: app)
-
-        let message = "UI return send \(UUID().uuidString)"
-        let input = app.textViews["chat.messageInput"]
-        input.tap()
-        app.buttons["chat.moreButton"].tap()
-        app.buttons["Return Sends"].tap()
-        input.typeText(message)
-        app.keyboards.buttons["Send"].tap()
-
-        XCTAssertTrue(
-            messageCell(containing: message, in: app).waitForExistence(timeout: 5),
-            "Expected Return key to send message when send mode is enabled"
         )
     }
 

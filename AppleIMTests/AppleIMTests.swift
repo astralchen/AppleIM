@@ -3736,6 +3736,154 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsBottomAnchoredWhenAttachmentPreviewAppearsAfterLayoutDrift() async throws {
+        let rows = (1...28).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "layout_drift_\(index)"),
+                text: "Layout drift message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Layout")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        collectionView.scrollToItem(at: IndexPath(item: rows.count - 1, section: 0), at: .bottom, animated: false)
+        collectionView.layoutIfNeeded()
+
+        let visibleHeight = collectionView.bounds.height
+            - collectionView.adjustedContentInset.top
+            - collectionView.adjustedContentInset.bottom
+        let maxOffsetY = collectionView.contentSize.height
+            - visibleHeight
+            + collectionView.adjustedContentInset.bottom
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: maxOffsetY - 140),
+            animated: false
+        )
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "layout-drift-photo",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsBottomAnchoredWhilePhotoLibraryPanelIsDragged() async throws {
+        let rows = (1...28).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "photo_drag_\(index)"),
+                text: "Photo drag message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Photo Drag")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: viewController.view))
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-drag-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            ),
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-drag-2",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        inputBar.onPhotoTapped?()
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+        collectionView.scrollToItem(at: IndexPath(item: rows.count - 1, section: 0), at: .bottom, animated: false)
+        collectionView.layoutIfNeeded()
+
+        let visibleHeight = collectionView.bounds.height
+            - collectionView.adjustedContentInset.top
+            - collectionView.adjustedContentInset.bottom
+        let maxOffsetY = collectionView.contentSize.height
+            - visibleHeight
+            + collectionView.adjustedContentInset.bottom
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: maxOffsetY - 140),
+            animated: false
+        )
+
+        photoPanel.onDismissPanChanged?(96)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
     @Test func chatInputBarAttachmentPreviewControlsSendState() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         inputBar.layoutIfNeeded()
@@ -3968,14 +4116,13 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func chatInputBarKeepsReturnSendsMenuAction() throws {
+    @Test func chatInputBarKeepsPhotoLibraryMenuAction() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         inputBar.layoutIfNeeded()
 
         let menuChildren = button(in: inputBar, identifier: "chat.moreButton")?.menu?.children ?? []
 
         #expect(menuChildren.contains { $0.title == "Choose Photo or Video" })
-        #expect(menuChildren.contains { $0.title == "Return Sends" })
     }
 
     @MainActor
@@ -3990,6 +4137,75 @@ struct AppleIMTests {
         inputBar.showKeyboardInput()
 
         #expect(textView.inputView == nil)
+    }
+
+    @MainActor
+    @Test func chatInputBarDefersSystemKeyboardWhileLeavingPhotoLibraryInput() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        var keyboardInputRequestCount = 0
+        inputBar.onKeyboardInputRequested = {
+            keyboardInputRequestCount += 1
+        }
+
+        inputBar.showPhotoLibraryInput()
+
+        #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(keyboardInputRequestCount == 1)
+        #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(keyboardInputRequestCount == 1)
+
+        inputBar.showKeyboardInput()
+
+        #expect(inputBar.textViewShouldBeginEditing(textView) == true)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsMoreButtonStationaryWhilePreparingKeyboardFromPhotoLibrary() async throws {
+        let rows = (1...16).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "more_button_transition_\(index)"),
+                text: "More button transition \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "More Button")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
+
+        inputBar.onPhotoTapped?()
+        window.layoutIfNeeded()
+
+        let frameBeforeKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
+
+        #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        window.layoutIfNeeded()
+
+        let frameAfterKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
+        #expect(abs(frameAfterKeyboardRequest.minY - frameBeforeKeyboardRequest.minY) <= 1)
     }
 
     @MainActor

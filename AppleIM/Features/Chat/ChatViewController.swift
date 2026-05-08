@@ -25,6 +25,12 @@ final class ChatViewController: UIViewController {
     private var lastRenderedRowIDs: [String] = []
     /// 语音按钮触摸是否仍处于按下状态
     private var isVoiceTouchActive = false
+    /// 用户是否仍处于贴底阅读状态；composer 高度变化时用它维持最新消息可见
+    private var shouldMaintainBottomPosition = true
+    /// 是否正在从相册面板切换到系统键盘。
+    private var isSwitchingPhotoLibraryInputToKeyboard = false
+    /// 相册面板切换到系统键盘期间是否需要保持列表贴底。
+    private var shouldStickToBottomDuringKeyboardInputSwitch = false
 
     /// 渐变背景
     private let backgroundView = GradientBackgroundView()
@@ -65,6 +71,10 @@ final class ChatViewController: UIViewController {
         fatalError("Storyboard initialization is not supported.")
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     /// 配置聊天页并加载首屏消息
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -72,6 +82,7 @@ final class ChatViewController: UIViewController {
         configureDataSource()
         configureVoiceRecorder()
         configureVoicePlayback()
+        observeKeyboard()
         bindViewModel()
         viewModel.load()
     }
@@ -172,7 +183,7 @@ final class ChatViewController: UIViewController {
             self?.showPhotoLibraryInput()
         }
         inputBarView.onKeyboardInputRequested = { [weak self] in
-            self?.hidePhotoLibraryInput(animated: true)
+            self?.showKeyboardInput()
         }
         inputBarView.onAttachmentRemoved = { [weak self] id in
             self?.removePendingAttachment(id: id)
@@ -197,12 +208,72 @@ final class ChatViewController: UIViewController {
             self?.voiceButtonTouchCancel()
         }
         inputBarView.onHeightWillChange = { [weak self] in
-            self?.isNearBottom() ?? false
+            self?.shouldStickToBottomForLayoutChange() ?? false
         }
         inputBarView.onHeightDidChange = { [weak self] shouldStickToBottom in
             guard shouldStickToBottom else { return }
             self?.scrollToBottom(animated: false)
         }
+    }
+
+    /// 监听系统键盘布局变化，保持底部消息不被输入区域遮挡。
+    private func observeKeyboard() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardWillChangeFrame(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+    }
+
+    /// 键盘 frame 变化时同步布局，并在用户原本贴底阅读时维持最新消息可见。
+    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+        let isCompletingPhotoLibraryKeyboardSwitch = isSwitchingPhotoLibraryInputToKeyboard
+            && !photoLibraryInputView.isHidden
+        let shouldStickToBottom = isCompletingPhotoLibraryKeyboardSwitch
+            ? shouldStickToBottomDuringKeyboardInputSwitch
+            : shouldStickToBottomForLayoutChange()
+        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
+        let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt
+            ?? UIView.AnimationOptions.curveEaseInOut.rawValue
+        let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
+
+        if isCompletingPhotoLibraryKeyboardSwitch {
+            inputBarKeyboardBottomConstraint?.isActive = true
+            inputBarPhotoLibraryBottomConstraint?.isActive = false
+            photoLibraryInputBottomConstraint?.constant = 0
+        }
+
+        let layoutChanges = { [weak self] in
+            guard let self else { return }
+            if isCompletingPhotoLibraryKeyboardSwitch {
+                self.photoLibraryInputView.alpha = 0
+            }
+            self.view.layoutIfNeeded()
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+        }
+        let completion: (Bool) -> Void = { [weak self] _ in
+            guard let self else { return }
+            if isCompletingPhotoLibraryKeyboardSwitch {
+                self.photoLibraryInputView.isHidden = true
+                self.photoLibraryInputView.resetDismissGestureState()
+                self.isSwitchingPhotoLibraryInputToKeyboard = false
+                self.shouldStickToBottomDuringKeyboardInputSwitch = false
+            }
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+        }
+
+        UIView.animate(
+            withDuration: duration,
+            delay: 0,
+            options: [options, .beginFromCurrentState, .allowUserInteraction],
+            animations: layoutChanges,
+            completion: completion
+        )
     }
 
     /// 创建并绑定图片库输入面板
@@ -256,28 +327,53 @@ final class ChatViewController: UIViewController {
 
     /// 展示图片库输入面板
     private func showPhotoLibraryInput() {
-        let shouldStickToBottom = isNearBottom()
-        inputBarView.showPhotoLibraryInput()
+        let shouldStickToBottom = shouldStickToBottomForLayoutChange()
+        isSwitchingPhotoLibraryInputToKeyboard = false
+        shouldStickToBottomDuringKeyboardInputSwitch = false
         photoLibraryInputView.refreshAuthorization()
         setPhotoLibraryInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
+        inputBarView.showPhotoLibraryInput()
+    }
+
+    /// 从图片库输入面板切回系统键盘输入
+    private func showKeyboardInput() {
+        guard !photoLibraryInputView.isHidden else {
+            inputBarView.showKeyboardInput()
+            return
+        }
+
+        isSwitchingPhotoLibraryInputToKeyboard = true
+        shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
+        inputBarView.showKeyboardInput()
     }
 
     /// 隐藏图片库输入面板
-    private func hidePhotoLibraryInput(animated: Bool) {
-        setPhotoLibraryInputVisible(false, animated: animated, shouldStickToBottom: isNearBottom())
+    private func hidePhotoLibraryInput(animated: Bool, completion: (() -> Void)? = nil) {
+        setPhotoLibraryInputVisible(
+            false,
+            animated: animated,
+            shouldStickToBottom: shouldStickToBottomForLayoutChange(),
+            completion: completion
+        )
     }
 
     /// 切换图片库输入面板布局
     private func setPhotoLibraryInputVisible(
         _ isVisible: Bool,
         animated: Bool,
-        shouldStickToBottom: Bool
+        shouldStickToBottom: Bool,
+        completion externalCompletion: (() -> Void)? = nil
     ) {
-        guard photoLibraryInputView.isHidden == isVisible else { return }
+        guard photoLibraryInputView.isHidden == isVisible else {
+            externalCompletion?()
+            return
+        }
 
         if isVisible {
             photoLibraryInputView.isHidden = false
             photoLibraryInputView.resetDismissGestureState()
+            photoLibraryInputBottomConstraint?.constant = 0
+            inputBarPhotoLibraryBottomConstraint?.constant = -8
         }
 
         inputBarKeyboardBottomConstraint?.isActive = !isVisible
@@ -287,6 +383,9 @@ final class ChatViewController: UIViewController {
             guard let self else { return }
             self.photoLibraryInputView.alpha = isVisible ? 1 : 0
             self.view.layoutIfNeeded()
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
@@ -297,6 +396,7 @@ final class ChatViewController: UIViewController {
             if shouldStickToBottom {
                 self.scrollToBottom(animated: false)
             }
+            externalCompletion?()
         }
 
         if animated {
@@ -315,10 +415,14 @@ final class ChatViewController: UIViewController {
 
     /// 应用图片库面板下滑过程中的整体位移
     private func applyPhotoLibraryDismissPanTranslation(_ translationY: CGFloat) {
+        let shouldStickToBottom = shouldStickToBottomForLayoutChange()
         let clampedTranslation = max(0, translationY)
         inputBarPhotoLibraryBottomConstraint?.constant = -8
         photoLibraryInputBottomConstraint?.constant = clampedTranslation
         view.layoutIfNeeded()
+        if shouldStickToBottom {
+            scrollToBottom(animated: false)
+        }
     }
 
     /// 发送当前文本和待发送附件
@@ -443,7 +547,7 @@ final class ChatViewController: UIViewController {
         let previousRowIDs = lastRenderedRowIDs
         let previousContentHeight = collectionView.contentSize.height
         let previousContentOffsetY = collectionView.contentOffset.y
-        let wasNearBottom = isNearBottom()
+        let wasNearBottom = shouldStickToBottomForLayoutChange()
 
         // Diffable data source 的 item identifier 使用消息 ID；内容变化通过 changedRowIDs 触发 reload。
         let newRowIDs = state.rows.map { $0.id.rawValue }
@@ -700,9 +804,20 @@ final class ChatViewController: UIViewController {
         return collectionView.contentOffset.y >= maxOffsetY - 80
     }
 
+    /// 判断本次布局变化是否应该保持贴底。
+    private func shouldStickToBottomForLayoutChange() -> Bool {
+        let shouldStick = shouldMaintainBottomPosition || isNearBottom()
+        if shouldStick {
+            shouldMaintainBottomPosition = true
+        }
+        return shouldStick
+    }
+
     /// 滚动到最新消息
     private func scrollToBottom(animated: Bool) {
+        shouldMaintainBottomPosition = true
         guard !lastRenderedRowIDs.isEmpty else { return }
+        collectionView.layoutIfNeeded()
         let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
         collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
     }
@@ -712,6 +827,10 @@ final class ChatViewController: UIViewController {
 extension ChatViewController: UICollectionViewDelegate {
     /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
+            shouldMaintainBottomPosition = isNearBottom()
+        }
+
         let topThreshold = -scrollView.adjustedContentInset.top + 120
 
         if scrollView.contentOffset.y <= topThreshold {
