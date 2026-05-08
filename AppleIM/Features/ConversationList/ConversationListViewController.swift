@@ -16,6 +16,8 @@ private let searchContactsSection = "search_contacts"
 private let searchConversationsSection = "search_conversations"
 /// 搜索消息 section 标识
 private let searchMessagesSection = "search_messages"
+/// 会话列表导航标题
+private let conversationListNavigationTitle = "Messages"
 
 /// 会话列表账号操作
 nonisolated enum ConversationListAccountAction: Sendable {
@@ -67,8 +69,6 @@ final class ConversationListViewController: UIViewController {
     private let emptyLabel = UILabel()
     /// 加载指示器
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
-    /// 渐变背景
-    private let backgroundView = GradientBackgroundView()
 
     /// 初始化会话列表页面
     init(
@@ -102,6 +102,7 @@ final class ConversationListViewController: UIViewController {
     /// 页面出现时触发会话加载
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        navigationController?.navigationBar.prefersLargeTitles = true
         viewModel.loadIfNeeded()
     }
 
@@ -114,10 +115,9 @@ final class ConversationListViewController: UIViewController {
 
     /// 创建会话列表视图层级和约束
     private func configureView() {
-        title = "ChatBridge"
+        title = conversationListNavigationTitle
+        navigationItem.largeTitleDisplayMode = .always
         view.backgroundColor = .systemBackground
-        backgroundView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(backgroundView)
 
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
@@ -126,21 +126,31 @@ final class ConversationListViewController: UIViewController {
         searchController.searchBar.placeholder = "Search"
         searchController.searchBar.accessibilityIdentifier = "conversationList.searchBar"
         searchController.searchBar.searchTextField.accessibilityIdentifier = "conversationList.searchField"
-        searchController.searchBar.searchTextField.backgroundColor = ChatBridgeDesignSystem.ColorToken.elevatedCard
-        searchController.searchBar.searchTextField.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.field
-        searchController.searchBar.searchTextField.layer.masksToBounds = true
+        searchController.searchBar.searchTextField.backgroundColor = .secondarySystemBackground
         definesPresentationContext = true
 
         let accountButton = UIButton(type: .system)
-        var accountConfiguration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .circularTool)
-        accountConfiguration.image = UIImage(systemName: "person.crop.circle.fill")
-        accountConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        var accountConfiguration = UIButton.Configuration.plain()
+        accountConfiguration.image = UIImage(systemName: "person.crop.circle")
+        accountConfiguration.baseForegroundColor = .systemBlue
+        accountConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
         accountButton.configuration = accountConfiguration
         accountButton.accessibilityIdentifier = "conversationList.accountButton"
         accountButton.accessibilityLabel = "Account"
         accountButton.addTarget(self, action: #selector(accountButtonTapped), for: .touchUpInside)
         accountButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: accountButton)
+        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: accountButton)
+
+        let composeButton = UIButton(type: .system)
+        var composeConfiguration = UIButton.Configuration.plain()
+        composeConfiguration.image = UIImage(systemName: "square.and.pencil")
+        composeConfiguration.baseForegroundColor = .systemBlue
+        composeConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
+        composeButton.configuration = composeConfiguration
+        composeButton.accessibilityIdentifier = "conversationList.composeButton"
+        composeButton.accessibilityLabel = "New Message"
+        composeButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: composeButton)
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
@@ -161,11 +171,6 @@ final class ConversationListViewController: UIViewController {
         view.addSubview(loadingIndicator)
 
         NSLayoutConstraint.activate([
-            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
-            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
             collectionView.topAnchor.constraint(equalTo: view.topAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -260,7 +265,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 渲染普通会话列表状态
     private func renderConversations(_ state: ConversationListViewState) {
-        title = state.title
+        title = conversationListNavigationTitle
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
 
@@ -316,7 +321,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 渲染搜索结果状态
     private func renderSearch(_ state: SearchViewState) {
-        title = "Search"
+        title = conversationListNavigationTitle
 
         if state.phase == .loading {
             loadingIndicator.startAnimating()
@@ -373,15 +378,22 @@ final class ConversationListViewController: UIViewController {
 
     /// 创建列表布局
     private func makeLayout() -> UICollectionViewLayout {
-        var configuration = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
-        configuration.headerMode = .supplementary
-        configuration.showsSeparators = false
-        configuration.backgroundColor = .clear
-        configuration.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
-            self?.swipeActionsConfiguration(at: indexPath)
-        }
+        UICollectionViewCompositionalLayout { [weak self] sectionIndex, layoutEnvironment in
+            var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
+            let sectionID = self?.dataSource?.snapshot().sectionIdentifiers[safe: sectionIndex]
+            if let sectionID = sectionID, sectionID != conversationListSection {
+                configuration.headerMode = .supplementary
+            } else {
+                configuration.headerMode = .none
+            }
+            configuration.showsSeparators = false
+            configuration.backgroundColor = .clear
+            configuration.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
+                self?.swipeActionsConfiguration(at: indexPath)
+            }
 
-        return UICollectionViewCompositionalLayout.list(using: configuration)
+            return NSCollectionLayoutSection.list(using: configuration, layoutEnvironment: layoutEnvironment)
+        }
     }
 
     /// 为会话行创建右滑操作
@@ -450,7 +462,7 @@ final class ConversationListViewController: UIViewController {
     private func title(for sectionID: String) -> String {
         switch sectionID {
         case conversationListSection:
-            return "ChatBridge"
+            return ""
         case searchContactsSection:
             return "Contacts"
         case searchConversationsSection:
@@ -487,7 +499,7 @@ final class ConversationListViewController: UIViewController {
     /// 打开账号操作菜单
     @objc private func accountButtonTapped() {
         let alertController = UIAlertController(
-            title: "ChatBridge Account",
+            title: "Account",
             message: "Manage your local session",
             preferredStyle: .actionSheet
         )
@@ -509,7 +521,7 @@ final class ConversationListViewController: UIViewController {
         alertController.addAction(cancelAction)
 
         if let popover = alertController.popoverPresentationController {
-            popover.barButtonItem = navigationItem.rightBarButtonItem
+            popover.barButtonItem = navigationItem.leftBarButtonItem
         }
 
         present(alertController, animated: true)

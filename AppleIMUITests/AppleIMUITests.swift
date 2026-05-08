@@ -27,7 +27,7 @@ final class AppleIMUITests: XCTestCase {
 
         waitForConversationList(in: app)
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
-        XCTAssertTrue(app.navigationBars["ChatBridge"].exists)
+        XCTAssertTrue(app.navigationBars["Messages"].exists)
     }
 
     @MainActor
@@ -82,7 +82,7 @@ final class AppleIMUITests: XCTestCase {
         login(account: "demo_user", password: "password123", in: app)
 
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
-        XCTAssertTrue(app.navigationBars["ChatBridge"].exists)
+        XCTAssertTrue(app.navigationBars["Messages"].exists)
     }
 
     @MainActor

@@ -71,6 +71,13 @@ enum ChatBridgeDesignSystem {
                 ? UIColor.secondarySystemGroupedBackground
                 : UIColor.systemBackground
         }
+
+        /// Apple ID 风格登录表单背景
+        static let appleLoginFieldBackground = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.secondarySystemGroupedBackground
+                : UIColor.secondarySystemBackground
+        }
     }
 
     /// 渐变令牌
@@ -105,6 +112,8 @@ enum ChatBridgeDesignSystem {
         static let appleMessageMedia: CGFloat = 20
         /// Apple Messages 风格 composer 附件圆角
         static let appleComposerAttachment: CGFloat = 16
+        /// Apple ID 风格登录输入区圆角
+        static let appleLoginField: CGFloat = 14
     }
 
     /// 间距令牌
@@ -121,6 +130,8 @@ enum ChatBridgeDesignSystem {
         static let xl: CGFloat = 24
         /// 最大间距
         static let xxl: CGFloat = 32
+        /// Apple ID 风格登录按钮最小高度
+        static let appleLoginButtonHeight: CGFloat = 50
     }
 
     /// 阴影令牌
@@ -503,7 +514,7 @@ final class RoundedConversationCell: UICollectionViewCell {
     /// 头像图片缓存
     private static let avatarImageCache = NSCache<NSString, UIImage>()
 
-    /// 卡片容器
+    /// 行内容容器
     private let cardView = UIView()
     /// 默认渐变头像背景
     private let avatarView = GradientBackgroundView()
@@ -519,10 +530,16 @@ final class RoundedConversationCell: UICollectionViewCell {
     private let timeLabel = UILabel()
     /// 状态标签容器
     private let statusStackView = UIStackView()
+    /// 置顶和免打扰图标容器
+    private let statusIconStackView = UIStackView()
     /// 未读数标签
     private let unreadLabel = ChatBridgeUnreadBadgeLabel()
-    /// 免打扰状态标签
-    private let mutedLabel = UILabel()
+    /// 置顶状态图标
+    private let pinnedImageView = UIImageView(image: UIImage(systemName: "pin.fill"))
+    /// 免打扰状态图标
+    private let mutedImageView = UIImageView(image: UIImage(systemName: "bell.slash.fill"))
+    /// 行底部分割线
+    private let separatorView = UIView()
     /// 当前头像加载任务
     private var avatarDataTask: URLSessionDataTask?
     /// 当前期望展示的头像 URL
@@ -544,8 +561,10 @@ final class RoundedConversationCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         unreadLabel.isHidden = true
-        mutedLabel.isHidden = true
-        cardView.backgroundColor = ChatBridgeDesignSystem.ColorToken.incomingCard
+        pinnedImageView.isHidden = true
+        mutedImageView.isHidden = true
+        cardView.backgroundColor = .systemBackground
+        applyTextStyle(hasUnread: false)
         resetAvatarImage()
     }
 
@@ -556,11 +575,13 @@ final class RoundedConversationCell: UICollectionViewCell {
         timeLabel.text = row.timeText
         unreadLabel.text = row.unreadText
         unreadLabel.isHidden = row.unreadText == nil
-        mutedLabel.isHidden = row.unreadText != nil || !row.isMuted
+        pinnedImageView.isHidden = !row.isPinned
+        mutedImageView.isHidden = !row.isMuted
         avatarLabel.text = Self.initials(from: row.title)
-        avatarView.setColors(row.isPinned ? ChatBridgeDesignSystem.GradientToken.brandButton : ChatBridgeDesignSystem.GradientToken.playfulAvatar)
+        avatarView.setColors(Self.avatarColors(isPinned: row.isPinned))
         configureAvatarImage(from: row.avatarURL)
-        cardView.backgroundColor = row.isPinned ? ChatBridgeDesignSystem.ColorToken.pinnedCard : ChatBridgeDesignSystem.ColorToken.incomingCard
+        cardView.backgroundColor = .systemBackground
+        applyTextStyle(hasUnread: row.unreadText != nil)
     }
 
     /// 使用搜索结果行状态配置单元格
@@ -569,11 +590,13 @@ final class RoundedConversationCell: UICollectionViewCell {
         subtitleLabel.text = searchRow.subtitle
         timeLabel.text = searchRow.kind.displayText
         unreadLabel.isHidden = true
-        mutedLabel.isHidden = true
+        pinnedImageView.isHidden = true
+        mutedImageView.isHidden = true
         avatarLabel.text = Self.initials(from: searchRow.title)
-        avatarView.setColors(ChatBridgeDesignSystem.GradientToken.brandButton)
+        avatarView.setColors(Self.avatarColors(isPinned: true))
         resetAvatarImage()
-        cardView.backgroundColor = ChatBridgeDesignSystem.ColorToken.incomingCard
+        cardView.backgroundColor = .systemBackground
+        applyTextStyle(hasUnread: false)
     }
 
     /// 配置单元格层级、样式和约束
@@ -582,14 +605,14 @@ final class RoundedConversationCell: UICollectionViewCell {
         contentView.backgroundColor = .clear
 
         cardView.translatesAutoresizingMaskIntoConstraints = false
-        cardView.backgroundColor = ChatBridgeDesignSystem.ColorToken.incomingCard
-        cardView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.pageCard
-        cardView.layer.masksToBounds = false
-        ChatBridgeDesignSystem.ShadowToken.applyCardShadow(to: cardView.layer)
+        cardView.backgroundColor = .systemBackground
+        cardView.layer.cornerRadius = 0
+        cardView.layer.masksToBounds = true
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
-        avatarView.layer.cornerRadius = 24
+        avatarView.layer.cornerRadius = 26
         avatarView.layer.masksToBounds = true
+        avatarView.setColors(Self.avatarColors(isPinned: false))
 
         avatarImageView.translatesAutoresizingMaskIntoConstraints = false
         avatarImageView.contentMode = .scaleAspectFill
@@ -599,33 +622,44 @@ final class RoundedConversationCell: UICollectionViewCell {
         avatarImageView.accessibilityIdentifier = "conversation.avatarImageView"
 
         avatarLabel.translatesAutoresizingMaskIntoConstraints = false
-        avatarLabel.font = .preferredFont(forTextStyle: .headline)
-        avatarLabel.textColor = .white
+        avatarLabel.font = UIFontMetrics(forTextStyle: .headline).scaledFont(
+            for: .systemFont(ofSize: 20, weight: .semibold)
+        )
+        avatarLabel.textColor = .secondaryLabel
         avatarLabel.textAlignment = .center
         avatarLabel.adjustsFontForContentSizeCategory = true
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.textColor = .label
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.numberOfLines = 1
 
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleLabel.font = .preferredFont(forTextStyle: .subheadline)
         subtitleLabel.textColor = .secondaryLabel
         subtitleLabel.adjustsFontForContentSizeCategory = true
         subtitleLabel.numberOfLines = 2
 
-        timeLabel.font = .preferredFont(forTextStyle: .caption2)
+        timeLabel.font = UIFontMetrics(forTextStyle: .caption1).scaledFont(
+            for: .systemFont(ofSize: 13, weight: .regular)
+        )
         timeLabel.textColor = .secondaryLabel
         timeLabel.adjustsFontForContentSizeCategory = true
         timeLabel.textAlignment = .right
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        mutedLabel.font = .preferredFont(forTextStyle: .caption2)
-        mutedLabel.textColor = .tertiaryLabel
-        mutedLabel.text = "Muted"
-        mutedLabel.adjustsFontForContentSizeCategory = true
-        mutedLabel.isHidden = true
+        [pinnedImageView, mutedImageView].forEach { imageView in
+            imageView.translatesAutoresizingMaskIntoConstraints = false
+            imageView.tintColor = .tertiaryLabel
+            imageView.contentMode = .scaleAspectFit
+            imageView.isHidden = true
+        }
+
+        statusIconStackView.translatesAutoresizingMaskIntoConstraints = false
+        statusIconStackView.axis = .horizontal
+        statusIconStackView.alignment = .center
+        statusIconStackView.spacing = ChatBridgeDesignSystem.SpacingToken.xs
+        statusIconStackView.addArrangedSubview(pinnedImageView)
+        statusIconStackView.addArrangedSubview(mutedImageView)
 
         statusStackView.translatesAutoresizingMaskIntoConstraints = false
         statusStackView.axis = .vertical
@@ -633,7 +667,10 @@ final class RoundedConversationCell: UICollectionViewCell {
         statusStackView.spacing = ChatBridgeDesignSystem.SpacingToken.xs
         statusStackView.addArrangedSubview(timeLabel)
         statusStackView.addArrangedSubview(unreadLabel)
-        statusStackView.addArrangedSubview(mutedLabel)
+        statusStackView.addArrangedSubview(statusIconStackView)
+
+        separatorView.translatesAutoresizingMaskIntoConstraints = false
+        separatorView.backgroundColor = .separator
 
         contentView.addSubview(cardView)
         cardView.addSubview(avatarView)
@@ -642,17 +679,20 @@ final class RoundedConversationCell: UICollectionViewCell {
         cardView.addSubview(titleLabel)
         cardView.addSubview(subtitleLabel)
         cardView.addSubview(statusStackView)
+        cardView.addSubview(separatorView)
 
         NSLayoutConstraint.activate([
-            cardView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 5),
-            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 16),
-            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -16),
-            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
+            cardView.topAnchor.constraint(equalTo: contentView.topAnchor),
+            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-            avatarView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 14),
+            avatarView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 20),
             avatarView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
-            avatarView.widthAnchor.constraint(equalToConstant: 48),
-            avatarView.heightAnchor.constraint(equalToConstant: 48),
+            avatarView.topAnchor.constraint(greaterThanOrEqualTo: cardView.topAnchor, constant: 10),
+            avatarView.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10),
+            avatarView.widthAnchor.constraint(equalToConstant: 52),
+            avatarView.heightAnchor.constraint(equalToConstant: 52),
 
             avatarLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
             avatarLabel.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),
@@ -664,19 +704,44 @@ final class RoundedConversationCell: UICollectionViewCell {
             avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
             avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
 
-            statusStackView.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 14),
-            statusStackView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -14),
-            statusStackView.widthAnchor.constraint(greaterThanOrEqualToConstant: 52),
+            statusStackView.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 11),
+            statusStackView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -20),
+            statusStackView.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10),
+            statusStackView.widthAnchor.constraint(greaterThanOrEqualToConstant: 58),
 
-            titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 13),
+            pinnedImageView.widthAnchor.constraint(equalToConstant: 13),
+            pinnedImageView.heightAnchor.constraint(equalToConstant: 13),
+            mutedImageView.widthAnchor.constraint(equalToConstant: 13),
+            mutedImageView.heightAnchor.constraint(equalToConstant: 13),
+
+            titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 11),
             titleLabel.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 12),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusStackView.leadingAnchor, constant: -10),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusStackView.leadingAnchor, constant: -8),
 
             subtitleLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 3),
             subtitleLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-            subtitleLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -14),
-            subtitleLabel.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -12)
+            subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusStackView.leadingAnchor, constant: -8),
+            subtitleLabel.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -11),
+
+            separatorView.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            separatorView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor),
+            separatorView.bottomAnchor.constraint(equalTo: cardView.bottomAnchor),
+            separatorView.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale)
         ])
+
+        applyTextStyle(hasUnread: false)
+    }
+
+    /// 根据未读状态切换 Messages 风格文字层级
+    private func applyTextStyle(hasUnread: Bool) {
+        titleLabel.font = UIFontMetrics(forTextStyle: .body).scaledFont(
+            for: .systemFont(ofSize: 17, weight: hasUnread ? .semibold : .regular)
+        )
+        subtitleLabel.font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(
+            for: .systemFont(ofSize: 15, weight: hasUnread ? .semibold : .regular)
+        )
+        subtitleLabel.textColor = hasUnread ? .label : .secondaryLabel
+        timeLabel.textColor = hasUnread ? .systemBlue : .secondaryLabel
     }
 
     /// 配置远程或本地头像图片
@@ -752,6 +817,17 @@ final class RoundedConversationCell: UICollectionViewCell {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.first.map { String($0).uppercased() } ?? "C"
     }
+
+    /// 生成 Messages 风格的低调默认头像色
+    private static func avatarColors(isPinned: Bool) -> [UIColor] {
+        if isPinned {
+            let color = UIColor.systemBlue.withAlphaComponent(0.18)
+            return [color, color]
+        }
+
+        let color = UIColor.tertiarySystemFill
+        return [color, color]
+    }
 }
 
 /// ChatBridge 未读数徽标标签
@@ -778,7 +854,7 @@ final class ChatBridgeUnreadBadgeLabel: UILabel {
     private func configure() {
         textAlignment = .center
         textColor = .white
-        backgroundColor = ChatBridgeDesignSystem.ColorToken.coral
+        backgroundColor = .systemBlue
         font = .preferredFont(forTextStyle: .caption2)
         adjustsFontForContentSizeCategory = true
         layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.badge

@@ -68,10 +68,12 @@ func login(
 
 @MainActor
 func openAccountActions(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-    let navigationAccountButton = app.navigationBars["ChatBridge"].buttons["Account"].firstMatch
-    let accountButton = navigationAccountButton.waitForExistence(timeout: 3)
-        ? navigationAccountButton
-        : app.buttons["conversationList.accountButton"].firstMatch
+    let messagesAccountButton = app.navigationBars["Messages"].buttons["Account"].firstMatch
+    let legacyAccountButton = app.navigationBars["ChatBridge"].buttons["Account"].firstMatch
+    let fallbackAccountButton = app.buttons["conversationList.accountButton"].firstMatch
+    let accountButton = messagesAccountButton.waitForExistence(timeout: 3)
+        ? messagesAccountButton
+        : (legacyAccountButton.exists ? legacyAccountButton : fallbackAccountButton)
 
     XCTAssertTrue(accountButton.waitForExistence(timeout: 5), "Expected account button", file: file, line: line)
     accountButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
@@ -79,7 +81,7 @@ func openAccountActions(in app: XCUIApplication, file: StaticString = #filePath,
         return
     }
 
-    app.coordinate(withNormalizedOffset: CGVector(dx: 0.88, dy: 0.08)).tap()
+    app.coordinate(withNormalizedOffset: CGVector(dx: 0.12, dy: 0.08)).tap()
     XCTAssertTrue(app.alerts["Account"].waitForExistence(timeout: 5), "Expected account actions alert", file: file, line: line)
 }
 

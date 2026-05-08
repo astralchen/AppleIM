@@ -18,8 +18,16 @@ final class LoginViewController: UIViewController {
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
 
+    /// 应用图标
+    private let iconImageView = UIImageView()
     /// 页面标题标签
     private let titleLabel = UILabel()
+    /// 页面副标题标签
+    private let subtitleLabel = UILabel()
+    /// 登录表单容器
+    private let formContainerView = UIView()
+    /// 输入框分割线
+    private let fieldSeparatorView = UIView()
     /// 账号输入框
     private let accountTextField = UITextField()
     /// 密码输入框
@@ -30,12 +38,10 @@ final class LoginViewController: UIViewController {
     private let loginButton = UIButton(type: .system)
     /// 登录加载指示器
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
-    /// 渐变背景
-    private let backgroundView = GradientBackgroundView()
-    /// 登录表单玻璃卡片
-    private let cardView = GlassContainerView()
-    /// 卡片垂直居中约束，用于键盘抬升
-    private var cardCenterYConstraint: NSLayoutConstraint?
+    /// 登录内容容器
+    private let contentContainerView = UIView()
+    /// 登录内容垂直居中约束，用于键盘抬升
+    private var contentCenterYConstraint: NSLayoutConstraint?
     /// 当前键盘抬升距离
     private var currentKeyboardLift: CGFloat = 0
     /// 键盘是否处于可见状态
@@ -77,19 +83,42 @@ final class LoginViewController: UIViewController {
         title = "Login"
         view.backgroundColor = .systemBackground
 
-        backgroundView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(backgroundView)
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.image = UIImage(systemName: "message.fill")
+        iconImageView.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 56, weight: .regular)
+        iconImageView.tintColor = .systemBlue
+        iconImageView.contentMode = .scaleAspectFit
+        iconImageView.setContentHuggingPriority(.required, for: .vertical)
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "ChatBridge"
-        titleLabel.font = .preferredFont(forTextStyle: .largeTitle)
+        titleLabel.text = "AppleIM"
+        titleLabel.font = .preferredFont(forTextStyle: .title1)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textAlignment = .center
-        titleLabel.textColor = ChatBridgeDesignSystem.ColorToken.ink
+        titleLabel.textColor = .label
+        titleLabel.numberOfLines = 0
+
+        subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
+        subtitleLabel.text = "Sign in to continue to Messages."
+        subtitleLabel.font = .preferredFont(forTextStyle: .subheadline)
+        subtitleLabel.adjustsFontForContentSizeCategory = true
+        subtitleLabel.textAlignment = .center
+        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.numberOfLines = 0
+
+        formContainerView.translatesAutoresizingMaskIntoConstraints = false
+        formContainerView.backgroundColor = ChatBridgeDesignSystem.ColorToken.appleLoginFieldBackground
+        formContainerView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleLoginField
+        formContainerView.layer.borderColor = UIColor.separator.withAlphaComponent(0.28).cgColor
+        formContainerView.layer.borderWidth = 0.5
+        formContainerView.layer.masksToBounds = true
+
+        fieldSeparatorView.translatesAutoresizingMaskIntoConstraints = false
+        fieldSeparatorView.backgroundColor = .separator
 
         accountTextField.translatesAutoresizingMaskIntoConstraints = false
         configureAuthTextField(accountTextField)
-        accountTextField.placeholder = "Account or phone"
+        accountTextField.placeholder = "Apple ID or account"
         accountTextField.textContentType = .username
         accountTextField.autocapitalizationType = .none
         accountTextField.autocorrectionType = .no
@@ -111,13 +140,16 @@ final class LoginViewController: UIViewController {
         errorLabel.font = .preferredFont(forTextStyle: .footnote)
         errorLabel.adjustsFontForContentSizeCategory = true
         errorLabel.numberOfLines = 0
-        errorLabel.textAlignment = .center
+        errorLabel.textAlignment = .natural
         errorLabel.isHidden = true
         errorLabel.accessibilityIdentifier = "login.errorLabel"
 
         loginButton.translatesAutoresizingMaskIntoConstraints = false
-        var loginConfiguration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .primary)
+        var loginConfiguration = UIButton.Configuration.filled()
         loginConfiguration.title = "Log In"
+        loginConfiguration.baseBackgroundColor = .systemBlue
+        loginConfiguration.baseForegroundColor = .white
+        loginConfiguration.cornerStyle = .capsule
         loginConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 18)
         loginConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes
@@ -132,62 +164,101 @@ final class LoginViewController: UIViewController {
         activityIndicator.hidesWhenStopped = true
         activityIndicator.accessibilityIdentifier = "login.activityIndicator"
 
-        let stackView = UIStackView(arrangedSubviews: [
+        formContainerView.addSubview(accountTextField)
+        formContainerView.addSubview(fieldSeparatorView)
+        formContainerView.addSubview(passwordTextField)
+
+        let headerStackView = UIStackView(arrangedSubviews: [
+            iconImageView,
             titleLabel,
-            accountTextField,
-            passwordTextField,
+            subtitleLabel
+        ])
+        headerStackView.translatesAutoresizingMaskIntoConstraints = false
+        headerStackView.axis = .vertical
+        headerStackView.spacing = 10
+        headerStackView.alignment = .center
+        headerStackView.setCustomSpacing(14, after: iconImageView)
+
+        let stackView = UIStackView(arrangedSubviews: [
+            headerStackView,
+            formContainerView,
             errorLabel,
             loginButton,
             activityIndicator
         ])
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .vertical
-        stackView.spacing = 16
+        stackView.spacing = 14
         stackView.alignment = .fill
-        stackView.setCustomSpacing(28, after: titleLabel)
+        stackView.setCustomSpacing(30, after: headerStackView)
+        stackView.setCustomSpacing(18, after: formContainerView)
 
-        cardView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(cardView)
-        cardView.contentView.addSubview(stackView)
+        contentContainerView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentContainerView)
+        contentContainerView.addSubview(stackView)
 
-        let centerYConstraint = cardView.centerYAnchor.constraint(
+        let centerYConstraint = contentContainerView.centerYAnchor.constraint(
             equalTo: view.safeAreaLayoutGuide.centerYAnchor,
             constant: -24
         )
         centerYConstraint.priority = .defaultHigh
-        cardCenterYConstraint = centerYConstraint
+        contentCenterYConstraint = centerYConstraint
+        let contentTopConstraint = contentContainerView.topAnchor.constraint(
+            greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor,
+            constant: 24
+        )
+        contentTopConstraint.priority = .defaultLow
+        let contentWidthConstraint = contentContainerView.widthAnchor.constraint(equalTo: view.layoutMarginsGuide.widthAnchor)
+        contentWidthConstraint.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
-            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
-            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
             centerYConstraint,
-            cardView.topAnchor.constraint(greaterThanOrEqualTo: view.safeAreaLayoutGuide.topAnchor, constant: 16),
-            cardView.leadingAnchor.constraint(equalTo: view.layoutMarginsGuide.leadingAnchor),
-            cardView.trailingAnchor.constraint(equalTo: view.layoutMarginsGuide.trailingAnchor),
+            contentTopConstraint,
+            contentContainerView.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
+            contentContainerView.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
+            contentContainerView.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -24),
+            contentContainerView.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
+            contentWidthConstraint,
+            contentContainerView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
 
-            stackView.topAnchor.constraint(equalTo: cardView.contentView.topAnchor, constant: 28),
-            stackView.leadingAnchor.constraint(equalTo: cardView.contentView.leadingAnchor, constant: 22),
-            stackView.trailingAnchor.constraint(equalTo: cardView.contentView.trailingAnchor, constant: -22),
-            stackView.bottomAnchor.constraint(equalTo: cardView.contentView.bottomAnchor, constant: -24),
-            accountTextField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            passwordTextField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            loginButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 48)
+            stackView.topAnchor.constraint(equalTo: contentContainerView.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: contentContainerView.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: contentContainerView.trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: contentContainerView.bottomAnchor),
+
+            iconImageView.widthAnchor.constraint(equalToConstant: 72),
+            iconImageView.heightAnchor.constraint(equalToConstant: 72),
+
+            accountTextField.topAnchor.constraint(equalTo: formContainerView.topAnchor),
+            accountTextField.leadingAnchor.constraint(equalTo: formContainerView.leadingAnchor),
+            accountTextField.trailingAnchor.constraint(equalTo: formContainerView.trailingAnchor),
+            accountTextField.heightAnchor.constraint(greaterThanOrEqualToConstant: 50),
+
+            fieldSeparatorView.topAnchor.constraint(equalTo: accountTextField.bottomAnchor),
+            fieldSeparatorView.leadingAnchor.constraint(equalTo: formContainerView.leadingAnchor, constant: 16),
+            fieldSeparatorView.trailingAnchor.constraint(equalTo: formContainerView.trailingAnchor),
+            fieldSeparatorView.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale),
+
+            passwordTextField.topAnchor.constraint(equalTo: fieldSeparatorView.bottomAnchor),
+            passwordTextField.leadingAnchor.constraint(equalTo: formContainerView.leadingAnchor),
+            passwordTextField.trailingAnchor.constraint(equalTo: formContainerView.trailingAnchor),
+            passwordTextField.bottomAnchor.constraint(equalTo: formContainerView.bottomAnchor),
+            passwordTextField.heightAnchor.constraint(greaterThanOrEqualToConstant: 50),
+
+            loginButton.heightAnchor.constraint(greaterThanOrEqualToConstant: ChatBridgeDesignSystem.SpacingToken.appleLoginButtonHeight)
         ])
     }
 
     /// 配置账号和密码输入框的统一样式
     private func configureAuthTextField(_ textField: UITextField) {
         textField.borderStyle = .none
-        textField.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.72)
-        textField.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.field
-        textField.layer.masksToBounds = true
+        textField.backgroundColor = .clear
         textField.font = .preferredFont(forTextStyle: .body)
         textField.adjustsFontForContentSizeCategory = true
+        textField.clearButtonMode = .whileEditing
+        textField.tintColor = .systemBlue
 
-        let spacer = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 1))
+        let spacer = UIView(frame: CGRect(x: 0, y: 0, width: 16, height: 1))
         textField.leftView = spacer
         textField.leftViewMode = .always
     }
@@ -260,7 +331,7 @@ final class LoginViewController: UIViewController {
         viewModel.login()
     }
 
-    /// 键盘 frame 变化时计算登录卡片需要抬升的距离
+    /// 键盘 frame 变化时计算登录内容需要抬升的距离
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
         guard
             let endFrameValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
@@ -277,8 +348,8 @@ final class LoginViewController: UIViewController {
 
         view.layoutIfNeeded()
         let desiredBottom = keyboardTop - 16
-        let overlap = max(0, cardView.frame.maxY - desiredBottom)
-        let desiredLift = overlap > 0 ? overlap + 52 : 0
+        let overlap = max(0, contentContainerView.frame.maxY - desiredBottom)
+        let desiredLift = overlap > 0 ? overlap + 32 : 0
 
         if !isKeyboardVisible || desiredLift > currentKeyboardLift + 48 {
             isKeyboardVisible = true
@@ -295,7 +366,7 @@ final class LoginViewController: UIViewController {
     /// 应用键盘抬升动画
     private func applyKeyboardLift(_ lift: CGFloat, notification: Notification) {
         currentKeyboardLift = lift
-        cardCenterYConstraint?.constant = -24 - lift
+        contentCenterYConstraint?.constant = -24 - lift
 
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
         let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 0
