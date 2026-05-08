@@ -105,8 +105,18 @@ protocol MessageSendService: Sendable {
     /// - Returns: 发送结果
     func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
     /// 发送视频消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的视频消息
+    ///   - upload: 视频上传确认信息
+    /// - Returns: 发送结果
     func sendVideo(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
     /// 发送文件消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的文件消息
+    ///   - upload: 文件上传确认信息
+    /// - Returns: 发送结果
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
 }
 
@@ -119,6 +129,11 @@ nonisolated struct MockMessageSendService: MessageSendService {
     /// 模拟的延迟（纳秒）
     private let delayNanoseconds: UInt64
 
+    /// 初始化
+    ///
+    /// - Parameters:
+    ///   - result: 模拟的发送结果，默认为成功
+    ///   - delayNanoseconds: 模拟的延迟（纳秒），默认 300ms
     init(
         result: MessageSendResult = .success(MessageSendAck(serverMessageID: "", sequence: 0, serverTime: 0)),
         delayNanoseconds: UInt64 = 300_000_000
@@ -127,6 +142,12 @@ nonisolated struct MockMessageSendService: MessageSendService {
         self.delayNanoseconds = delayNanoseconds
     }
 
+    /// 发送文本消息
+    ///
+    /// 模拟延迟后返回配置的结果
+    ///
+    /// - Parameter message: 存储的消息
+    /// - Returns: 发送结果
     func sendText(message: StoredMessage) async -> MessageSendResult {
         do {
             try await Task.sleep(nanoseconds: delayNanoseconds)
@@ -148,22 +169,52 @@ nonisolated struct MockMessageSendService: MessageSendService {
         }
     }
 
+    /// 发送图片消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的图片消息
+    ///   - upload: 图片上传确认信息
+    /// - Returns: 发送结果
     func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         await sendMedia(message: message)
     }
 
+    /// 发送语音消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的语音消息
+    ///   - upload: 语音上传确认信息
+    /// - Returns: 发送结果
     func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         await sendMedia(message: message)
     }
 
+    /// 发送视频消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的视频消息
+    ///   - upload: 视频上传确认信息
+    /// - Returns: 发送结果
     func sendVideo(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         await sendMedia(message: message)
     }
 
+    /// 发送文件消息
+    ///
+    /// - Parameters:
+    ///   - message: 存储的文件消息
+    ///   - upload: 文件上传确认信息
+    /// - Returns: 发送结果
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         await sendMedia(message: message)
     }
 
+    /// 发送媒体消息（内部实现）
+    ///
+    /// 模拟延迟后返回配置的结果
+    ///
+    /// - Parameter message: 存储的消息
+    /// - Returns: 发送结果
     private func sendMedia(message: StoredMessage) async -> MessageSendResult {
         do {
             try await Task.sleep(nanoseconds: delayNanoseconds)

@@ -17,6 +17,11 @@ protocol ApplicationBadgeManaging: Sendable {
 
 /// 基于 UIKit 的 App 角标管理器
 nonisolated struct UIKitApplicationBadgeManager: ApplicationBadgeManaging {
+    /// 设置 App 图标角标数量
+    ///
+    /// 在主线程更新 UIApplication 的角标数量
+    ///
+    /// - Parameter count: 角标数量（负数会被转换为0）
     func setApplicationIconBadgeNumber(_ count: Int) async {
         await MainActor.run {
             UIApplication.shared.applicationIconBadgeNumber = max(0, count)
@@ -71,6 +76,9 @@ nonisolated struct IncomingMessageNotificationPayload: Equatable, Sendable {
         self.hiddenPreviewText = hiddenPreviewText
     }
 
+    /// 通知正文
+    ///
+    /// 根据 showPreview 设置返回消息摘要或隐藏预览文本
     var notificationBody: String {
         showPreview ? messageDigest : hiddenPreviewText
     }
@@ -85,15 +93,36 @@ protocol LocalNotificationManaging: Sendable {
 }
 
 /// 基于 UserNotifications 的本地通知管理器
+///
+/// ## 职责
+///
+/// 1. 请求通知授权
+/// 2. 调度新消息通知
+/// 3. 处理前台通知展示策略
+///
+/// ## 并发安全
+///
+/// - 标记为 `@unchecked Sendable`，因为 UNUserNotificationCenter 是线程安全的
 final class UserNotificationCenterNotificationManager: NSObject, LocalNotificationManaging, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private let center: UNUserNotificationCenter
 
+    /// 初始化
+    ///
+    /// 设置通知中心的 delegate 为自己
+    ///
+    /// - Parameter center: 通知中心，默认为 current()
     init(center: UNUserNotificationCenter = .current()) {
         self.center = center
         super.init()
         center.delegate = self
     }
 
+    /// 请求通知授权
+    ///
+    /// 请求 alert、sound、badge 权限
+    ///
+    /// - Returns: 是否授权
+    /// - Throws: 授权请求错误
     func requestAuthorization() async throws -> Bool {
         try await withCheckedThrowingContinuation { continuation in
             center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
@@ -106,6 +135,16 @@ final class UserNotificationCenterNotificationManager: NSObject, LocalNotificati
         }
     }
 
+    /// 调度收到新消息的本地通知
+    ///
+    /// 流程：
+    /// 1. 检查通知是否启用且会话未免打扰
+    /// 2. 构建通知内容（标题、正文、声音、角标）
+    /// 3. 添加用户信息（用于点击跳转）
+    /// 4. 立即投递通知（trigger 为 nil）
+    ///
+    /// - Parameter payload: 通知载荷
+    /// - Throws: 通知投递错误
     func scheduleIncomingMessageNotification(_ payload: IncomingMessageNotificationPayload) async throws {
         guard payload.isEnabled, !payload.isMuted else {
             return
@@ -141,6 +180,14 @@ final class UserNotificationCenterNotificationManager: NSObject, LocalNotificati
         }
     }
 
+    /// 前台通知展示策略
+    ///
+    /// 当 App 在前台时收到通知，返回空选项表示不展示
+    ///
+    /// - Parameters:
+    ///   - center: 通知中心
+    ///   - notification: 通知对象
+    ///   - completionHandler: 完成回调
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,

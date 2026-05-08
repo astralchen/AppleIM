@@ -8,12 +8,18 @@ import Foundation
 
 /// 串联数据库完整性检查、FTS 重建和媒体索引重建。
 nonisolated struct DataRepairService: Sendable {
+    /// 当前用户 ID
     private let userID: UserID
+    /// 数据库操作 Actor
     private let database: DatabaseActor
+    /// 当前账号存储路径
     private let paths: AccountStoragePaths
+    /// 本地聊天仓储
     private let repository: LocalChatRepository
+    /// 搜索索引 Actor
     private let searchIndex: SearchIndexActor
 
+    /// 初始化数据修复服务
     init(
         userID: UserID,
         database: DatabaseActor,
@@ -28,6 +34,9 @@ nonisolated struct DataRepairService: Sendable {
         self.searchIndex = searchIndex
     }
 
+    /// 运行完整的数据修复流程
+    ///
+    /// 顺序执行数据库完整性检查、FTS 全量重建和媒体索引重建，并聚合每一步的结果。
     func run() async -> DataRepairReport {
         var integrityResults: [DatabaseIntegrityCheckResult] = []
         var mediaIndexRebuildResult: MediaIndexRebuildResult?
@@ -85,6 +94,7 @@ nonisolated struct DataRepairService: Sendable {
         )
     }
 
+    /// 启动时按维护元数据判断是否需要运行修复
     func runStartupIfNeeded() async -> DataRepairReport? {
         if let metadata = try? await database.loadMigrationMetadata(paths: paths),
            metadata.lastIntegrityCheckAt != nil,
@@ -95,18 +105,22 @@ nonisolated struct DataRepairService: Sendable {
         return await run()
     }
 
+    /// 创建成功步骤报告
     private static func success(_ step: DataRepairStep) -> DataRepairStepReport {
         DataRepairStepReport(step: step, isSuccessful: true, errorDescription: nil)
     }
 
+    /// 根据错误创建失败步骤报告
     private static func failure(_ step: DataRepairStep, error: Error) -> DataRepairStepReport {
         failure(step, description: safeErrorDescription(error))
     }
 
+    /// 根据安全错误描述创建失败步骤报告
     private static func failure(_ step: DataRepairStep, description: String) -> DataRepairStepReport {
         DataRepairStepReport(step: step, isSuccessful: false, errorDescription: description)
     }
 
+    /// 生成不泄露路径、SQL 或参数的错误描述
     private static func safeErrorDescription(_ error: Error) -> String {
         if let databaseError = error as? DatabaseActorError {
             return databaseError.safeDescription
@@ -115,6 +129,7 @@ nonisolated struct DataRepairService: Sendable {
         return String(describing: type(of: error))
     }
 
+    /// 当前秒级时间戳
     private static func currentTimestamp() -> Int64 {
         Int64(Date().timeIntervalSince1970)
     }

@@ -26,6 +26,7 @@ nonisolated struct VoiceRecordingFile: Equatable, Sendable {
     /// 文件扩展名
     let fileExtension: String?
 
+    /// 初始化录音文件描述
     init(fileURL: URL, durationMilliseconds: Int, fileExtension: String? = "m4a") {
         self.fileURL = fileURL
         self.durationMilliseconds = durationMilliseconds
@@ -35,7 +36,9 @@ nonisolated struct VoiceRecordingFile: Equatable, Sendable {
 
 /// 输入栏中待发送的媒体附件草稿。
 nonisolated enum ChatComposerMedia: Sendable {
+    /// 待发送图片数据
     case image(data: Data, preferredFileExtension: String?)
+    /// 待发送视频文件
     case video(fileURL: URL, preferredFileExtension: String?)
 }
 
@@ -113,6 +116,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     /// 重试策略
     private let retryPolicy: MessageRetryPolicy
 
+    /// 初始化本地聊天用例
     init(
         userID: UserID,
         conversationID: ConversationID,
@@ -139,12 +143,14 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         self.retryPolicy = retryPolicy
     }
 
+    /// 加载首屏消息并标记会话已读
     func loadInitialMessages() async throws -> ChatMessagePage {
         try await conversationRepository?.markConversationRead(conversationID: conversationID, userID: userID)
 
         return try await loadMessagePage(limit: Self.initialMessageLimit, beforeSortSequence: nil)
     }
 
+    /// 按游标加载更早消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
         try await loadMessagePage(limit: limit, beforeSortSequence: beforeSortSequence)
     }
@@ -174,14 +180,17 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 加载当前会话草稿
     func loadDraft() async throws -> String? {
         try await repository.draft(conversationID: conversationID, userID: userID)
     }
 
+    /// 保存当前会话草稿
     func saveDraft(_ text: String) async throws {
         try await repository.saveDraft(conversationID: conversationID, userID: userID, text: text)
     }
 
+    /// 发送文本消息并流式返回发送状态
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -245,6 +254,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送图片消息并流式返回上传和发送状态
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -285,6 +295,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送语音消息并流式返回上传和发送状态
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             guard recording.durationMilliseconds >= Self.minimumVoiceDurationMilliseconds else {
@@ -331,6 +342,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送视频消息并流式返回上传和发送状态
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -371,6 +383,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送文件消息并流式返回上传和发送状态
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -408,6 +421,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 标记语音消息已播放并返回更新后的行状态
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
         guard let existingMessage = try await repository.message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)
@@ -426,6 +440,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         return row(from: updatedMessage, currentUserID: userID)
     }
 
+    /// 重发失败消息并流式返回重发状态
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -498,10 +513,12 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 删除消息
     func delete(messageID: MessageID) async throws {
         try await repository.markMessageDeleted(messageID: messageID, userID: userID)
     }
 
+    /// 撤回消息
     func revoke(messageID: MessageID) async throws {
         _ = try await repository.revokeMessage(
             messageID: messageID,
@@ -510,6 +527,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 更新消息发送状态并按需写入恢复任务
     private func updateSendStatus(
         messageID: MessageID,
         status: MessageSendStatus,
@@ -735,6 +753,9 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 上传视频并发送视频消息体
+    ///
+    /// 视频已完成本地落盘和消息入库，这里负责上传、发送 ack 和失败恢复任务。
     private func uploadAndSendVideo(
         _ message: StoredMessage,
         continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
@@ -804,6 +825,9 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 上传文件并发送文件消息体
+    ///
+    /// 文件已完成本地落盘和消息入库，这里负责上传、发送 ack 和失败恢复任务。
     private func uploadAndSendFile(
         _ message: StoredMessage,
         continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
@@ -873,6 +897,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 创建图片上传恢复任务输入参数
     private func makeImageUploadJobInput(
         for message: StoredMessage,
         failureReason: String?
@@ -897,6 +922,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 标记图片上传恢复任务成功
     private func markImageUploadJobSuccess(for message: StoredMessage) async throws {
         guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
             return
@@ -909,6 +935,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 创建视频上传恢复任务输入参数
     private func makeVideoUploadJobInput(
         for message: StoredMessage,
         failureReason: String?
@@ -933,6 +960,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 创建文件上传恢复任务输入参数
     private func makeFileUploadJobInput(
         for message: StoredMessage,
         failureReason: String?
@@ -957,6 +985,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 标记视频上传恢复任务成功
     private func markVideoUploadJobSuccess(for message: StoredMessage) async throws {
         guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
             return
@@ -969,6 +998,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 标记文件上传恢复任务成功
     private func markFileUploadJobSuccess(for message: StoredMessage) async throws {
         guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
             return
@@ -981,10 +1011,12 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 当前秒级时间戳
     private static func currentTimestamp() -> Int64 {
         Int64(Date().timeIntervalSince1970)
     }
 
+    /// 将存储消息转换为聊天行状态
     nonisolated private func row(
         from message: StoredMessage,
         currentUserID: UserID,
@@ -1021,6 +1053,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
+    /// 生成消息主文本
     nonisolated private static func rowText(for message: StoredMessage) -> String {
         if message.type == .voice, let voice = message.voice {
             return "Voice \(voiceDurationText(milliseconds: voice.durationMilliseconds))"
@@ -1033,11 +1066,13 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         return message.text ?? ""
     }
 
+    /// 格式化语音或视频时长
     nonisolated private static func voiceDurationText(milliseconds: Int) -> String {
         let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
         return "\(seconds)s"
     }
 
+    /// 生成发出消息状态文本
     nonisolated private static func statusText(for message: StoredMessage) -> String? {
         guard message.direction == .outgoing else {
             return nil
@@ -1055,6 +1090,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    /// 格式化消息时间
     nonisolated private static func timeText(from timestamp: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
         let formatter = DateFormatter()
@@ -1064,14 +1100,22 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     }
 }
 
+/// 待处理消息任务重试运行器
 nonisolated struct PendingMessageRetryRunner: Sendable {
+    /// 用户 ID
     private let userID: UserID
+    /// 消息仓储
     private let messageRepository: any MessageRepository
+    /// 待处理任务仓储
     private let pendingJobRepository: any PendingJobRepository
+    /// 消息发送服务
     private let sendService: any MessageSendService
+    /// 媒体上传服务
     private let mediaUploadService: any MediaUploadService
+    /// 重试策略
     private let retryPolicy: MessageRetryPolicy
 
+    /// 初始化待处理任务重试运行器
     init(
         userID: UserID,
         messageRepository: any MessageRepository,
@@ -1141,6 +1185,7 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         )
     }
 
+    /// 执行文本消息重发任务
     private func runMessageResendJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
         let payload = try JSONDecoder().decode(MessageResendPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
         let messageID = MessageID(rawValue: payload.messageID)
@@ -1165,6 +1210,7 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         }
     }
 
+    /// 执行图片上传恢复任务
     private func runImageUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
         let payload = try JSONDecoder().decode(ImageUploadPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
         let messageID = MessageID(rawValue: payload.messageID)
@@ -1238,6 +1284,7 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         return try await retryOrExhaust(job, now: now)
     }
 
+    /// 执行视频上传恢复任务
     private func runVideoUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
         let payload = try JSONDecoder().decode(VideoUploadPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
         let messageID = MessageID(rawValue: payload.messageID)
@@ -1311,6 +1358,7 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         return try await retryOrExhaust(job, now: now)
     }
 
+    /// 根据重试次数重新调度或标记耗尽
     private func retryOrExhaust(_ job: PendingJob, now: Int64) async throws -> PendingJobAttemptResult {
         if job.retryCount + 1 >= job.maxRetryCount {
             try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .failed, nextRetryAt: nil)
@@ -1323,15 +1371,21 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
     }
 }
 
+/// 单个待处理任务尝试结果
 nonisolated private struct PendingJobAttemptResult: Equatable, Sendable {
+    /// 是否实际发起尝试
     let attempted: Bool
+    /// 是否重试成功
     let succeeded: Bool
+    /// 是否已重新调度
     let rescheduled: Bool
+    /// 是否已耗尽重试次数
     let exhausted: Bool
 }
 
 /// MessageSendResult 扩展
 private extension MessageSendResult {
+    /// 发送失败原因
     var failureReason: MessageSendFailureReason? {
         guard case let .failure(reason) = self else {
             return nil
@@ -1341,16 +1395,26 @@ private extension MessageSendResult {
     }
 }
 
+/// 基于 ChatStoreProvider 的聊天用例代理
 nonisolated struct StoreBackedChatUseCase: ChatUseCase {
+    /// 用户 ID
     private let userID: UserID
+    /// 会话 ID
     private let conversationID: ConversationID
+    /// 当前账号头像 URL
     private let currentUserAvatarURL: String?
+    /// 会话头像 URL
     private let conversationAvatarURL: String?
+    /// 聊天存储 Provider
     private let storeProvider: ChatStoreProvider
+    /// 消息发送服务
     private let sendService: any MessageSendService
+    /// 媒体文件存储
     private let mediaFileStore: any MediaFileStoring
+    /// 媒体上传服务
     private let mediaUploadService: any MediaUploadService
 
+    /// 初始化基于存储 Provider 的聊天用例
     init(
         userID: UserID,
         conversationID: ConversationID,
@@ -1371,30 +1435,35 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         self.mediaUploadService = mediaUploadService
     }
 
+    /// 加载首屏消息
     func loadInitialMessages() async throws -> ChatMessagePage {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.loadInitialMessages()
     }
 
+    /// 按游标加载更早消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
     }
 
+    /// 加载当前会话草稿
     func loadDraft() async throws -> String? {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.loadDraft()
     }
 
+    /// 保存当前会话草稿
     func saveDraft(_ text: String) async throws {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         try await useCase.saveDraft(text)
     }
 
+    /// 发送文本消息并透传本地用例的状态流
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1418,6 +1487,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送图片消息并透传本地用例的状态流
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1441,6 +1511,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送语音消息并透传本地用例的状态流
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1464,6 +1535,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送视频消息并透传本地用例的状态流
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1487,6 +1559,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
+    /// 发送文件消息并透传本地用例的状态流
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1510,12 +1583,14 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
+    /// 标记语音消息已播放
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.markVoicePlayed(messageID: messageID)
     }
 
+    /// 重发失败消息并透传本地用例的状态流
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1539,18 +1614,21 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
+    /// 删除消息
     func delete(messageID: MessageID) async throws {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         try await useCase.delete(messageID: messageID)
     }
 
+    /// 撤回消息
     func revoke(messageID: MessageID) async throws {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         try await useCase.revoke(messageID: messageID)
     }
 
+    /// 基于最新 repository 创建本地聊天用例
     private func makeLocalUseCase(repository: LocalChatRepository) -> LocalChatUseCase {
         LocalChatUseCase(
             userID: userID,

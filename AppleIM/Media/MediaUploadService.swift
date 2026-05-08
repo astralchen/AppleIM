@@ -59,10 +59,14 @@ protocol MediaUploadService: Sendable {
 ///
 /// 用于本地开发和测试，分段发布进度并返回稳定的 CDN URL。
 nonisolated struct MockMediaUploadService: MediaUploadService {
+    /// 最终上传结果模板
     private let result: MediaUploadEvent
+    /// 上传进度步进值
     private let progressSteps: [Double]
+    /// 每个进度事件之间的延迟
     private let delayNanoseconds: UInt64
 
+    /// 初始化 Mock 上传服务
     init(
         result: MediaUploadEvent? = nil,
         progressSteps: [Double] = [0.2, 0.5, 0.8, 1.0],
@@ -79,22 +83,27 @@ nonisolated struct MockMediaUploadService: MediaUploadService {
         self.delayNanoseconds = delayNanoseconds
     }
 
+    /// 上传图片消息
     nonisolated func uploadImage(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
         upload(kind: "image", message: message, mediaID: message.image?.mediaID)
     }
 
+    /// 上传语音消息
     nonisolated func uploadVoice(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
         upload(kind: "voice", message: message, mediaID: message.voice?.mediaID)
     }
 
+    /// 上传视频消息
     nonisolated func uploadVideo(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
         upload(kind: "video", message: message, mediaID: message.video?.mediaID)
     }
 
+    /// 上传文件消息
     nonisolated func uploadFile(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
         upload(kind: "file", message: message, mediaID: message.file?.mediaID)
     }
 
+    /// 生成统一的 Mock 上传事件流
     private nonisolated func upload(kind: String, message: StoredMessage, mediaID: String?) -> AsyncStream<MediaUploadEvent> {
         AsyncStream { continuation in
             let task = Task {

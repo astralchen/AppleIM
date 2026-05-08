@@ -19,6 +19,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 登录态缓存
     private let sessionStore: any AccountSessionStore = UserDefaultsAccountSessionStore()
 
+    /// 场景连接到会话
+    ///
+    /// 流程：
+    /// 1. 创建主窗口
+    /// 2. 检查是否需要重置会话（UI 测试）
+    /// 3. 加载已保存的会话，显示主界面或登录界面
+    /// 4. 显示窗口
+    ///
+    /// - Parameters:
+    ///   - scene: UI 场景
+    ///   - session: 场景会话
+    ///   - connectionOptions: 连接选项
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
 
@@ -38,12 +50,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
     }
 
+    /// 场景断开连接
+    ///
+    /// 场景被系统释放时调用
+    ///
+    /// - Parameter scene: UI 场景
     func sceneDidDisconnect(_ scene: UIScene) {
     }
 
     /// 场景变为活跃状态
     ///
     /// 触发待处理任务的重试
+    ///
+    /// - Parameter scene: UI 场景
     func sceneDidBecomeActive(_ scene: UIScene) {
         guard dependencies?.isUITesting != true else {
             return
@@ -53,12 +72,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         dependencies?.refreshApplicationBadge()
     }
 
+    /// 场景即将变为非活跃状态
+    ///
+    /// 场景失去焦点时调用
+    ///
+    /// - Parameter scene: UI 场景
     func sceneWillResignActive(_ scene: UIScene) {
     }
 
     /// 场景即将进入前台
     ///
     /// 触发待处理任务的重试
+    ///
+    /// - Parameter scene: UI 场景
     func sceneWillEnterForeground(_ scene: UIScene) {
         guard dependencies?.isUITesting != true else {
             return
@@ -68,14 +94,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         dependencies?.refreshApplicationBadge()
     }
 
+    /// 场景进入后台
+    ///
+    /// 场景进入后台时调用
+    ///
+    /// - Parameter scene: UI 场景
     func sceneDidEnterBackground(_ scene: UIScene) {
     }
 
+    /// 显示登录界面
+    ///
+    /// 清空依赖容器，显示登录页面
+    ///
+    /// - Parameter window: 主窗口
     private func showLoginInterface(in window: UIWindow) {
         dependencies = nil
         window.rootViewController = makeLoginViewController()
     }
 
+    /// 结束当前会话
+    ///
+    /// 清空会话缓存，返回登录界面
     private func endCurrentSession() {
         sessionStore.clearSession()
         guard let window else {
@@ -86,6 +125,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         showLoginInterface(in: window)
     }
 
+    /// 创建登录视图控制器
+    ///
+    /// 创建登录页面，登录成功后显示主界面
+    ///
+    /// - Returns: 登录视图控制器
     private func makeLoginViewController() -> UIViewController {
         let viewModel = LoginViewModel(
             authService: LocalAccountAuthService(),
@@ -100,6 +144,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
+    /// 显示主界面
+    ///
+    /// 流程：
+    /// 1. 创建依赖容器
+    /// 2. 请求通知授权（非 UI 测试）
+    /// 3. 启动网络恢复（非 UI 测试）
+    /// 4. 刷新应用角标
+    /// 5. 运行启动数据修复
+    /// 6. 创建会话列表导航控制器
+    ///
+    /// - Parameters:
+    ///   - session: 账号会话
+    ///   - window: 主窗口
     private func showMainInterface(for session: AccountSession, in window: UIWindow) {
         do {
             let dependencies = try AppDependencyContainer(accountID: session.userID, accountAvatarURL: session.avatarURL)

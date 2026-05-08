@@ -104,8 +104,18 @@ protocol MediaFileStoring: Sendable {
     /// - Returns: 存储的语音文件信息
     func saveVoice(recordingURL: URL, durationMilliseconds: Int, preferredFileExtension: String?) async throws -> StoredMediaVoiceFile
     /// 保存视频文件并生成封面图
+    ///
+    /// - Parameters:
+    ///   - fileURL: 视频文件 URL
+    ///   - preferredFileExtension: 首选文件扩展名
+    /// - Returns: 存储的视频文件信息
+    /// - Throws: 视频文件无效或处理失败
     func saveVideo(fileURL: URL, preferredFileExtension: String?) async throws -> StoredMediaVideoFile
     /// 保存普通文件
+    ///
+    /// - Parameter fileURL: 文件 URL
+    /// - Returns: 存储的文件信息
+    /// - Throws: 文件无效或保存失败
     func saveFile(fileURL: URL) async throws -> StoredMediaDocumentFile
 }
 
@@ -117,6 +127,12 @@ actor AccountMediaFileStore: MediaFileStoring {
     private let storageService: any AccountStorageService
     private let processingOptions: MediaImageProcessingOptions
 
+    /// 初始化
+    ///
+    /// - Parameters:
+    ///   - accountID: 账号 ID
+    ///   - storageService: 存储服务
+    ///   - processingOptions: 图片处理选项
     init(
         accountID: UserID,
         storageService: any AccountStorageService,
@@ -127,12 +143,31 @@ actor AccountMediaFileStore: MediaFileStoring {
         self.processingOptions = processingOptions
     }
 
+    /// 保存图片
+    ///
+    /// 准备存储路径后委托给 MediaFileActor 处理
+    ///
+    /// - Parameters:
+    ///   - data: 图片数据
+    ///   - preferredFileExtension: 首选文件扩展名
+    /// - Returns: 存储的图片文件信息
+    /// - Throws: 存储准备失败或图片处理失败
     func saveImage(data: Data, preferredFileExtension: String?) async throws -> StoredMediaImageFile {
         let paths = try await storageService.prepareStorage(for: accountID)
         let fileStore = await MediaFileActor(paths: paths, processingOptions: processingOptions)
         return try await fileStore.saveImage(data: data, preferredFileExtension: preferredFileExtension)
     }
 
+    /// 保存语音
+    ///
+    /// 准备存储路径后委托给 MediaFileActor 处理
+    ///
+    /// - Parameters:
+    ///   - recordingURL: 临时录音文件 URL
+    ///   - durationMilliseconds: 录音时长（毫秒）
+    ///   - preferredFileExtension: 首选文件扩展名
+    /// - Returns: 存储的语音文件信息
+    /// - Throws: 存储准备失败或语音文件无效
     func saveVoice(recordingURL: URL, durationMilliseconds: Int, preferredFileExtension: String?) async throws -> StoredMediaVoiceFile {
         let paths = try await storageService.prepareStorage(for: accountID)
         let fileStore = await MediaFileActor(paths: paths, processingOptions: processingOptions)
@@ -143,12 +178,28 @@ actor AccountMediaFileStore: MediaFileStoring {
         )
     }
 
+    /// 保存视频文件并生成封面图
+    ///
+    /// 准备存储路径后委托给 MediaFileActor 处理
+    ///
+    /// - Parameters:
+    ///   - fileURL: 视频文件 URL
+    ///   - preferredFileExtension: 首选文件扩展名
+    /// - Returns: 存储的视频文件信息
+    /// - Throws: 存储准备失败或视频处理失败
     func saveVideo(fileURL: URL, preferredFileExtension: String?) async throws -> StoredMediaVideoFile {
         let paths = try await storageService.prepareStorage(for: accountID)
         let fileStore = await MediaFileActor(paths: paths, processingOptions: processingOptions)
         return try await fileStore.saveVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
     }
 
+    /// 保存普通文件
+    ///
+    /// 准备存储路径后委托给 MediaFileActor 处理
+    ///
+    /// - Parameter fileURL: 文件 URL
+    /// - Returns: 存储的文件信息
+    /// - Throws: 存储准备失败或文件无效
     func saveFile(fileURL: URL) async throws -> StoredMediaDocumentFile {
         let paths = try await storageService.prepareStorage(for: accountID)
         let fileStore = await MediaFileActor(paths: paths, processingOptions: processingOptions)

@@ -6,21 +6,32 @@
 
 import Foundation
 
+/// 搜索索引修复任务的待处理载荷
 nonisolated private struct SearchIndexRepairJobPayload: Codable, Equatable, Sendable {
+    /// 修复范围，例如 message 或 conversation
     let scope: String
+    /// 需要重建索引的消息 ID
     let messageID: String?
+    /// 需要重建索引的会话 ID
     let conversationID: String?
 }
 
+/// 搜索索引 Actor
+///
+/// 负责写入和查询 `search.db` 中的 FTS 表，并在失败时登记异步修复任务。
 actor SearchIndexActor {
+    /// 数据库访问 Actor
     private let database: DatabaseActor
+    /// 当前账号的数据库路径集合
     private let paths: AccountStoragePaths
 
+    /// 初始化搜索索引 Actor
     init(database: DatabaseActor, paths: AccountStoragePaths) {
         self.database = database
         self.paths = paths
     }
 
+    /// 全量重建当前用户的联系人、会话和文本消息索引
     func rebuildAll(userID: UserID) async throws {
         let conversations = try await conversationIndexRows(userID: userID)
         let contacts = try await contactIndexRows(userID: userID)
@@ -39,6 +50,7 @@ actor SearchIndexActor {
         try await database.performTransaction(statements, in: .search, paths: paths)
     }
 
+    /// 按关键词搜索联系人、会话和消息
     func search(query: String, limit: Int) async throws -> [SearchResultRecord] {
         let expression = Self.matchExpression(for: query)
         guard !expression.isEmpty else {
@@ -52,6 +64,7 @@ actor SearchIndexActor {
         return try await contacts + conversations + messages
     }
 
+    /// 尽力为单条消息重建索引，失败时写入修复任务
     func indexMessageBestEffort(messageID: MessageID, userID: UserID) async {
         do {
             if let row = try await messageIndexRow(messageID: messageID, userID: userID) {
@@ -79,6 +92,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 尽力移除单条消息索引，失败时写入修复任务
     func removeMessageBestEffort(messageID: MessageID, userID: UserID) async {
         do {
             try await removeMessage(messageID: messageID)
@@ -92,6 +106,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 尽力为单个会话重建索引，失败时写入修复任务
     func indexConversationBestEffort(conversationID: ConversationID, userID: UserID) async {
         do {
             if let row = try await conversationIndexRow(conversationID: conversationID, userID: userID) {
@@ -117,6 +132,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 从 FTS 消息索引中删除一条消息
     private func removeMessage(messageID: MessageID) async throws {
         try await database.execute(
             "DELETE FROM message_search WHERE message_id = ?;",
@@ -126,6 +142,7 @@ actor SearchIndexActor {
         )
     }
 
+    /// 搜索联系人索引表
     private func searchContacts(expression: String, limit: Int) async throws -> [SearchResultRecord] {
         let rows = try await database.query(
             """
@@ -152,6 +169,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 搜索会话索引表
     private func searchConversations(expression: String, limit: Int) async throws -> [SearchResultRecord] {
         let rows = try await database.query(
             """
@@ -179,6 +197,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 搜索文本消息索引表
     private func searchMessages(expression: String, limit: Int) async throws -> [SearchResultRecord] {
         let rows = try await database.query(
             """
@@ -207,6 +226,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 生成当前用户可写入联系人索引的行数据
     private func contactIndexRows(userID: UserID) async throws -> [ContactIndexRow] {
         let rows = try await database.query(
             """
@@ -228,6 +248,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 生成当前用户可写入会话索引的行数据
     private func conversationIndexRows(userID: UserID) async throws -> [ConversationIndexRow] {
         let rows = try await database.query(
             """
@@ -249,6 +270,7 @@ actor SearchIndexActor {
         }
     }
 
+    /// 查询单个会话当前可写入索引的行数据
     private func conversationIndexRow(conversationID: ConversationID, userID: UserID) async throws -> ConversationIndexRow? {
         let rows = try await database.query(
             """
@@ -272,6 +294,7 @@ actor SearchIndexActor {
         )
     }
 
+    /// 生成当前用户可写入文本消息索引的行数据
     private func messageIndexRows(userID: UserID) async throws -> [MessageIndexRow] {
         let rows = try await database.query(
             """
@@ -294,6 +317,7 @@ actor SearchIndexActor {
         return rows.compactMap(Self.messageIndexRow)
     }
 
+    /// 查询单条消息当前可写入索引的行数据
     private func messageIndexRow(messageID: MessageID, userID: UserID) async throws -> MessageIndexRow? {
         let rows = try await database.query(
             """
@@ -319,6 +343,7 @@ actor SearchIndexActor {
         return rows.first.flatMap(Self.messageIndexRow)
     }
 
+    /// 将索引失败的对象登记为待处理修复任务
     private func enqueueRepairJob(
         userID: UserID,
         scope: String,
@@ -372,6 +397,7 @@ actor SearchIndexActor {
         )
     }
 
+    /// 将用户输入转换为 SQLite FTS MATCH 表达式
     private static func matchExpression(for query: String) -> String {
         var tokens: [String] = []
 
@@ -398,6 +424,7 @@ actor SearchIndexActor {
         return tokens.joined(separator: " ")
     }
 
+    /// 将数据库行转换为消息索引行
     private static func messageIndexRow(from row: SQLiteRow) -> MessageIndexRow? {
         guard
             let messageID = row.string("message_id"),
@@ -415,6 +442,7 @@ actor SearchIndexActor {
         )
     }
 
+    /// 构造联系人索引 upsert 语句
     private static func upsertContactSearchStatement(_ row: ContactIndexRow) -> SQLiteStatement {
         SQLiteStatement(
             """
@@ -425,6 +453,7 @@ actor SearchIndexActor {
         )
     }
 
+    /// 构造会话索引 upsert 语句
     private static func upsertConversationSearchStatement(_ row: ConversationIndexRow) -> SQLiteStatement {
         SQLiteStatement(
             """
@@ -435,6 +464,7 @@ actor SearchIndexActor {
         )
     }
 
+    /// 构造消息索引 upsert 语句
     private static func upsertMessageSearchStatement(_ row: MessageIndexRow) -> SQLiteStatement {
         SQLiteStatement(
             """
@@ -451,21 +481,34 @@ actor SearchIndexActor {
     }
 }
 
+/// 联系人搜索索引行
 nonisolated private struct ContactIndexRow: Equatable, Sendable {
+    /// 联系人 ID
     let id: String
+    /// 搜索标题
     let title: String
+    /// 搜索副标题
     let subtitle: String
 }
 
+/// 会话搜索索引行
 nonisolated private struct ConversationIndexRow: Equatable, Sendable {
+    /// 会话 ID
     let id: ConversationID
+    /// 搜索标题
     let title: String
+    /// 搜索副标题
     let subtitle: String
 }
 
+/// 消息搜索索引行
 nonisolated private struct MessageIndexRow: Equatable, Sendable {
+    /// 消息 ID
     let id: MessageID
+    /// 所属会话 ID
     let conversationID: ConversationID
+    /// 发送者 ID
     let senderID: UserID
+    /// 可检索文本
     let text: String
 }

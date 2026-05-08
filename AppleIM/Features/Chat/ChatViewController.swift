@@ -7,39 +7,59 @@ import Combine
 import AVKit
 import UIKit
 
+/// 聊天消息 section 标识
 private let chatSection = "messages"
 
+/// 聊天页控制器
 @MainActor
 final class ChatViewController: UIViewController {
+    /// 聊天页 ViewModel
     private let viewModel: ChatViewModel
+    /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
+    /// 消息列表 diffable 数据源
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
+    /// 当前消息行缓存
     private var rowsByID: [String: ChatMessageRowState] = [:]
+    /// 最近一次渲染的消息行 ID 顺序
     private var lastRenderedRowIDs: [String] = []
+    /// 语音按钮触摸是否仍处于按下状态
     private var isVoiceTouchActive = false
 
+    /// 渐变背景
     private let backgroundView = GradientBackgroundView()
+    /// 消息 collection view
     private lazy var collectionView = UICollectionView(
         frame: .zero,
         collectionViewLayout: makeLayout()
     )
+    /// 空消息提示
     private let emptyLabel = UILabel()
+    /// 聊天输入栏
     private let inputBarView = ChatInputBarView()
+    /// 图片库键盘输入视图
     private lazy var photoLibraryInputView = makePhotoLibraryInputView()
+    /// 语音录制控制器
     private let voiceRecorder = VoiceRecordingController()
+    /// 语音播放控制器
     private let voicePlaybackController = VoicePlaybackController()
+    /// 待发送附件预览
     private var pendingAttachmentPreviews: [ChatPendingAttachmentPreviewItem] = []
+    /// 待发送媒体内容缓存
     private var pendingComposerMediaByID: [String: ChatComposerMedia] = [:]
 
+    /// 初始化聊天页
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
         super.init(nibName: nil, bundle: nil)
     }
 
+    /// 禁用 storyboard 初始化
     required init?(coder: NSCoder) {
         fatalError("Storyboard initialization is not supported.")
     }
 
+    /// 配置聊天页并加载首屏消息
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
@@ -50,6 +70,7 @@ final class ChatViewController: UIViewController {
         viewModel.load()
     }
 
+    /// 页面消失时停止播放、取消任务并保存草稿
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         voicePlaybackController.stop()
@@ -57,6 +78,7 @@ final class ChatViewController: UIViewController {
         viewModel.flushDraft(inputBarView.text)
     }
 
+    /// 创建聊天页视图层级和约束
     private func configureView() {
         view.backgroundColor = .systemGroupedBackground
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
@@ -105,6 +127,7 @@ final class ChatViewController: UIViewController {
         ])
     }
 
+    /// 绑定输入栏按钮和文本变化回调
     private func configureInputBarCallbacks() {
         inputBarView.onTextChanged = { [weak self] text in
             self?.viewModel.saveDraft(text)
@@ -146,6 +169,7 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 创建并绑定图片库输入视图
     private func makePhotoLibraryInputView() -> ChatPhotoLibraryInputView {
         let inputView = ChatPhotoLibraryInputView(frame: .zero, inputViewStyle: .keyboard)
 
@@ -188,12 +212,14 @@ final class ChatViewController: UIViewController {
         return inputView
     }
 
+    /// 展示图片库键盘输入视图
     private func showPhotoLibraryInput() {
         inputBarView.setPhotoLibraryInputView(photoLibraryInputView)
         photoLibraryInputView.refreshAuthorization()
         inputBarView.showPhotoLibraryInput()
     }
 
+    /// 发送当前文本和待发送附件
     private func sendComposer(text: String) {
         let media = pendingAttachmentPreviews.compactMap { pendingComposerMediaByID[$0.id] }
         pendingAttachmentPreviews.removeAll()
@@ -203,6 +229,7 @@ final class ChatViewController: UIViewController {
         viewModel.sendComposer(media: media, text: text)
     }
 
+    /// 新增或更新待发送附件预览
     private func upsertPendingAttachmentPreview(_ item: ChatPendingAttachmentPreviewItem) {
         if let index = pendingAttachmentPreviews.firstIndex(where: { $0.id == item.id }) {
             pendingAttachmentPreviews[index] = item
@@ -212,12 +239,14 @@ final class ChatViewController: UIViewController {
         inputBarView.setPendingAttachmentPreviews(pendingAttachmentPreviews, animated: true)
     }
 
+    /// 移除待发送附件
     private func removePendingAttachment(id: String) {
         pendingAttachmentPreviews.removeAll { $0.id == id }
         pendingComposerMediaByID[id] = nil
         inputBarView.setPendingAttachmentPreviews(pendingAttachmentPreviews, animated: true)
     }
 
+    /// 绑定语音录制状态和完成回调
     private func configureVoiceRecorder() {
         voiceRecorder.onStateChange = { [weak self] state in
             self?.renderVoiceRecordingState(state)
@@ -227,6 +256,7 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 绑定语音播放回调
     private func configureVoicePlayback() {
         voicePlaybackController.onStarted = { [weak self] messageID in
             self?.viewModel.voicePlaybackStarted(messageID: messageID)
@@ -240,6 +270,7 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 配置消息列表数据源
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, String> { [weak self] cell, _, rowID in
             guard let self, let row = self.rowsByID[rowID] else { return }
@@ -278,6 +309,7 @@ final class ChatViewController: UIViewController {
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
+    /// 绑定聊天状态变化
     private func bindViewModel() {
         viewModel.statePublisher
             .sink { [weak self] state in
@@ -286,6 +318,7 @@ final class ChatViewController: UIViewController {
             .store(in: &cancellables)
     }
 
+    /// 根据聊天页状态刷新消息列表和输入栏
     private func render(_ state: ChatViewState) {
         title = state.title
         emptyLabel.text = state.emptyMessage
@@ -341,6 +374,7 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 构造可增量更新的消息快照
     private func makeIncrementalSnapshot(
         dataSource: UICollectionViewDiffableDataSource<String, String>,
         previousRowIDs: [String],
@@ -411,6 +445,7 @@ final class ChatViewController: UIViewController {
         return snapshot
     }
 
+    /// 创建聊天消息列表布局
     private func makeLayout() -> UICollectionViewLayout {
         let itemSize = NSCollectionLayoutSize(
             widthDimension: .fractionalWidth(1.0),
@@ -424,6 +459,7 @@ final class ChatViewController: UIViewController {
         return UICollectionViewCompositionalLayout(section: section)
     }
 
+    /// 语音按钮按下时开始录音
     @objc private func voiceButtonTouchDown() {
         isVoiceTouchActive = true
         Task { [weak self] in
@@ -435,33 +471,40 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 语音按钮拖出时进入取消态
     @objc private func voiceButtonTouchDragExit() {
         voiceRecorder.updateCanceling(true)
     }
 
+    /// 语音按钮拖回时退出取消态
     @objc private func voiceButtonTouchDragEnter() {
         voiceRecorder.updateCanceling(false)
     }
 
+    /// 语音按钮在内部松开时发送录音
     @objc private func voiceButtonTouchUpInside() {
         isVoiceTouchActive = false
         voiceRecorder.finishRecording(cancelled: false)
     }
 
+    /// 语音按钮在外部松开时取消录音
     @objc private func voiceButtonTouchUpOutside() {
         isVoiceTouchActive = false
         voiceRecorder.finishRecording(cancelled: true)
     }
 
+    /// 语音按钮触摸取消时取消录音
     @objc private func voiceButtonTouchCancel() {
         isVoiceTouchActive = false
         voiceRecorder.finishRecording(cancelled: true)
     }
 
+    /// 将录音状态渲染到输入栏
     private func renderVoiceRecordingState(_ state: VoiceRecordingState) {
         inputBarView.renderVoiceRecordingState(state)
     }
 
+    /// 处理录音完成结果
     private func handleVoiceRecordingCompletion(_ completion: VoiceRecordingCompletion) {
         switch completion {
         case let .send(recording):
@@ -477,6 +520,7 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 播放或停止语音消息
     private func handleVoicePlayback(_ row: ChatMessageRowState) {
         guard row.isVoice else { return }
 
@@ -493,6 +537,7 @@ final class ChatViewController: UIViewController {
         voicePlaybackController.play(messageID: row.id, fileURL: URL(fileURLWithPath: localPath))
     }
 
+    /// 使用系统播放器播放本地视频消息
     private func handleVideoPlayback(_ row: ChatMessageRowState) {
         guard row.isVideo else { return }
         guard let localPath = row.videoLocalPath, FileManager.default.fileExists(atPath: localPath) else {
@@ -507,16 +552,19 @@ final class ChatViewController: UIViewController {
         }
     }
 
+    /// 展示短暂输入栏状态提示
     private func showTransientRecordingMessage(_ message: String) {
         inputBarView.showTransientStatus(message)
     }
 
+    /// 判断消息列表是否接近底部
     private func isNearBottom() -> Bool {
         let visibleHeight = collectionView.bounds.height - collectionView.adjustedContentInset.top - collectionView.adjustedContentInset.bottom
         let maxOffsetY = collectionView.contentSize.height - visibleHeight + collectionView.adjustedContentInset.bottom
         return collectionView.contentOffset.y >= maxOffsetY - 80
     }
 
+    /// 滚动到最新消息
     private func scrollToBottom(animated: Bool) {
         guard !lastRenderedRowIDs.isEmpty else { return }
         let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
@@ -524,7 +572,9 @@ final class ChatViewController: UIViewController {
     }
 }
 
+/// 聊天消息列表滚动回调
 extension ChatViewController: UICollectionViewDelegate {
+    /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         let topThreshold = -scrollView.adjustedContentInset.top + 120
 
@@ -534,7 +584,9 @@ extension ChatViewController: UICollectionViewDelegate {
     }
 }
 
+/// 消息行 diff 辅助
 private extension ChatMessageRowState {
+    /// 用于触发 cell reconfigure 的稳定差异标识
     var diffIdentifier: String {
         let voiceDurationText = voiceDurationMilliseconds.map { String($0) } ?? ""
         let videoDurationText = videoDurationMilliseconds.map { String($0) } ?? ""
@@ -566,49 +618,83 @@ private extension ChatMessageRowState {
     }
 }
 
+/// 聊天消息单元格
 private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDelegate {
+    /// 头像图片缓存
     private static let avatarImageCache = NSCache<NSString, UIImage>()
 
+    /// 默认头像渐变背景
     private let avatarView = GradientBackgroundView()
+    /// 头像图片
     private let avatarImageView = UIImageView()
+    /// 头像占位文字
     private let avatarInitialLabel = UILabel()
+    /// 消息气泡背景
     private let bubbleView = ChatBubbleBackgroundView()
+    /// 气泡内容栈
     private let stackView = UIStackView()
+    /// 图片或视频缩略图
     private let thumbnailImageView = UIImageView()
+    /// 视频播放信息栈
     private let videoStackView = UIStackView()
+    /// 视频播放按钮
     private let videoPlaybackButton = UIButton(type: .system)
+    /// 视频时长标签
     private let videoDurationLabel = UILabel()
+    /// 语音播放信息栈
     private let voiceStackView = UIStackView()
+    /// 语音播放按钮
     private let voicePlaybackButton = UIButton(type: .system)
+    /// 语音时长标签
     private let voiceDurationLabel = UILabel()
+    /// 未播放语音红点
     private let voiceUnreadDotView = UIView()
+    /// 文本消息标签
     private let messageLabel = UILabel()
+    /// 时间、状态和上传进度标签
     private let metadataLabel = UILabel()
+    /// 重试按钮
     private let retryButton = UIButton(type: .system)
+    /// 收到消息头像左侧约束
     private var incomingAvatarLeadingConstraint: NSLayoutConstraint?
+    /// 收到消息气泡左侧约束
     private var incomingBubbleLeadingConstraint: NSLayoutConstraint?
+    /// 发出消息头像右侧约束
     private var outgoingAvatarTrailingConstraint: NSLayoutConstraint?
+    /// 发出消息气泡右侧约束
     private var outgoingBubbleTrailingConstraint: NSLayoutConstraint?
+    /// 当前头像加载任务
     private var avatarDataTask: URLSessionDataTask?
+    /// 当前期望展示的头像 URL
     private var expectedAvatarURL: String?
+    /// 当前绑定的消息行
     private var row: ChatMessageRowState?
+    /// 当前可重试消息 ID
     private var retryMessageID: MessageID?
+    /// 重试回调
     private var onRetry: ((MessageID) -> Void)?
+    /// 删除回调
     private var onDelete: ((MessageID) -> Void)?
+    /// 撤回回调
     private var onRevoke: ((MessageID) -> Void)?
+    /// 语音播放回调
     private var onPlayVoice: ((ChatMessageRowState) -> Void)?
+    /// 视频播放回调
     private var onPlayVideo: ((ChatMessageRowState) -> Void)?
 
+    /// 初始化消息单元格
     override init(frame: CGRect) {
         super.init(frame: frame)
         configureView()
     }
 
+    /// 从 storyboard/xib 初始化消息单元格
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
     }
 
+    /// 复用前重置状态、回调和头像加载
     override func prepareForReuse() {
         super.prepareForReuse()
         row = nil
@@ -628,6 +714,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         avatarImageView.isHidden = true
     }
 
+    /// 根据消息行配置气泡、媒体、状态和交互
     func configure(
         row: ChatMessageRowState,
         onRetry: @escaping (MessageID) -> Void,
@@ -690,6 +777,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         outgoingBubbleTrailingConstraint?.isActive = row.isOutgoing
     }
 
+    /// 配置单元格视图层级、样式和约束
     private func configureView() {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
@@ -828,6 +916,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         ])
     }
 
+    /// 配置发送者头像
     private func configureAvatar(for row: ChatMessageRowState) {
         avatarDataTask?.cancel()
         avatarDataTask = nil
@@ -877,6 +966,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         avatarDataTask?.resume()
     }
 
+    /// 从本地路径或 file URL 加载头像
     private static func localAvatarImage(from value: String) -> UIImage? {
         if let url = URL(string: value), url.isFileURL {
             return UIImage(contentsOfFile: url.path)
@@ -889,21 +979,25 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         return UIImage(contentsOfFile: value)
     }
 
+    /// 点击语音播放按钮
     @objc private func voicePlaybackButtonTapped() {
         guard let row else { return }
         onPlayVoice?(row)
     }
 
+    /// 点击视频播放按钮
     @objc private func videoPlaybackButtonTapped() {
         guard let row else { return }
         onPlayVideo?(row)
     }
 
+    /// 点击重试按钮
     @objc private func retryButtonTapped() {
         guard let retryMessageID else { return }
         onRetry?(retryMessageID)
     }
 
+    /// 创建消息气泡上下文菜单
     func contextMenuInteraction(
         _ interaction: UIContextMenuInteraction,
         configurationForMenuAtLocation location: CGPoint
@@ -935,11 +1029,13 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         }
     }
 
+    /// 格式化语音或视频时长文本
     private static func voiceDurationText(milliseconds: Int) -> String {
         let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
         return "\(seconds)s"
     }
 
+    /// 生成消息无障碍描述
     private static func accessibilityLabel(for row: ChatMessageRowState) -> String {
         let contentText = row.isVideo ? "Video" : (row.isImage ? "Image" : row.text)
         var parts = [contentText]
@@ -955,6 +1051,7 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
         return parts.joined(separator: ", ")
     }
 
+    /// 获取图片或视频缩略图路径
     private func mediaThumbnailPath(for row: ChatMessageRowState) -> String? {
         row.imageThumbnailPath ?? row.videoThumbnailPath
     }

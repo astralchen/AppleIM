@@ -77,6 +77,7 @@ nonisolated struct SQLiteRow: Equatable, Sendable {
         return value
     }
 
+    /// 获取 Bool 值
     func bool(_ column: String) -> Bool {
         int(column) != 0
     }

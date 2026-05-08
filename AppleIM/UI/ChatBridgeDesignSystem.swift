@@ -7,18 +7,28 @@
 
 import UIKit
 
+/// ChatBridge 共享 UIKit 设计系统
 enum ChatBridgeDesignSystem {
+    /// 颜色令牌
     enum ColorToken {
+        /// 品牌薄荷绿
         static let mint = UIColor.chatBridgeHex(0x27D9A5)
+        /// 品牌天空蓝
         static let sky = UIColor.chatBridgeHex(0x4DA3FF)
+        /// 强调珊瑚红
         static let coral = UIColor.chatBridgeHex(0xFF5A7A)
+        /// 主要文字颜色
         static let ink = UIColor { traits in
             traits.userInterfaceStyle == .dark ? .white : UIColor.chatBridgeHex(0x111827)
         }
+        /// 页面背景渐变起始色
         static let backgroundStart = UIColor.chatBridgeHex(0xEAFBFF)
+        /// 页面背景渐变中间色
         static let backgroundMiddle = UIColor.chatBridgeHex(0xF7F1FF)
+        /// 页面背景渐变结束色
         static let backgroundEnd = UIColor.chatBridgeHex(0xFFF7EA)
 
+        /// 收到消息和列表卡片背景
         static var incomingCard: UIColor {
             UIColor { traits in
                 traits.userInterfaceStyle == .dark
@@ -27,6 +37,7 @@ enum ChatBridgeDesignSystem {
             }
         }
 
+        /// 抬升容器背景
         static var elevatedCard: UIColor {
             UIColor { traits in
                 traits.userInterfaceStyle == .dark
@@ -35,6 +46,7 @@ enum ChatBridgeDesignSystem {
             }
         }
 
+        /// 置顶会话卡片背景
         static var pinnedCard: UIColor {
             UIColor { traits in
                 traits.userInterfaceStyle == .dark
@@ -44,32 +56,53 @@ enum ChatBridgeDesignSystem {
         }
     }
 
+    /// 渐变令牌
     enum GradientToken {
+        /// 应用页面背景渐变
         static let appBackground = [ColorToken.backgroundStart, ColorToken.backgroundMiddle, ColorToken.backgroundEnd]
+        /// 发出消息气泡渐变
         static let outgoingBubble = [ColorToken.mint, UIColor.chatBridgeHex(0x3B82F6)]
+        /// 品牌主按钮渐变
         static let brandButton = [ColorToken.mint, ColorToken.sky]
+        /// 默认头像渐变
         static let playfulAvatar = [ColorToken.coral, ColorToken.sky]
     }
 
+    /// 圆角令牌
     enum RadiusToken {
+        /// 页面卡片圆角
         static let pageCard: CGFloat = 22
+        /// 输入栏圆角
         static let inputBar: CGFloat = 24
+        /// 消息气泡圆角
         static let messageBubble: CGFloat = 18
+        /// 媒体缩略图圆角
         static let media: CGFloat = 14
+        /// 徽标圆角
         static let badge: CGFloat = 11
+        /// 输入框圆角
         static let field: CGFloat = 17
     }
 
+    /// 间距令牌
     enum SpacingToken {
+        /// 极小间距
         static let xs: CGFloat = 4
+        /// 小间距
         static let sm: CGFloat = 8
+        /// 中间距
         static let md: CGFloat = 12
+        /// 大间距
         static let lg: CGFloat = 16
+        /// 超大间距
         static let xl: CGFloat = 24
+        /// 最大间距
         static let xxl: CGFloat = 32
     }
 
+    /// 阴影令牌
     enum ShadowToken {
+        /// 为卡片层应用统一阴影
         static func applyCardShadow(to layer: CALayer) {
             layer.shadowColor = UIColor.black.cgColor
             layer.shadowOpacity = 0.10
@@ -77,6 +110,7 @@ enum ChatBridgeDesignSystem {
             layer.shadowOffset = CGSize(width: 0, height: 10)
         }
 
+        /// 为消息气泡层应用轻量阴影
         static func applyBubbleShadow(to layer: CALayer) {
             layer.shadowColor = UIColor.black.cgColor
             layer.shadowOpacity = 0.08
@@ -85,13 +119,19 @@ enum ChatBridgeDesignSystem {
         }
     }
 
+    /// 按钮视觉角色
     enum ButtonRole {
+        /// 主要动作按钮
         case primary
+        /// 次要动作按钮
         case secondary
+        /// 圆形工具按钮
         case circularTool
+        /// 破坏性动作按钮
         case destructive
     }
 
+    /// 创建支持系统玻璃效果的按钮配置
     static func makeGlassButtonConfiguration(role: ButtonRole) -> UIButton.Configuration {
         if #available(iOS 26.0, *) {
             switch role {
@@ -107,6 +147,7 @@ enum ChatBridgeDesignSystem {
         return makeFallbackButtonConfiguration(role: role)
     }
 
+    /// 创建旧系统上的按钮降级配置
     static func makeFallbackButtonConfiguration(role: ButtonRole) -> UIButton.Configuration {
         var configuration: UIButton.Configuration
 
@@ -134,29 +175,36 @@ enum ChatBridgeDesignSystem {
     }
 }
 
+/// 渐变背景视图
 final class GradientBackgroundView: UIView {
+    /// 使用渐变图层作为根图层
     override class var layerClass: AnyClass {
         CAGradientLayer.self
     }
 
+    /// 强类型渐变图层访问器
     private var gradientLayer: CAGradientLayer {
         layer as! CAGradientLayer
     }
 
+    /// 初始化渐变背景
     override init(frame: CGRect) {
         super.init(frame: frame)
         configure()
     }
 
+    /// 从 storyboard/xib 初始化渐变背景
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure()
     }
 
+    /// 更新渐变颜色
     func setColors(_ colors: [UIColor]) {
         gradientLayer.colors = colors.map(\.cgColor)
     }
 
+    /// 配置默认渐变方向和颜色
     private func configure() {
         isUserInteractionEnabled = false
         gradientLayer.startPoint = CGPoint(x: 0.05, y: 0.0)
@@ -165,24 +213,31 @@ final class GradientBackgroundView: UIView {
     }
 }
 
+/// 玻璃质感容器视图
 final class GlassContainerView: UIView {
+    /// 系统模糊层
     private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    /// 额外着色层
     private let tintView = UIView()
 
+    /// 外部内容承载视图
     var contentView: UIView {
         blurView.contentView
     }
 
+    /// 初始化玻璃容器
     init(cornerRadius: CGFloat = ChatBridgeDesignSystem.RadiusToken.pageCard) {
         super.init(frame: .zero)
         configure(cornerRadius: cornerRadius)
     }
 
+    /// 从 storyboard/xib 初始化玻璃容器
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure(cornerRadius: ChatBridgeDesignSystem.RadiusToken.pageCard)
     }
 
+    /// 配置模糊、着色和约束
     private func configure(cornerRadius: CGFloat) {
         clipsToBounds = false
         layer.cornerRadius = cornerRadius
@@ -213,11 +268,16 @@ final class GlassContainerView: UIView {
     }
 }
 
+/// 聊天气泡样式
 enum ChatBubbleStyle {
+    /// 当前用户发出的消息
     case outgoing
+    /// 对方发来的消息
     case incoming
+    /// 已撤回消息
     case revoked
 
+    /// 对应的气泡背景样式
     var backgroundStyle: ChatBubbleBackgroundView.Style {
         switch self {
         case .outgoing:
@@ -230,25 +290,31 @@ enum ChatBubbleStyle {
     }
 }
 
+/// 品牌渐变按钮背景视图
 final class GradientButtonBackgroundView: UIView {
+    /// 使用渐变图层作为根图层
     override class var layerClass: AnyClass {
         CAGradientLayer.self
     }
 
+    /// 强类型渐变图层访问器
     private var gradientLayer: CAGradientLayer {
         layer as! CAGradientLayer
     }
 
+    /// 初始化按钮背景
     override init(frame: CGRect) {
         super.init(frame: frame)
         configure()
     }
 
+    /// 从 storyboard/xib 初始化按钮背景
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure()
     }
 
+    /// 配置按钮渐变方向和圆角
     private func configure() {
         isUserInteractionEnabled = false
         layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.inputBar
@@ -259,33 +325,44 @@ final class GradientButtonBackgroundView: UIView {
     }
 }
 
+/// 消息气泡背景视图
 final class ChatBubbleBackgroundView: UIView {
+    /// 气泡背景绘制样式
     enum Style {
+        /// 发出消息渐变
         case outgoing
+        /// 收到消息纯色卡片
         case incoming
+        /// 撤回消息纯色背景
         case revoked
     }
 
+    /// 使用渐变图层作为根图层
     override class var layerClass: AnyClass {
         CAGradientLayer.self
     }
 
+    /// 强类型渐变图层访问器
     private var gradientLayer: CAGradientLayer {
         layer as! CAGradientLayer
     }
 
+    /// 当前背景样式
     private(set) var style: Style = .incoming
 
+    /// 初始化气泡背景
     override init(frame: CGRect) {
         super.init(frame: frame)
         configure()
     }
 
+    /// 从 storyboard/xib 初始化气泡背景
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure()
     }
 
+    /// 应用指定背景样式
     func apply(style: Style) {
         self.style = style
 
@@ -301,15 +378,18 @@ final class ChatBubbleBackgroundView: UIView {
         }
     }
 
+    /// 应用聊天气泡样式
     func apply(style: ChatBubbleStyle) {
         apply(style: style.backgroundStyle)
     }
 
+    /// 深浅色模式变化时刷新动态颜色
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         apply(style: style)
     }
 
+    /// 配置默认圆角、渐变方向和样式
     private func configure() {
         layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.messageBubble
         layer.masksToBounds = true
@@ -319,32 +399,49 @@ final class ChatBubbleBackgroundView: UIView {
     }
 }
 
+/// 圆角会话列表单元格
 final class RoundedConversationCell: UICollectionViewCell {
+    /// 头像图片缓存
     private static let avatarImageCache = NSCache<NSString, UIImage>()
 
+    /// 卡片容器
     private let cardView = UIView()
+    /// 默认渐变头像背景
     private let avatarView = GradientBackgroundView()
+    /// 远程或本地头像图片
     private let avatarImageView = UIImageView()
+    /// 无头像时展示的首字母
     private let avatarLabel = UILabel()
+    /// 会话标题
     private let titleLabel = UILabel()
+    /// 会话摘要
     private let subtitleLabel = UILabel()
+    /// 最后一条消息时间
     private let timeLabel = UILabel()
+    /// 状态标签容器
     private let statusStackView = UIStackView()
+    /// 未读数标签
     private let unreadLabel = ChatBridgeUnreadBadgeLabel()
+    /// 免打扰状态标签
     private let mutedLabel = UILabel()
+    /// 当前头像加载任务
     private var avatarDataTask: URLSessionDataTask?
+    /// 当前期望展示的头像 URL
     private var expectedAvatarURL: String?
 
+    /// 初始化会话单元格
     override init(frame: CGRect) {
         super.init(frame: frame)
         configureView()
     }
 
+    /// 从 storyboard/xib 初始化会话单元格
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
     }
 
+    /// 重用前重置状态和头像加载
     override func prepareForReuse() {
         super.prepareForReuse()
         unreadLabel.isHidden = true
@@ -353,6 +450,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         resetAvatarImage()
     }
 
+    /// 使用会话行状态配置单元格
     func configure(row: ConversationListRowState) {
         titleLabel.text = row.title
         subtitleLabel.text = row.subtitle
@@ -366,6 +464,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         cardView.backgroundColor = row.isPinned ? ChatBridgeDesignSystem.ColorToken.pinnedCard : ChatBridgeDesignSystem.ColorToken.incomingCard
     }
 
+    /// 使用搜索结果行状态配置单元格
     func configure(searchRow: SearchResultRowState) {
         titleLabel.text = searchRow.title
         subtitleLabel.text = searchRow.subtitle
@@ -378,6 +477,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         cardView.backgroundColor = ChatBridgeDesignSystem.ColorToken.incomingCard
     }
 
+    /// 配置单元格层级、样式和约束
     private func configureView() {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
@@ -480,6 +580,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         ])
     }
 
+    /// 配置远程或本地头像图片
     private func configureAvatarImage(from value: String?) {
         resetAvatarImage()
 
@@ -525,6 +626,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         avatarDataTask?.resume()
     }
 
+    /// 取消头像请求并恢复默认头像状态
     private func resetAvatarImage() {
         avatarDataTask?.cancel()
         avatarDataTask = nil
@@ -533,6 +635,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         avatarImageView.isHidden = true
     }
 
+    /// 从本地路径或 file URL 加载头像
     private static func localAvatarImage(from value: String) -> UIImage? {
         if let url = URL(string: value), url.isFileURL {
             return UIImage(contentsOfFile: url.path)
@@ -545,28 +648,34 @@ final class RoundedConversationCell: UICollectionViewCell {
         return UIImage(contentsOfFile: value)
     }
 
+    /// 根据标题生成头像首字母
     private static func initials(from text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.first.map { String($0).uppercased() } ?? "C"
     }
 }
 
+/// ChatBridge 未读数徽标标签
 final class ChatBridgeUnreadBadgeLabel: UILabel {
+    /// 初始化未读徽标
     override init(frame: CGRect) {
         super.init(frame: frame)
         configure()
     }
 
+    /// 从 storyboard/xib 初始化未读徽标
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure()
     }
 
+    /// 保证徽标有最小宽高
     override var intrinsicContentSize: CGSize {
         let size = super.intrinsicContentSize
         return CGSize(width: max(size.width + 12, 22), height: 22)
     }
 
+    /// 配置徽标颜色、字体和圆角
     private func configure() {
         textAlignment = .center
         textColor = .white
@@ -578,7 +687,9 @@ final class ChatBridgeUnreadBadgeLabel: UILabel {
     }
 }
 
+/// 搜索结果类型的展示文案
 extension SearchResultKind {
+    /// 面向 UI 的类型名称
     var displayText: String {
         switch self {
         case .contact:
@@ -591,7 +702,9 @@ extension SearchResultKind {
     }
 }
 
+/// ChatBridge 颜色辅助方法
 extension UIColor {
+    /// 根据 0xRRGGBB 值创建 UIColor
     static func chatBridgeHex(_ rgb: UInt32, alpha: CGFloat = 1.0) -> UIColor {
         UIColor(
             red: CGFloat((rgb >> 16) & 0xFF) / 255.0,

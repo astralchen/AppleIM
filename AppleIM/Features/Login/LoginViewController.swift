@@ -8,38 +8,57 @@
 import Combine
 import UIKit
 
+/// 账号密码登录页控制器
 @MainActor
 final class LoginViewController: UIViewController {
+    /// 登录页 ViewModel
     private let viewModel: LoginViewModel
+    /// 登录成功回调
     private let onLoginSucceeded: (AccountSession) -> Void
+    /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
 
+    /// 页面标题标签
     private let titleLabel = UILabel()
+    /// 账号输入框
     private let accountTextField = UITextField()
+    /// 密码输入框
     private let passwordTextField = UITextField()
+    /// 错误提示标签
     private let errorLabel = UILabel()
+    /// 登录按钮
     private let loginButton = UIButton(type: .system)
+    /// 登录加载指示器
     private let activityIndicator = UIActivityIndicatorView(style: .medium)
+    /// 渐变背景
     private let backgroundView = GradientBackgroundView()
+    /// 登录表单玻璃卡片
     private let cardView = GlassContainerView()
+    /// 卡片垂直居中约束，用于键盘抬升
     private var cardCenterYConstraint: NSLayoutConstraint?
+    /// 当前键盘抬升距离
     private var currentKeyboardLift: CGFloat = 0
+    /// 键盘是否处于可见状态
     private var isKeyboardVisible = false
 
+    /// 初始化登录页
     init(viewModel: LoginViewModel, onLoginSucceeded: @escaping (AccountSession) -> Void) {
         self.viewModel = viewModel
         self.onLoginSucceeded = onLoginSucceeded
         super.init(nibName: nil, bundle: nil)
     }
 
+    /// 禁用 storyboard 初始化
     required init?(coder: NSCoder) {
         fatalError("Storyboard initialization is not supported.")
     }
 
+    /// 移除键盘通知观察者
     deinit {
         NotificationCenter.default.removeObserver(self)
     }
 
+    /// 配置视图并绑定 ViewModel
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
@@ -47,11 +66,13 @@ final class LoginViewController: UIViewController {
         bindViewModel()
     }
 
+    /// 页面消失时取消进行中的登录任务
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         viewModel.cancel()
     }
 
+    /// 创建登录页视图层级和约束
     private func configureView() {
         title = "Login"
         view.backgroundColor = .systemBackground
@@ -157,6 +178,7 @@ final class LoginViewController: UIViewController {
         ])
     }
 
+    /// 配置账号和密码输入框的统一样式
     private func configureAuthTextField(_ textField: UITextField) {
         textField.borderStyle = .none
         textField.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.72)
@@ -170,6 +192,7 @@ final class LoginViewController: UIViewController {
         textField.leftViewMode = .always
     }
 
+    /// 监听键盘位置变化
     private func observeKeyboard() {
         NotificationCenter.default.addObserver(
             self,
@@ -185,6 +208,7 @@ final class LoginViewController: UIViewController {
         )
     }
 
+    /// 绑定登录状态和登录成功事件
     private func bindViewModel() {
         viewModel.statePublisher
             .sink { [weak self] state in
@@ -199,6 +223,7 @@ final class LoginViewController: UIViewController {
             .store(in: &cancellables)
     }
 
+    /// 根据最新登录状态刷新 UI
     private func render(_ state: LoginViewState) {
         if accountTextField.text != state.accountIdentifier {
             accountTextField.text = state.accountIdentifier
@@ -219,19 +244,23 @@ final class LoginViewController: UIViewController {
         }
     }
 
+    /// 账号输入变化回写到 ViewModel
     @objc private func accountDidChange() {
         viewModel.updateAccountIdentifier(accountTextField.text ?? "")
     }
 
+    /// 密码输入变化回写到 ViewModel
     @objc private func passwordDidChange() {
         viewModel.updatePassword(passwordTextField.text ?? "")
     }
 
+    /// 点击登录按钮后提交登录
     @objc private func loginButtonTapped() {
         view.endEditing(true)
         viewModel.login()
     }
 
+    /// 键盘 frame 变化时计算登录卡片需要抬升的距离
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
         guard
             let endFrameValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
@@ -257,11 +286,13 @@ final class LoginViewController: UIViewController {
         }
     }
 
+    /// 键盘隐藏时恢复卡片位置
     @objc private func keyboardWillHide(_ notification: Notification) {
         isKeyboardVisible = false
         applyKeyboardLift(0, notification: notification)
     }
 
+    /// 应用键盘抬升动画
     private func applyKeyboardLift(_ lift: CGFloat, notification: Notification) {
         currentKeyboardLift = lift
         cardCenterYConstraint?.constant = -24 - lift

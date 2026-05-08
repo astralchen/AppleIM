@@ -7,23 +7,43 @@
 
 import Foundation
 
+/// 媒体下载待处理任务负载
+///
+/// 用于序列化媒体下载任务的参数，存储在 pending_job 表的 payload_json 字段
 nonisolated private struct MediaDownloadPendingJobPayload: Codable, Equatable, Sendable {
+    /// 媒体资源 ID
     let mediaID: String
+    /// 所属消息 ID（可选）
     let ownerMessageID: String?
+    /// 本地文件路径
     let localPath: String
+    /// 远程下载地址
     let remoteURL: String
 }
 
+/// 通知会话上下文
+///
+/// 用于发送本地通知时携带会话信息
 nonisolated private struct NotificationConversationContext: Equatable, Sendable {
+    /// 会话标题（单聊为对方昵称，群聊为群名称）
     let title: String
+    /// 是否免打扰
     let isMuted: Bool
 }
 
+/// 中断的出站消息
+///
+/// 用于崩溃恢复，记录发送中状态的消息信息
 nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
+    /// 消息 ID
     let messageID: MessageID
+    /// 会话 ID
     let conversationID: ConversationID
+    /// 客户端消息 ID（用于幂等重发）
     let clientMessageID: String?
+    /// 消息类型
     let type: MessageType
+    /// 媒体资源 ID（图片、语音、视频、文件消息）
     let mediaID: String?
 }
 
@@ -61,22 +81,50 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
 
     // MARK: - ConversationRepository
 
+    /// 查询用户的所有会话
+    ///
+    /// - Parameter userID: 用户 ID
+    /// - Returns: 会话列表，按置顶和时间排序
+    /// - Throws: 数据库查询错误
     func listConversations(for userID: UserID) async throws -> [Conversation] {
         let records = try await conversationDAO.listConversations(for: userID)
         return records.map(Self.conversation(from:))
     }
 
+    /// 分页查询用户的会话列表
+    ///
+    /// - Parameters:
+    ///   - userID: 用户 ID
+    ///   - limit: 每页数量
+    ///   - offset: 偏移量
+    /// - Returns: 会话列表
+    /// - Throws: 数据库查询错误
     func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [Conversation] {
         let records = try await conversationDAO.listConversations(for: userID, limit: limit, offset: offset)
         return records.map(Self.conversation(from:))
     }
 
+    /// 插入或更新会话
+    ///
+    /// 流程：
+    /// 1. 写入会话记录
+    /// 2. 调度搜索索引更新
+    /// 3. 刷新应用角标
+    ///
+    /// - Parameter record: 会话记录
+    /// - Throws: 数据库写入错误
     func upsertConversation(_ record: ConversationRecord) async throws {
         try await conversationDAO.upsert(record)
         scheduleConversationIndex(conversationID: record.id, userID: record.userID)
         _ = try await refreshApplicationBadge(userID: record.userID)
     }
 
+    /// 批量插入初始会话
+    ///
+    /// 用于首次同步或数据恢复场景，批量写入会话记录
+    ///
+    /// - Parameter records: 会话记录列表
+    /// - Throws: 数据库事务错误
     func insertInitialConversations(_ records: [ConversationRecord]) async throws {
         guard !records.isEmpty else { return }
 
@@ -86,15 +134,39 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         )
     }
 
+    /// 标记会话已读
+    ///
+    /// 清空会话未读数，并刷新应用角标
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    /// - Throws: 数据库更新错误
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
         try await conversationDAO.markRead(conversationID: conversationID, userID: userID)
         _ = try await refreshApplicationBadge(userID: userID)
     }
 
+    /// 更新会话置顶状态
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    ///   - isPinned: 是否置顶
+    /// - Throws: 数据库更新错误
     func updateConversationPin(conversationID: ConversationID, userID: UserID, isPinned: Bool) async throws {
         try await conversationDAO.updatePin(conversationID: conversationID, userID: userID, isPinned: isPinned)
     }
 
+    /// 更新会话免打扰状态
+    ///
+    /// 更新后刷新应用角标（免打扰会话可能不计入角标）
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    ///   - isMuted: 是否免打扰
+    /// - Throws: 数据库更新错误
     func updateConversationMute(conversationID: ConversationID, userID: UserID, isMuted: Bool) async throws {
         try await conversationDAO.updateMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
         _ = try await refreshApplicationBadge(userID: userID)
@@ -102,6 +174,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
 
     // MARK: - NotificationSettingsRepository
 
+    /// 获取用户的通知设置
+    ///
+    /// 如果数据库中不存在记录，返回默认设置（全部开启）
+    ///
+    /// - Parameter userID: 用户 ID
+    /// - Returns: 通知设置记录
+    /// - Throws: 数据库查询错误
     func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord {
         let rows = try await database.query(
             """
@@ -134,6 +213,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         )
     }
 
+    /// 更新应用角标是否启用
+    ///
+    /// 更新后立即刷新应用角标数字
+    ///
+    /// - Parameters:
+    ///   - userID: 用户 ID
+    ///   - isEnabled: 是否启用角标
+    /// - Throws: 数据库更新错误
     func updateBadgeEnabled(userID: UserID, isEnabled: Bool) async throws {
         try await upsertBadgeSetting(
             userID: userID,
@@ -143,6 +230,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         _ = try await refreshApplicationBadge(userID: userID)
     }
 
+    /// 更新角标是否包含免打扰会话
+    ///
+    /// 更新后立即刷新应用角标数字
+    ///
+    /// - Parameters:
+    ///   - userID: 用户 ID
+    ///   - includeMuted: 是否包含免打扰会话的未读数
+    /// - Throws: 数据库更新错误
     func updateBadgeIncludeMuted(userID: UserID, includeMuted: Bool) async throws {
         try await upsertBadgeSetting(
             userID: userID,
@@ -152,6 +247,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         _ = try await refreshApplicationBadge(userID: userID)
     }
 
+    /// 刷新应用角标
+    ///
+    /// 根据通知设置计算未读数，并更新应用图标角标
+    ///
+    /// - Parameter userID: 用户 ID
+    /// - Returns: 计算后的角标数字
+    /// - Throws: 数据库查询错误
     func refreshApplicationBadge(userID: UserID) async throws -> Int {
         let setting = try await notificationSetting(for: userID)
         let badgeCount: Int
@@ -174,6 +276,17 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
 
     // MARK: - MessageRepository
 
+    /// 插入出站文本消息
+    ///
+    /// 流程：
+    /// 1. 生成消息和内容表 SQL 语句
+    /// 2. 事务写入数据库
+    /// 3. 调度搜索索引更新
+    /// 4. 调度会话索引更新
+    ///
+    /// - Parameter input: 文本消息输入
+    /// - Returns: 已存储的消息
+    /// - Throws: 数据库事务错误
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage {
         let result = MessageDAO.insertOutgoingTextStatements(input)
         try await database.performTransaction(result.statements, paths: paths)

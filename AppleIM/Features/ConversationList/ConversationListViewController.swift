@@ -8,42 +8,69 @@
 import Combine
 import UIKit
 
+/// 主会话列表 section 标识
 private let conversationListSection = "main"
+/// 搜索联系人 section 标识
 private let searchContactsSection = "search_contacts"
+/// 搜索会话 section 标识
 private let searchConversationsSection = "search_conversations"
+/// 搜索消息 section 标识
 private let searchMessagesSection = "search_messages"
 
+/// 会话列表账号操作
 nonisolated enum ConversationListAccountAction: Sendable {
+    /// 切换当前账号
     case switchAccount
+    /// 退出当前账号
     case logOut
 }
 
+/// 会话列表页面控制器
 @MainActor
 final class ConversationListViewController: UIViewController {
+    /// 会话列表 ViewModel
     private let viewModel: ConversationListViewModel
+    /// 搜索 ViewModel
     private let searchViewModel: SearchViewModel
+    /// 选择会话回调
     private let onSelectConversation: (ConversationListRowState) -> Void
+    /// 首次加载结束回调
     private let onInitialLoadFinished: () -> Void
+    /// 账号操作回调
     private let onAccountAction: (ConversationListAccountAction) -> Void
+    /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
+    /// 列表 diffable 数据源
     private var dataSource: UICollectionViewDiffableDataSource<String, String>?
+    /// 当前会话行缓存
     private var rowsByID: [String: ConversationListRowState] = [:]
+    /// 当前搜索行缓存
     private var searchRowsByID: [String: SearchResultRowState] = [:]
+    /// 已渲染的会话 ID 顺序
     private var renderedConversationIDs: [String] = []
+    /// 最近一次会话状态
     private var lastConversationState = ConversationListViewState()
+    /// 最近一次搜索状态
     private var lastSearchState = SearchViewState()
+    /// 是否已上报首次加载结束
     private var didReportInitialLoadFinished = false
 
+    /// 会话列表 collection view
     private lazy var collectionView = UICollectionView(
         frame: .zero,
         collectionViewLayout: makeLayout()
     )
+    /// 系统搜索控制器
     private let searchController = UISearchController(searchResultsController: nil)
 
+    /// 空状态标签
     private let emptyLabel = UILabel()
+    /// 加载指示器
     private let loadingIndicator = UIActivityIndicatorView(style: .medium)
+    /// 渐变背景
     private let backgroundView = GradientBackgroundView()
 
+    /// 初始化会话列表页面
     init(
         viewModel: ConversationListViewModel,
         searchViewModel: SearchViewModel,
@@ -59,10 +86,12 @@ final class ConversationListViewController: UIViewController {
         super.init(nibName: nil, bundle: nil)
     }
 
+    /// 禁用 storyboard 初始化
     required init?(coder: NSCoder) {
         fatalError("Storyboard initialization is not supported.")
     }
 
+    /// 配置视图、数据源和状态绑定
     override func viewDidLoad() {
         super.viewDidLoad()
         configureView()
@@ -70,17 +99,20 @@ final class ConversationListViewController: UIViewController {
         bindViewModel()
     }
 
+    /// 页面出现时触发会话加载
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         viewModel.loadIfNeeded()
     }
 
+    /// 页面消失时取消会话和搜索任务
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         viewModel.cancel()
         searchViewModel.cancel()
     }
 
+    /// 创建会话列表视图层级和约束
     private func configureView() {
         title = "ChatBridge"
         view.backgroundColor = .systemBackground
@@ -149,6 +181,7 @@ final class ConversationListViewController: UIViewController {
         ])
     }
 
+    /// 配置 diffable data source 与 section header
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<RoundedConversationCell, String> { [weak self] cell, _, rowID in
             guard let self else { return }
@@ -202,6 +235,7 @@ final class ConversationListViewController: UIViewController {
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
+    /// 绑定会话列表和搜索状态
     private func bindViewModel() {
         viewModel.statePublisher
             .sink { [weak self] state in
@@ -224,6 +258,7 @@ final class ConversationListViewController: UIViewController {
             .store(in: &cancellables)
     }
 
+    /// 渲染普通会话列表状态
     private func renderConversations(_ state: ConversationListViewState) {
         title = state.title
         emptyLabel.text = state.emptyMessage
@@ -266,6 +301,7 @@ final class ConversationListViewController: UIViewController {
         renderedConversationIDs = rowIDs
     }
 
+    /// 在首次加载进入终态时回调上层
     private func reportInitialLoadFinishedIfNeeded(for state: ConversationListViewState) {
         guard !didReportInitialLoadFinished else { return }
 
@@ -278,6 +314,7 @@ final class ConversationListViewController: UIViewController {
         }
     }
 
+    /// 渲染搜索结果状态
     private func renderSearch(_ state: SearchViewState) {
         title = "Search"
 
@@ -321,6 +358,7 @@ final class ConversationListViewController: UIViewController {
         dataSource?.apply(snapshot, animatingDifferences: true)
     }
 
+    /// 判断是否需要完整重建会话列表快照
     private func shouldRebuildConversationSnapshot(with rowIDs: [String], phase: ConversationListViewState.LoadingPhase) -> Bool {
         guard !renderedConversationIDs.isEmpty else {
             return true
@@ -333,6 +371,7 @@ final class ConversationListViewController: UIViewController {
         return !rowIDs.starts(with: renderedConversationIDs) || phase == .loading
     }
 
+    /// 创建列表布局
     private func makeLayout() -> UICollectionViewLayout {
         var configuration = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
         configuration.headerMode = .supplementary
@@ -345,6 +384,7 @@ final class ConversationListViewController: UIViewController {
         return UICollectionViewCompositionalLayout.list(using: configuration)
     }
 
+    /// 为会话行创建右滑操作
     private func swipeActionsConfiguration(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard
             let rowID = dataSource?.itemIdentifier(for: indexPath),
@@ -374,6 +414,7 @@ final class ConversationListViewController: UIViewController {
         return configuration
     }
 
+    /// 创建会话行尾部附件
     private func accessories(for row: ConversationListRowState) -> [UICellAccessory] {
         var accessories: [UICellAccessory] = [
             .customView(configuration: .init(customView: TrailingConversationStatusView(row: row), placement: .trailing()))
@@ -386,6 +427,7 @@ final class ConversationListViewController: UIViewController {
         return accessories
     }
 
+    /// 生成会话行无障碍描述
     private func accessibilityLabel(for row: ConversationListRowState) -> String {
         var parts = [row.title, row.subtitle]
 
@@ -404,6 +446,7 @@ final class ConversationListViewController: UIViewController {
         return parts.joined(separator: ", ")
     }
 
+    /// 根据 section 标识返回展示标题
     private func title(for sectionID: String) -> String {
         switch sectionID {
         case conversationListSection:
@@ -419,6 +462,7 @@ final class ConversationListViewController: UIViewController {
         }
     }
 
+    /// 将搜索行转换为可打开的会话行
     private func conversationRow(for searchRow: SearchResultRowState) -> ConversationListRowState? {
         guard let conversationID = searchRow.conversationID else {
             return nil
@@ -440,6 +484,7 @@ final class ConversationListViewController: UIViewController {
         )
     }
 
+    /// 打开账号操作菜单
     @objc private func accountButtonTapped() {
         let alertController = UIAlertController(
             title: "ChatBridge Account",
@@ -471,7 +516,9 @@ final class ConversationListViewController: UIViewController {
     }
 }
 
+/// 会话列表交互回调
 extension ConversationListViewController: UICollectionViewDelegate {
+    /// 选择会话或搜索结果后进入聊天页
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
 
@@ -492,6 +539,7 @@ extension ConversationListViewController: UICollectionViewDelegate {
         onSelectConversation(row)
     }
 
+    /// 滚动时按当前可见位置触发分页加载
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard lastSearchState.isSearching == false else {
             return
@@ -512,35 +560,45 @@ extension ConversationListViewController: UICollectionViewDelegate {
     }
 }
 
+/// 搜索框输入更新
 extension ConversationListViewController: UISearchResultsUpdating {
+    /// 将搜索框文本同步给搜索 ViewModel
     func updateSearchResults(for searchController: UISearchController) {
         searchViewModel.setQuery(searchController.searchBar.text ?? "")
     }
 }
 
+/// 安全下标访问
 private extension Array {
+    /// 越界时返回 nil
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
     }
 }
 
+/// 会话列表 section 头部视图
 private final class ConversationListHeaderView: UICollectionReusableView {
+    /// 标题标签
     private let titleLabel = UILabel()
 
+    /// 初始化头部视图
     override init(frame: CGRect) {
         super.init(frame: frame)
         configureView()
     }
 
+    /// 从 storyboard/xib 初始化头部视图
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
     }
 
+    /// 设置头部标题
     func configure(title: String) {
         titleLabel.text = title
     }
 
+    /// 配置标题样式和约束
     private func configureView() {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.font = .preferredFont(forTextStyle: .largeTitle)
@@ -558,21 +616,27 @@ private final class ConversationListHeaderView: UICollectionReusableView {
     }
 }
 
+/// 会话列表尾部状态视图
 private final class TrailingConversationStatusView: UIView {
+    /// 竖向状态栈
     private let stackView = UIStackView()
+    /// 时间标签
     private let timeLabel = UILabel()
 
+    /// 根据会话行初始化状态视图
     init(row: ConversationListRowState) {
         super.init(frame: .zero)
         configureView()
         configure(row: row)
     }
 
+    /// 从 storyboard/xib 初始化状态视图
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
     }
 
+    /// 配置状态视图层级和约束
     private func configureView() {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .vertical
@@ -593,6 +657,7 @@ private final class TrailingConversationStatusView: UIView {
         ])
     }
 
+    /// 根据会话行展示时间、未读或免打扰状态
     private func configure(row: ConversationListRowState) {
         timeLabel.text = row.timeText
 
@@ -610,22 +675,27 @@ private final class TrailingConversationStatusView: UIView {
     }
 }
 
+/// 会话列表本地未读徽标
 private final class UnreadBadgeLabel: UILabel {
+    /// 初始化未读徽标
     override init(frame: CGRect) {
         super.init(frame: frame)
         configure()
     }
 
+    /// 从 storyboard/xib 初始化未读徽标
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure()
     }
 
+    /// 保证徽标拥有最小可读尺寸
     override var intrinsicContentSize: CGSize {
         let size = super.intrinsicContentSize
         return CGSize(width: max(size.width + 12, 22), height: 22)
     }
 
+    /// 配置徽标样式
     private func configure() {
         textAlignment = .center
         textColor = .white

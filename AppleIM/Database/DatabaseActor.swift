@@ -12,13 +12,20 @@ import SQLCipher
 /// 数据库操作错误类型
 /// 所有错误都包含路径和详细错误信息，便于调试
 nonisolated enum DatabaseActorError: Error, Equatable, Sendable {
-    case openFailed(path: String, message: String)        // 打开数据库失败
-    case executeFailed(path: String, statement: String, message: String)  // 执行 SQL 失败
-    case prepareFailed(path: String, statement: String, message: String)  // 预编译 SQL 失败
-    case bindFailed(path: String, statement: String, message: String)     // 绑定参数失败
-    case readFailed(path: String, statement: String, message: String)     // 读取数据失败
-    case closeFailed(path: String, message: String)       // 关闭数据库失败
-    case encryptionFailed(path: String, message: String)  // 加密或明文迁移失败
+    /// 打开数据库失败
+    case openFailed(path: String, message: String)
+    /// 执行 SQL 失败
+    case executeFailed(path: String, statement: String, message: String)
+    /// 预编译 SQL 失败
+    case prepareFailed(path: String, statement: String, message: String)
+    /// 绑定参数失败
+    case bindFailed(path: String, statement: String, message: String)
+    /// 读取数据失败
+    case readFailed(path: String, statement: String, message: String)
+    /// 关闭数据库失败
+    case closeFailed(path: String, message: String)
+    /// 加密或明文迁移失败
+    case encryptionFailed(path: String, message: String)
 }
 
 nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedError {
@@ -27,10 +34,12 @@ nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedErro
         safeDescription
     }
 
+    /// 本地化错误描述
     var errorDescription: String? {
         safeDescription
     }
 
+    /// 脱敏后的错误描述
     var safeDescription: String {
         switch self {
         case .openFailed:
@@ -55,26 +64,37 @@ nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedErro
 /// 记录当前数据库版本、迁移历史、维护时间等信息
 /// 存储在 migration_meta 表和 migration_meta.json 文件中
 nonisolated struct MigrationMetadata: Codable, Equatable, Sendable {
-    let schemaVersion: Int           // 当前 schema 版本号
-    let lastMigrationID: String      // 最后执行的迁移脚本 ID
-    let lastVacuumAt: Int?           // 最近一次 VACUUM 压缩时间
-    let lastIntegrityCheckAt: Int?   // 最近一次完整性检查时间
-    let ftsRebuildVersion: Int       // FTS 索引重建版本
-    let appliedScriptIDs: [String]   // 已应用的迁移脚本 ID 列表
+    /// 当前 schema 版本号
+    let schemaVersion: Int
+    /// 最后执行的迁移脚本 ID
+    let lastMigrationID: String
+    /// 最近一次 VACUUM 压缩时间
+    let lastVacuumAt: Int?
+    /// 最近一次完整性检查时间
+    let lastIntegrityCheckAt: Int?
+    /// FTS 索引重建版本
+    let ftsRebuildVersion: Int
+    /// 已应用的迁移脚本 ID 列表
+    let appliedScriptIDs: [String]
 }
 
 /// 数据库初始化结果
 /// 包含账号存储路径和迁移元数据
 nonisolated struct DatabaseBootstrapResult: Equatable, Sendable {
-    let paths: AccountStoragePaths   // 账号存储路径
-    let metadata: MigrationMetadata  // 迁移元数据
+    /// 账号存储路径
+    let paths: AccountStoragePaths
+    /// 迁移元数据
+    let metadata: MigrationMetadata
 }
 
 /// 数据库完整性检查结果。
 nonisolated struct DatabaseIntegrityCheckResult: Equatable, Sendable {
+    /// 接受检查的数据库文件类型
     let database: DatabaseFileKind
+    /// SQLite integrity_check 返回的消息列表
     let messages: [String]
 
+    /// 完整性检查是否全部返回 ok
     var isOK: Bool {
         messages == ["ok"]
     }
@@ -94,6 +114,7 @@ nonisolated struct DatabaseIntegrityCheckResult: Equatable, Sendable {
 /// - 事务使用 BEGIN/COMMIT/ROLLBACK 手动管理，失败时自动回滚
 /// - 参数绑定使用预编译语句，防止 SQL 注入
 actor DatabaseActor {
+    /// 按数据库标准路径缓存的 SQLCipher 密钥
     private var encryptionKeysByDatabasePath: [String: Data] = [:]
 
     /// 为账号下的所有数据库文件配置同一个 SQLCipher 密钥。
@@ -335,9 +356,12 @@ actor DatabaseActor {
         }
     }
 
-    /// 将已有明文 SQLite 库迁移为 SQLCipher 加密库。
+    /// 将已有明文 SQLite 库迁移为 SQLCipher 加密库
     ///
-    /// 新安装的 0 字节数据库会直接按加密连接初始化；只有“带 key 打不开、无 key 可读”的旧库才会导出迁移。
+    /// 新安装的 0 字节数据库会直接按加密连接初始化；只有”带 key 打不开、无 key 可读”的旧库才会导出迁移
+    ///
+    /// - Parameter paths: 账号存储路径
+    /// - Throws: 迁移失败时抛出错误
     private func migratePlaintextDatabasesIfNeeded(in paths: AccountStoragePaths) throws {
         for database in DatabaseFileKind.allCases {
             let databaseURL = url(for: database, in: paths)
@@ -364,6 +388,16 @@ actor DatabaseActor {
         }
     }
 
+    /// 迁移单个明文数据库为加密数据库
+    ///
+    /// 流程：
+    /// 1. 创建临时加密数据库
+    /// 2. 使用 sqlcipher_export 导出数据
+    /// 3. 验证加密数据库可读
+    /// 4. 备份原数据库并替换为加密版本
+    ///
+    /// - Parameter databaseURL: 数据库文件 URL
+    /// - Throws: 迁移失败时抛出错误
     private func migratePlaintextDatabase(at databaseURL: URL) throws {
         guard let key = encryptionKey(for: databaseURL) else {
             return
@@ -420,6 +454,14 @@ actor DatabaseActor {
         }
     }
 
+    /// 检查数据库是否可读
+    ///
+    /// 尝试打开数据库并执行简单查询
+    ///
+    /// - Parameters:
+    ///   - url: 数据库文件 URL
+    ///   - applyingConfiguredKey: 是否应用配置的加密密钥
+    /// - Returns: 是否可读
     private func canReadDatabase(at url: URL, applyingConfiguredKey: Bool) -> Bool {
         do {
             let handle = try openDatabase(at: url, applyingConfiguredKey: applyingConfiguredKey)
@@ -434,6 +476,12 @@ actor DatabaseActor {
         }
     }
 
+    /// 检查数据库是否可用指定密钥读取
+    ///
+    /// - Parameters:
+    ///   - url: 数据库文件 URL
+    ///   - key: 加密密钥
+    /// - Returns: 是否可读
     private func canReadDatabase(at url: URL, applyingKey key: Data) -> Bool {
         do {
             let handle = try openDatabase(at: url, encryptionKey: key)
@@ -480,6 +528,14 @@ actor DatabaseActor {
     }
 
     /// 执行幂等 SQL
+    ///
+    /// 执行可重复执行的 SQL 语句（如 CREATE INDEX IF NOT EXISTS）
+    ///
+    /// - Parameters:
+    ///   - statement: SQL 语句
+    ///   - database: 数据库类型
+    ///   - paths: 账号存储路径
+    /// - Throws: 执行失败时抛出错误
     private func executeIdempotentStatement(
         _ statement: String,
         in database: DatabaseFileKind,
@@ -495,6 +551,16 @@ actor DatabaseActor {
     }
 
     /// 按需补充字段
+    ///
+    /// 检查表中是否存在指定字段，不存在则添加
+    ///
+    /// - Parameters:
+    ///   - table: 表名
+    ///   - column: 字段名
+    ///   - definition: 字段定义（如 "INTEGER DEFAULT 1"）
+    ///   - database: 数据库类型
+    ///   - paths: 账号存储路径
+    /// - Throws: 执行失败时抛出错误
     private func addColumnIfMissing(
         table: String,
         column: String,
@@ -517,11 +583,27 @@ actor DatabaseActor {
     }
 
     /// 读取表字段名
+    ///
+    /// 使用 PRAGMA table_info 查询表结构
+    ///
+    /// - Parameters:
+    ///   - table: 表名
+    ///   - handle: 数据库连接句柄
+    ///   - url: 数据库文件 URL
+    /// - Returns: 字段名集合
+    /// - Throws: 查询失败时抛出错误
     private func columnNames(in table: String, using handle: OpaquePointer, at url: URL) throws -> Set<String> {
         let rows = try query("PRAGMA table_info(\(table));", parameters: [], using: handle, at: url)
         return Set(rows.compactMap { $0.string("name") })
     }
 
+    /// 从数据库加载迁移元数据
+    ///
+    /// 从 migration_meta 表读取元数据
+    ///
+    /// - Parameter paths: 账号存储路径
+    /// - Returns: 迁移元数据，如果表为空则返回 nil
+    /// - Throws: 数据库操作失败时抛出错误
     private func loadMigrationMetadataFromDatabase(in paths: AccountStoragePaths) throws -> MigrationMetadata? {
         let databaseURL = url(for: .main, in: paths)
         let handle = try openDatabase(at: databaseURL)
@@ -604,6 +686,9 @@ actor DatabaseActor {
     }
 
     /// 获取元数据文件 URL
+    ///
+    /// - Parameter paths: 账号存储路径
+    /// - Returns: migration_meta.json 文件 URL
     private func metadataURL(in paths: AccountStoragePaths) -> URL {
         paths.cacheDirectory.appendingPathComponent("migration_meta.json")
     }
@@ -620,10 +705,12 @@ actor DatabaseActor {
         }
     }
 
+    /// 获取指定数据库 URL 对应的 SQLCipher 密钥
     private func encryptionKey(for url: URL) -> Data? {
         encryptionKeysByDatabasePath[normalizedPath(for: url)]
     }
 
+    /// 标准化数据库路径，用于密钥缓存查找
     private func normalizedPath(for url: URL) -> String {
         url.standardizedFileURL.path
     }
@@ -721,6 +808,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 编译 SQL 语句
     private func prepare(_ statement: String, using handle: OpaquePointer, at url: URL) throws -> OpaquePointer {
         var preparedStatement: OpaquePointer?
         let prepareStatus = sqlite3_prepare_v2(handle, statement, -1, &preparedStatement, nil)
@@ -823,10 +911,12 @@ actor DatabaseActor {
         try openDatabase(at: url, applyingConfiguredKey: true)
     }
 
+    /// 打开数据库连接，并按需应用已配置密钥
     private func openDatabase(at url: URL, applyingConfiguredKey: Bool) throws -> OpaquePointer {
         try openDatabase(at: url, encryptionKey: applyingConfiguredKey ? encryptionKey(for: url) : nil)
     }
 
+    /// 打开数据库连接，并使用指定密钥解密
     private func openDatabase(at url: URL, encryptionKey: Data?) throws -> OpaquePointer {
         var handle: OpaquePointer?
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
@@ -854,6 +944,7 @@ actor DatabaseActor {
         return handle
     }
 
+    /// 对主数据库连接应用 SQLCipher 密钥
     private func applyEncryptionKey(_ key: Data, to handle: OpaquePointer, at url: URL) throws {
         let status = key.withUnsafeBytes { buffer in
             sqlite3_key(handle, buffer.baseAddress, Int32(buffer.count))
@@ -864,6 +955,7 @@ actor DatabaseActor {
         }
     }
 
+    /// 对附加数据库连接应用 SQLCipher 密钥
     private func applyEncryptionKey(_ key: Data, to handle: OpaquePointer, databaseName: String, at url: URL) throws {
         let status = databaseName.withCString { databaseNamePointer in
             key.withUnsafeBytes { buffer in
@@ -894,6 +986,7 @@ actor DatabaseActor {
         return String(cString: message)
     }
 
+    /// 将 sqlite3_exec 返回的错误指针转换为字符串
     nonisolated private static func errorMessage(from pointer: UnsafeMutablePointer<Int8>?) -> String? {
         guard let pointer else {
             return nil
@@ -902,10 +995,12 @@ actor DatabaseActor {
         return String(cString: pointer)
     }
 
+    /// 转义 SQL 字符串字面量中的单引号
     nonisolated private static func escapedSQLString(_ value: String) -> String {
         value.replacingOccurrences(of: "'", with: "''")
     }
 
+    /// SQLite transient destructor，确保绑定文本和 blob 时复制内容
     nonisolated private static var transientDestructor: sqlite3_destructor_type {
         unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     }

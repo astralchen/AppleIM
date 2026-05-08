@@ -7,32 +7,50 @@ import UIKit
 @preconcurrency import Photos
 import UniformTypeIdentifiers
 
+/// 图片库选择预览信息
 @MainActor
 struct ChatPhotoLibrarySelectionPreview {
+    /// Photos 资源本地 ID
     let id: String
+    /// 预览缩略图
     let image: UIImage?
+    /// 预览标题
     let title: String
+    /// 视频时长文本
     let durationText: String?
+    /// 是否为视频资源
     let isVideo: Bool
 }
 
+/// 已准备完成、可进入聊天输入栏的媒体
 @MainActor
 struct ChatPhotoLibraryPreparedMedia {
+    /// Photos 资源本地 ID
     let id: String
+    /// 准备完成后的预览信息
     let preview: ChatPhotoLibrarySelectionPreview
+    /// 聊天输入栏可发送的媒体
     let media: ChatComposerMedia
 }
 
+/// 图片库多选状态
 nonisolated struct ChatPhotoLibrarySelectionState {
+    /// 选择切换结果
     enum ToggleResult: Equatable {
+        /// 已选中
         case selected
+        /// 已取消选择
         case deselected
+        /// 已达到选择上限
         case limitReached
     }
 
+    /// 最大可选择数量
     static let maxSelectionCount = 9
+    /// 当前已选资源 ID，保留选择顺序
     private(set) var selectedAssetIDs: [String] = []
 
+    /// 切换资源选择状态
     mutating func toggle(assetID: String) -> ToggleResult {
         if let existingIndex = selectedAssetIDs.firstIndex(of: assetID) {
             selectedAssetIDs.remove(at: existingIndex)
@@ -47,52 +65,78 @@ nonisolated struct ChatPhotoLibrarySelectionState {
         return .selected
     }
 
+    /// 移除指定资源选择
     mutating func remove(assetID: String) {
         selectedAssetIDs.removeAll { $0 == assetID }
     }
 
+    /// 清空所有选择
     mutating func removeAll() {
         selectedAssetIDs.removeAll()
     }
 
+    /// 判断资源是否已选中
     func contains(assetID: String) -> Bool {
         selectedAssetIDs.contains(assetID)
     }
 
+    /// 返回资源的选择序号
     func selectionNumber(for assetID: String) -> Int? {
         selectedAssetIDs.firstIndex(of: assetID).map { $0 + 1 }
     }
 }
 
+/// 聊天页图片库键盘输入视图
 @MainActor
 final class ChatPhotoLibraryInputView: UIInputView {
+    /// 资源开始选择并进入准备态的回调
     var onSelectionStarted: ((ChatPhotoLibrarySelectionPreview) -> Void)?
+    /// 资源准备完成的回调
     var onSelectionPrepared: ((ChatPhotoLibraryPreparedMedia) -> Void)?
+    /// 资源取消选择的回调
     var onSelectionRemoved: ((String) -> Void)?
+    /// 资源准备失败的回调
     var onSelectionFailed: ((String, String) -> Void)?
+    /// 选择数量达到上限的回调
     var onSelectionLimitReached: ((String) -> Void)?
 
+    /// 键盘面板固定高度
     private static let panelHeight: CGFloat = 342
+    /// 图片网格间距
     private static let interItemSpacing: CGFloat = 2
 
+    /// 面板模糊背景
     private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    /// 面板着色层
     private let tintView = UIView()
+    /// 顶部拖拽提示条
     private let grabberView = UIView()
+    /// 图片和视频网格
     private let collectionView: UICollectionView
+    /// 授权或空状态容器
     private let statusView = UIView()
+    /// 授权或空状态文案
     private let statusLabel = UILabel()
+    /// 状态操作按钮
     private let statusButton = UIButton(type: .system)
+    /// Photos 图片请求管理器
     private let imageManager = PHCachingImageManager()
+    /// Photos 资源文件请求管理器
     private let resourceManager = PHAssetResourceManager.default()
 
+    /// 当前拉取到的 Photos 资源
     private var assets: PHFetchResult<PHAsset>?
+    /// 当前网格展示的资源 ID 顺序
     private var representedAssetIDs: [String] = []
+    /// 当前多选状态
     private var selectionState = ChatPhotoLibrarySelectionState()
 
+    /// 键盘输入视图固有尺寸
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: Self.panelHeight)
     }
 
+    /// 初始化图片库输入视图
     override init(frame: CGRect, inputViewStyle: UIInputView.Style) {
         let layout = UICollectionViewFlowLayout()
         layout.minimumLineSpacing = Self.interItemSpacing
@@ -104,6 +148,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         refreshAuthorization()
     }
 
+    /// 从 storyboard/xib 初始化图片库输入视图
     required init?(coder: NSCoder) {
         let layout = UICollectionViewFlowLayout()
         layout.minimumLineSpacing = Self.interItemSpacing
@@ -115,6 +160,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         refreshAuthorization()
     }
 
+    /// 刷新照片库授权状态并加载资源
     func refreshAuthorization() {
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
 
@@ -141,6 +187,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         }
     }
 
+    /// 配置面板视图层级和约束
     private func configureView() {
         backgroundColor = .clear
         allowsSelfSizing = false
@@ -230,6 +277,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         ])
     }
 
+    /// 加载最近的图片和视频资源
     private func loadAssets() {
         let options = PHFetchOptions()
         options.fetchLimit = 180
@@ -253,8 +301,10 @@ final class ChatPhotoLibraryInputView: UIInputView {
         }
     }
 
+    /// 状态按钮点击动作
     private var statusButtonAction: (() -> Void)?
 
+    /// 展示授权、空状态或错误提示
     private func showStatus(_ message: String, buttonTitle: String?, action: (() -> Void)?) {
         collectionView.isHidden = true
         statusView.isHidden = false
@@ -264,32 +314,38 @@ final class ChatPhotoLibraryInputView: UIInputView {
         statusButtonAction = action
     }
 
+    /// 执行当前状态按钮动作
     @objc private func statusButtonTapped() {
         statusButtonAction?()
     }
 
+    /// 打开系统设置页
     private func openSettings() {
         guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
         UIApplication.shared.open(url)
     }
 
+    /// 根据 indexPath 获取 Photos 资源
     private func asset(at indexPath: IndexPath) -> PHAsset? {
         guard let assets, indexPath.item < assets.count else { return nil }
         return assets.object(at: indexPath.item)
     }
 
+    /// 外部移除已选资源
     func removeSelection(assetID: String) {
         guard selectionState.contains(assetID: assetID) else { return }
         selectionState.remove(assetID: assetID)
         reloadAssetCell(assetID: assetID)
     }
 
+    /// 外部清空所有选择
     func clearSelection() {
         let selectedIDs = selectionState.selectedAssetIDs
         selectionState.removeAll()
         selectedIDs.forEach(reloadAssetCell(assetID:))
     }
 
+    /// 选择或取消选择资源并开始准备媒体
     private func selectAsset(_ asset: PHAsset) {
         switch selectionState.toggle(assetID: asset.localIdentifier) {
         case .selected:
@@ -319,11 +375,13 @@ final class ChatPhotoLibraryInputView: UIInputView {
         }
     }
 
+    /// 刷新指定资源对应的单元格
     private func reloadAssetCell(assetID: String) {
         guard let index = representedAssetIDs.firstIndex(of: assetID) else { return }
         collectionView.reloadItems(at: [IndexPath(item: index, section: 0)])
     }
 
+    /// 请求用于输入栏展示的缩略图预览
     private func requestPreview(
         for asset: PHAsset,
         completion: @escaping (ChatPhotoLibrarySelectionPreview) -> Void
@@ -353,6 +411,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         }
     }
 
+    /// 根据资源类型准备图片或视频媒体
     private func prepareMedia(for asset: PHAsset, preview: ChatPhotoLibrarySelectionPreview) {
         switch asset.mediaType {
         case .image:
@@ -366,6 +425,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         }
     }
 
+    /// 读取图片二进制数据并生成发送媒体
     private func prepareImage(for asset: PHAsset, preview: ChatPhotoLibrarySelectionPreview) {
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
@@ -403,6 +463,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         }
     }
 
+    /// 将视频资源流式写入临时文件并生成发送媒体
     private func prepareVideo(for asset: PHAsset, preview: ChatPhotoLibrarySelectionPreview) {
         guard let resource = PHAssetResource.assetResources(for: asset).first(where: { resource in
             resource.type == .video || resource.type == .fullSizeVideo || resource.type == .pairedVideo
@@ -463,6 +524,7 @@ final class ChatPhotoLibraryInputView: UIInputView {
         )
     }
 
+    /// 格式化视频时长文本
     fileprivate static func durationText(for asset: PHAsset) -> String? {
         guard asset.mediaType == .video else { return nil }
         let seconds = max(0, Int(asset.duration.rounded()))
@@ -470,19 +532,26 @@ final class ChatPhotoLibraryInputView: UIInputView {
     }
 }
 
+/// 图片库视频文件流式写入工具
 enum ChatPhotoLibraryVideoFileIO {
+    /// 视频流式写入错误
     enum StreamError: Error {
+        /// 无法打开临时文件
         case unableToOpenFile
+        /// 无法关闭临时文件
         case unableToCloseFile
+        /// Photos 资源请求失败
         case requestFailed
     }
 
+    /// 创建资源数据接收回调
     nonisolated static func makeDataReceivedHandler(fileHandle: FileHandle) -> (Data) -> Void {
         { data in
             fileHandle.write(data)
         }
     }
 
+    /// 将 Photos 视频资源流式写入临时文件
     nonisolated static func stream(
         _ resource: PHAssetResource,
         to temporaryURL: URL,
@@ -532,11 +601,14 @@ enum ChatPhotoLibraryVideoFileIO {
     }
 }
 
+/// 图片库网格数据源和布局代理
 extension ChatPhotoLibraryInputView: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+    /// 返回当前展示的资源数量
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         representedAssetIDs.count
     }
 
+    /// 配置图片库资源单元格
     func collectionView(
         _ collectionView: UICollectionView,
         cellForItemAt indexPath: IndexPath
@@ -557,11 +629,13 @@ extension ChatPhotoLibraryInputView: UICollectionViewDataSource, UICollectionVie
         return mediaCell
     }
 
+    /// 点击资源时切换选择状态
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let asset = asset(at: indexPath) else { return }
         selectAsset(asset)
     }
 
+    /// 按三列网格计算资源单元格尺寸
     func collectionView(
         _ collectionView: UICollectionView,
         layout collectionViewLayout: UICollectionViewLayout,
@@ -573,29 +647,42 @@ extension ChatPhotoLibraryInputView: UICollectionViewDataSource, UICollectionVie
     }
 }
 
+/// 图片库资源单元格
 @MainActor
 private final class ChatPhotoLibraryCell: UICollectionViewCell {
+    /// 单元格复用标识
     static let reuseIdentifier = "ChatPhotoLibraryCell"
 
+    /// 缩略图视图
     private let imageView = UIImageView()
+    /// 视频时长标签
     private let durationLabel = UILabel()
+    /// 视频底部渐变遮罩
     private let gradientView = UIView()
+    /// 视频播放图标
     private let videoIconView = UIImageView(image: UIImage(systemName: "play.fill"))
+    /// 选择序号徽标
     private let selectionBadgeView = UILabel()
+    /// 选中边框
     private let selectionBorderView = UIView()
+    /// 当前缩略图请求 ID
     private var requestID: PHImageRequestID?
+    /// 当前单元格代表的资源 ID
     private var representedAssetID: String?
 
+    /// 初始化资源单元格
     override init(frame: CGRect) {
         super.init(frame: frame)
         configureView()
     }
 
+    /// 从 storyboard/xib 初始化资源单元格
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configureView()
     }
 
+    /// 复用前取消图片请求并重置 UI
     override func prepareForReuse() {
         super.prepareForReuse()
         imageView.image = nil
@@ -610,6 +697,7 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         requestID = nil
     }
 
+    /// 根据 Photos 资源和选择序号配置单元格
     func configure(asset: PHAsset, imageManager: PHCachingImageManager, selectionNumber: Int?) {
         representedAssetID = asset.localIdentifier
         accessibilityIdentifier = "chat.photoLibraryCell.\(asset.localIdentifier)"
@@ -651,6 +739,7 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         }
     }
 
+    /// 配置单元格视图层级、样式和约束
     private func configureView() {
         contentView.backgroundColor = .secondarySystemGroupedBackground
         contentView.clipsToBounds = true
