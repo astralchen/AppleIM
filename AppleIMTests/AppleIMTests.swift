@@ -3979,6 +3979,27 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarDoesNotInstallPhotoLibraryAsTextInputView() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+
+        inputBar.showPhotoLibraryInput()
+
+        #expect(textView.inputView == nil)
+
+        inputBar.showKeyboardInput()
+
+        #expect(textView.inputView == nil)
+    }
+
+    @MainActor
+    @Test func chatPhotoLibraryInputDismissesAfterDownwardPanThreshold() throws {
+        #expect(ChatPhotoLibraryInputView.shouldDismissForPan(translationY: 93, velocityY: 0))
+        #expect(ChatPhotoLibraryInputView.shouldDismissForPan(translationY: 12, velocityY: 781))
+        #expect(ChatPhotoLibraryInputView.shouldDismissForPan(translationY: 40, velocityY: 320) == false)
+    }
+
+    @MainActor
     @Test func chatInputBarKeepsMoreButtonOutsideInputCapsule() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         inputBar.layoutIfNeeded()

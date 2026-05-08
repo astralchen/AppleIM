@@ -44,6 +44,7 @@ struct ChatPendingAttachmentPreviewItem {
 /// - `onTextChanged`: 文本变化
 /// - `onSend`: 发送消息
 /// - `onPhotoTapped`: 点击相册按钮
+/// - `onKeyboardInputRequested`: 从相册面板切回系统键盘输入
 /// - `onAttachmentRemoved`: 移除附件
 /// - `onVoiceTouchDown/DragExit/DragEnter/TouchUpInside/TouchUpOutside/TouchCancel`: 语音按钮触摸事件
 /// - `onHeightWillChange/DidChange`: 高度变化事件
@@ -55,6 +56,8 @@ final class ChatInputBarView: UIView {
     var onSend: ((String) -> Void)?
     /// 点击相册按钮回调
     var onPhotoTapped: (() -> Void)?
+    /// 请求恢复系统键盘输入回调
+    var onKeyboardInputRequested: (() -> Void)?
     /// 移除待发送附件回调
     var onAttachmentRemoved: ((String) -> Void)?
     /// 语音按钮按下回调
@@ -117,8 +120,6 @@ final class ChatInputBarView: UIView {
 
     /// 文本输入高度约束
     private var textInputHeightConstraint: NSLayoutConstraint?
-    /// 当前相册输入视图
-    private weak var photoLibraryInputView: UIView?
     /// Return 键是否发送消息
     private var isReturnKeySending = false
     /// 是否正在录音
@@ -254,23 +255,11 @@ final class ChatInputBarView: UIView {
         }
     }
 
-    /// 设置相册输入视图
-    ///
-    /// - Parameter view: 相册输入视图，传 nil 表示移除
-    func setPhotoLibraryInputView(_ view: UIView?) {
-        photoLibraryInputView = view
-        if isShowingPhotoLibraryInput {
-            textView.inputView = view
-            textView.reloadInputViews()
-        }
-    }
-
-    /// 切换到相册输入视图
+    /// 切换到相册输入面板
     func showPhotoLibraryInput() {
         isShowingPhotoLibraryInput = true
-        textView.inputView = photoLibraryInputView
-        textView.becomeFirstResponder()
-        textView.reloadInputViews()
+        textView.inputView = nil
+        textView.resignFirstResponder()
     }
 
     /// 切换回系统键盘输入
@@ -828,7 +817,8 @@ extension ChatInputBarView: UITextViewDelegate {
     /// 开始编辑时从相册输入切回键盘
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
         if isShowingPhotoLibraryInput {
-            showKeyboardInput()
+            isShowingPhotoLibraryInput = false
+            onKeyboardInputRequested?()
         }
         return true
     }

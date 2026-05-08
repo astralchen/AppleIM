@@ -37,8 +37,14 @@ final class ChatViewController: UIViewController {
     private let emptyLabel = UILabel()
     /// 聊天输入栏
     private let inputBarView = ChatInputBarView()
-    /// 图片库键盘输入视图
+    /// 图片库输入面板
     private lazy var photoLibraryInputView = makePhotoLibraryInputView()
+    /// 输入栏贴系统键盘约束
+    private var inputBarKeyboardBottomConstraint: NSLayoutConstraint?
+    /// 输入栏贴图片库面板约束
+    private var inputBarPhotoLibraryBottomConstraint: NSLayoutConstraint?
+    /// 图片库面板底部约束
+    private var photoLibraryInputBottomConstraint: NSLayoutConstraint?
     /// 语音录制控制器
     private let voiceRecorder = VoiceRecordingController()
     /// 语音播放控制器
@@ -99,11 +105,33 @@ final class ChatViewController: UIViewController {
         emptyLabel.isHidden = true
 
         inputBarView.translatesAutoresizingMaskIntoConstraints = false
+        photoLibraryInputView.translatesAutoresizingMaskIntoConstraints = false
+        photoLibraryInputView.isHidden = true
+        photoLibraryInputView.accessibilityIdentifier = "chat.photoLibraryInputPanel"
         configureInputBarCallbacks()
 
         view.addSubview(collectionView)
         view.addSubview(emptyLabel)
         view.addSubview(inputBarView)
+        view.addSubview(photoLibraryInputView)
+
+        let inputBarKeyboardBottomConstraint = inputBarView.bottomAnchor.constraint(
+            equalTo: view.keyboardLayoutGuide.topAnchor,
+            constant: -8
+        )
+        let inputBarPhotoLibraryBottomConstraint = inputBarView.bottomAnchor.constraint(
+            equalTo: photoLibraryInputView.topAnchor,
+            constant: -8
+        )
+        let photoLibraryInputHeightConstraint = photoLibraryInputView.heightAnchor.constraint(
+            equalToConstant: ChatPhotoLibraryInputView.panelHeight
+        )
+        let photoLibraryInputBottomConstraint = photoLibraryInputView.bottomAnchor.constraint(
+            equalTo: view.bottomAnchor
+        )
+        self.inputBarKeyboardBottomConstraint = inputBarKeyboardBottomConstraint
+        self.inputBarPhotoLibraryBottomConstraint = inputBarPhotoLibraryBottomConstraint
+        self.photoLibraryInputBottomConstraint = photoLibraryInputBottomConstraint
 
         NSLayoutConstraint.activate([
             backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -123,7 +151,12 @@ final class ChatViewController: UIViewController {
 
             inputBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             inputBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            inputBarView.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8)
+            inputBarKeyboardBottomConstraint,
+
+            photoLibraryInputView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            photoLibraryInputView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            photoLibraryInputBottomConstraint,
+            photoLibraryInputHeightConstraint
         ])
     }
 
@@ -137,6 +170,9 @@ final class ChatViewController: UIViewController {
         }
         inputBarView.onPhotoTapped = { [weak self] in
             self?.showPhotoLibraryInput()
+        }
+        inputBarView.onKeyboardInputRequested = { [weak self] in
+            self?.hidePhotoLibraryInput(animated: true)
         }
         inputBarView.onAttachmentRemoved = { [weak self] id in
             self?.removePendingAttachment(id: id)
@@ -169,9 +205,9 @@ final class ChatViewController: UIViewController {
         }
     }
 
-    /// 创建并绑定图片库输入视图
+    /// 创建并绑定图片库输入面板
     private func makePhotoLibraryInputView() -> ChatPhotoLibraryInputView {
-        let inputView = ChatPhotoLibraryInputView(frame: .zero, inputViewStyle: .keyboard)
+        let inputView = ChatPhotoLibraryInputView(frame: .zero)
 
         inputView.onSelectionStarted = { [weak self] preview in
             self?.upsertPendingAttachmentPreview(
@@ -208,15 +244,81 @@ final class ChatViewController: UIViewController {
         inputView.onSelectionLimitReached = { [weak self] message in
             self?.showTransientRecordingMessage(message)
         }
+        inputView.onDismissPanChanged = { [weak self] translationY in
+            self?.applyPhotoLibraryDismissPanTranslation(translationY)
+        }
+        inputView.onDismissRequested = { [weak self] in
+            self?.hidePhotoLibraryInput(animated: true)
+        }
 
         return inputView
     }
 
-    /// 展示图片库键盘输入视图
+    /// 展示图片库输入面板
     private func showPhotoLibraryInput() {
-        inputBarView.setPhotoLibraryInputView(photoLibraryInputView)
-        photoLibraryInputView.refreshAuthorization()
+        let shouldStickToBottom = isNearBottom()
         inputBarView.showPhotoLibraryInput()
+        photoLibraryInputView.refreshAuthorization()
+        setPhotoLibraryInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
+    }
+
+    /// 隐藏图片库输入面板
+    private func hidePhotoLibraryInput(animated: Bool) {
+        setPhotoLibraryInputVisible(false, animated: animated, shouldStickToBottom: isNearBottom())
+    }
+
+    /// 切换图片库输入面板布局
+    private func setPhotoLibraryInputVisible(
+        _ isVisible: Bool,
+        animated: Bool,
+        shouldStickToBottom: Bool
+    ) {
+        guard photoLibraryInputView.isHidden == isVisible else { return }
+
+        if isVisible {
+            photoLibraryInputView.isHidden = false
+            photoLibraryInputView.resetDismissGestureState()
+        }
+
+        inputBarKeyboardBottomConstraint?.isActive = !isVisible
+        inputBarPhotoLibraryBottomConstraint?.isActive = isVisible
+
+        let layoutChanges = { [weak self] in
+            guard let self else { return }
+            self.photoLibraryInputView.alpha = isVisible ? 1 : 0
+            self.view.layoutIfNeeded()
+        }
+        let completion: (Bool) -> Void = { [weak self] _ in
+            guard let self else { return }
+            if !isVisible {
+                self.photoLibraryInputView.isHidden = true
+                self.photoLibraryInputView.resetDismissGestureState()
+            }
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.25,
+                delay: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: layoutChanges,
+                completion: completion
+            )
+        } else {
+            layoutChanges()
+            completion(true)
+        }
+    }
+
+    /// 应用图片库面板下滑过程中的整体位移
+    private func applyPhotoLibraryDismissPanTranslation(_ translationY: CGFloat) {
+        let clampedTranslation = max(0, translationY)
+        inputBarPhotoLibraryBottomConstraint?.constant = -8
+        photoLibraryInputBottomConstraint?.constant = clampedTranslation
+        view.layoutIfNeeded()
     }
 
     /// 发送当前文本和待发送附件
@@ -929,15 +1031,15 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
             return
         }
 
-        let cacheKey = avatarURL as NSString
-        if let cachedImage = Self.avatarImageCache.object(forKey: cacheKey) {
+        let cacheKey = avatarURL
+        if let cachedImage = Self.avatarImageCache.object(forKey: cacheKey as NSString) {
             avatarImageView.image = cachedImage
             avatarImageView.isHidden = false
             return
         }
 
         if let localImage = Self.localAvatarImage(from: avatarURL) {
-            Self.avatarImageCache.setObject(localImage, forKey: cacheKey)
+            Self.avatarImageCache.setObject(localImage, forKey: cacheKey as NSString)
             avatarImageView.image = localImage
             avatarImageView.isHidden = false
             return
@@ -952,9 +1054,9 @@ private final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteract
                 return
             }
 
-            Self.avatarImageCache.setObject(image, forKey: cacheKey)
+            Task { @MainActor in
+                Self.avatarImageCache.setObject(image, forKey: cacheKey as NSString)
 
-            DispatchQueue.main.async {
                 guard let self, self.expectedAvatarURL == avatarURL else {
                     return
                 }

@@ -86,9 +86,9 @@ nonisolated struct ChatPhotoLibrarySelectionState {
     }
 }
 
-/// 聊天页图片库键盘输入视图
+/// 聊天页图片库输入面板
 @MainActor
-final class ChatPhotoLibraryInputView: UIInputView {
+final class ChatPhotoLibraryInputView: UIView {
     /// 资源开始选择并进入准备态的回调
     var onSelectionStarted: ((ChatPhotoLibrarySelectionPreview) -> Void)?
     /// 资源准备完成的回调
@@ -99,11 +99,19 @@ final class ChatPhotoLibraryInputView: UIInputView {
     var onSelectionFailed: ((String, String) -> Void)?
     /// 选择数量达到上限的回调
     var onSelectionLimitReached: ((String) -> Void)?
+    /// 下滑关闭手势位移变化回调
+    var onDismissPanChanged: ((CGFloat) -> Void)?
+    /// 请求关闭面板回调
+    var onDismissRequested: (() -> Void)?
 
-    /// 键盘面板固定高度
-    private static let panelHeight: CGFloat = 342
+    /// 面板固定高度
+    static let panelHeight: CGFloat = 342
     /// 图片网格间距
     private static let interItemSpacing: CGFloat = 2
+    /// 下滑关闭最小距离
+    private static let dismissDistanceThreshold: CGFloat = 92
+    /// 下滑关闭最小速度
+    private static let dismissVelocityThreshold: CGFloat = 780
 
     /// 面板模糊背景
     private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
@@ -119,6 +127,8 @@ final class ChatPhotoLibraryInputView: UIInputView {
     private let statusLabel = UILabel()
     /// 状态操作按钮
     private let statusButton = UIButton(type: .system)
+    /// 下滑关闭手势
+    private lazy var dismissPanGesture = UIPanGestureRecognizer(target: self, action: #selector(handleDismissPan(_:)))
     /// Photos 图片请求管理器
     private let imageManager = PHCachingImageManager()
     /// Photos 资源文件请求管理器
@@ -130,22 +140,39 @@ final class ChatPhotoLibraryInputView: UIInputView {
     private var representedAssetIDs: [String] = []
     /// 当前多选状态
     private var selectionState = ChatPhotoLibrarySelectionState()
+    /// 当前下滑关闭手势是否从顶部把手区域开始
+    private var dismissPanStartedInHeader = false
 
-    /// 键盘输入视图固有尺寸
+    /// 输入面板固有尺寸
     override var intrinsicContentSize: CGSize {
         CGSize(width: UIView.noIntrinsicMetric, height: Self.panelHeight)
     }
 
-    /// 初始化图片库输入视图
-    override init(frame: CGRect, inputViewStyle: UIInputView.Style) {
+    /// 判断下滑关闭手势是否应该开始
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === dismissPanGesture else {
+            return super.gestureRecognizerShouldBegin(gestureRecognizer)
+        }
+
+        let location = gestureRecognizer.location(in: self)
+        dismissPanStartedInHeader = location.y <= 64
+
+        let velocity = dismissPanGesture.velocity(in: self)
+        let isMostlyVerticalDown = velocity.y > abs(velocity.x)
+        guard isMostlyVerticalDown else { return false }
+
+        return dismissPanStartedInHeader || isCollectionViewAtTop()
+    }
+
+    /// 初始化图片库输入面板
+    override init(frame: CGRect) {
         let layout = UICollectionViewFlowLayout()
         layout.minimumLineSpacing = Self.interItemSpacing
         layout.minimumInteritemSpacing = Self.interItemSpacing
         layout.sectionInset = .zero
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
-        super.init(frame: frame.isEmpty ? CGRect(x: 0, y: 0, width: 0, height: Self.panelHeight) : frame, inputViewStyle: inputViewStyle)
+        super.init(frame: frame.isEmpty ? CGRect(x: 0, y: 0, width: 0, height: Self.panelHeight) : frame)
         configureView()
-        refreshAuthorization()
     }
 
     /// 从 storyboard/xib 初始化图片库输入视图
@@ -157,7 +184,6 @@ final class ChatPhotoLibraryInputView: UIInputView {
         collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(coder: coder)
         configureView()
-        refreshAuthorization()
     }
 
     /// 刷新照片库授权状态并加载资源
@@ -190,7 +216,6 @@ final class ChatPhotoLibraryInputView: UIInputView {
     /// 配置面板视图层级和约束
     private func configureView() {
         backgroundColor = .clear
-        allowsSelfSizing = false
 
         panelView.translatesAutoresizingMaskIntoConstraints = false
         panelView.clipsToBounds = true
@@ -231,6 +256,10 @@ final class ChatPhotoLibraryInputView: UIInputView {
         statusButton.translatesAutoresizingMaskIntoConstraints = false
         statusButton.titleLabel?.font = .preferredFont(forTextStyle: .headline)
         statusButton.addTarget(self, action: #selector(statusButtonTapped), for: .touchUpInside)
+
+        dismissPanGesture.delegate = self
+        addGestureRecognizer(dismissPanGesture)
+        collectionView.panGestureRecognizer.require(toFail: dismissPanGesture)
 
         addSubview(panelView)
         panelView.contentView.addSubview(tintView)
@@ -275,6 +304,65 @@ final class ChatPhotoLibraryInputView: UIInputView {
             statusButton.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 12),
             statusButton.centerXAnchor.constraint(equalTo: statusView.centerXAnchor)
         ])
+    }
+
+    /// 重置下滑手势带来的临时位移
+    func resetDismissGestureState() {
+        onDismissPanChanged?(0)
+    }
+
+    /// 根据下滑距离和速度判断是否关闭
+    static func shouldDismissForPan(translationY: CGFloat, velocityY: CGFloat) -> Bool {
+        translationY > dismissDistanceThreshold || velocityY > dismissVelocityThreshold
+    }
+
+    /// 处理下滑关闭手势
+    @objc private func handleDismissPan(_ gesture: UIPanGestureRecognizer) {
+        let translationY = max(0, gesture.translation(in: self).y)
+
+        switch gesture.state {
+        case .began, .changed:
+            clampCollectionViewToTopIfNeeded()
+            onDismissPanChanged?(translationY)
+        case .ended:
+            let velocityY = gesture.velocity(in: self).y
+            if Self.shouldDismissForPan(translationY: translationY, velocityY: velocityY) {
+                onDismissRequested?()
+            } else {
+                animateDismissGestureReset()
+            }
+        case .cancelled, .failed:
+            animateDismissGestureReset()
+        default:
+            break
+        }
+    }
+
+    /// 下滑未达到关闭阈值时回弹
+    private func animateDismissGestureReset() {
+        UIView.animate(
+            withDuration: 0.22,
+            delay: 0,
+            usingSpringWithDamping: 0.86,
+            initialSpringVelocity: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction],
+            animations: { [weak self] in
+                self?.resetDismissGestureState()
+            }
+        )
+    }
+
+    /// 判断滚动网格是否位于顶部
+    private func isCollectionViewAtTop() -> Bool {
+        guard !collectionView.isHidden else { return true }
+        return collectionView.contentOffset.y <= -collectionView.adjustedContentInset.top + 1
+    }
+
+    /// 关闭手势接管后，避免网格继续橡皮筋下拉露出空白
+    private func clampCollectionViewToTopIfNeeded() {
+        let topOffsetY = -collectionView.adjustedContentInset.top
+        guard collectionView.contentOffset.y < topOffsetY else { return }
+        collectionView.setContentOffset(CGPoint(x: collectionView.contentOffset.x, y: topOffsetY), animated: false)
     }
 
     /// 加载最近的图片和视频资源
@@ -644,6 +732,16 @@ extension ChatPhotoLibraryInputView: UICollectionViewDataSource, UICollectionVie
         let totalSpacing = Self.interItemSpacing * 2
         let side = floor((collectionView.bounds.width - totalSpacing) / 3)
         return CGSize(width: side, height: side)
+    }
+}
+
+/// 图片库面板手势协调
+extension ChatPhotoLibraryInputView: UIGestureRecognizerDelegate {
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        false
     }
 }
 
