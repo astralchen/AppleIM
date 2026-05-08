@@ -363,8 +363,8 @@ final class ChatViewModel {
         publish { state in
             state.rows = state.rows.map { row in
                 row.withVoicePlayback(
-                    isPlaying: row.id == messageID && row.isVoice,
-                    isUnplayed: row.id == messageID ? false : row.isVoiceUnplayed
+                    isPlaying: row.id == messageID && row.content.kind == .voice,
+                    isUnplayed: row.id == messageID ? false : row.voiceContent?.isUnplayed
                 )
             }
             state.phase = .loaded
@@ -380,7 +380,7 @@ final class ChatViewModel {
                 }
                 guard !Task.isCancelled else { return }
 
-                let isStillPlaying = currentState.rows.first(where: { $0.id == messageID })?.isVoicePlaying == true
+                let isStillPlaying = currentState.rows.first(where: { $0.id == messageID })?.voiceContent?.isPlaying == true
                 upsert(updatedRow.withVoicePlayback(isPlaying: isStillPlaying, isUnplayed: false))
             } catch is CancellationError {
                 return

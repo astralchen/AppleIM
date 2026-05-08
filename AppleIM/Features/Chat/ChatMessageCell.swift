@@ -29,18 +29,22 @@ nonisolated enum ChatMessageContentKind: Equatable {
     case image
     case voice
     case video
+    case file
     case revoked
 
     init(row: ChatMessageRowState) {
-        if row.isRevoked {
+        switch row.content.kind {
+        case .revoked:
             self = .revoked
-        } else if row.isVoice {
+        case .voice:
             self = .voice
-        } else if row.isVideo {
+        case .video:
             self = .video
-        } else if row.isImage {
+        case .image:
             self = .image
-        } else {
+        case .file:
+            self = .file
+        case .text:
             self = .text
         }
     }
@@ -71,7 +75,7 @@ final class ChatMessageContentViewFactory {
         reusing existingView: (UIView & ChatMessageContentView)?
     ) -> UIView & ChatMessageContentView {
         switch kind {
-        case .text, .revoked:
+        case .text, .file, .revoked:
             if let textView = existingView as? TextMessageContentView {
                 return textView
             }
@@ -110,8 +114,23 @@ final class TextMessageContentView: UIView, ChatMessageContentView {
         style: ChatMessageContentStyle,
         actions: ChatMessageCellActions
     ) {
-        messageLabel.text = row.text
+        messageLabel.text = Self.text(for: row.content)
         messageLabel.textColor = style.textColor
+    }
+
+    private static func text(for content: ChatMessageRowContent) -> String {
+        switch content {
+        case let .text(text), let .revoked(text):
+            return text
+        case .image:
+            return "Image"
+        case let .voice(voice):
+            return "Voice \(ChatMessageRowContent.durationText(milliseconds: voice.durationMilliseconds))"
+        case let .video(video):
+            return "Video \(ChatMessageRowContent.durationText(milliseconds: video.durationMilliseconds))"
+        case let .file(file):
+            return file.fileName
+        }
     }
 
     private func configureView() {
@@ -162,7 +181,25 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
         self.row = row
         self.actions = actions
 
-        let thumbnailPath = row.imageThumbnailPath ?? row.videoThumbnailPath
+        let thumbnailPath: String?
+        let isVideo: Bool
+        let videoDurationMilliseconds: Int?
+
+        switch row.content {
+        case let .image(image):
+            thumbnailPath = image.thumbnailPath
+            isVideo = false
+            videoDurationMilliseconds = nil
+        case let .video(video):
+            thumbnailPath = video.thumbnailPath
+            isVideo = true
+            videoDurationMilliseconds = video.durationMilliseconds
+        default:
+            thumbnailPath = nil
+            isVideo = false
+            videoDurationMilliseconds = nil
+        }
+
         if let thumbnailPath {
             thumbnailImageView.image = UIImage(contentsOfFile: thumbnailPath)
         } else {
@@ -170,14 +207,14 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
         }
 
         thumbnailImageView.isHidden = false
-        fallbackLabel.text = row.isVideo ? "Video unavailable" : "Image unavailable"
+        fallbackLabel.text = isVideo ? "Video unavailable" : "Image unavailable"
         fallbackLabel.textColor = style.textColor
         fallbackLabel.isHidden = thumbnailImageView.image != nil
 
-        videoStackView.isHidden = !row.isVideo
+        videoStackView.isHidden = !isVideo
         videoPlaybackButton.tintColor = style.tintColor
         videoPlaybackButton.accessibilityLabel = "Play Video"
-        videoDurationLabel.text = Self.durationText(milliseconds: row.videoDurationMilliseconds ?? 0)
+        videoDurationLabel.text = Self.durationText(milliseconds: videoDurationMilliseconds ?? 0)
         videoDurationLabel.textColor = style.textColor
     }
 
@@ -268,12 +305,20 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
         self.row = row
         self.actions = actions
 
-        voicePlaybackButton.setImage(UIImage(systemName: row.isVoicePlaying ? "pause.fill" : "play.fill"), for: .normal)
+        let voice: ChatMessageRowContent.VoiceContent?
+        if case let .voice(content) = row.content {
+            voice = content
+        } else {
+            voice = nil
+        }
+
+        let isPlaying = voice?.isPlaying == true
+        voicePlaybackButton.setImage(UIImage(systemName: isPlaying ? "pause.fill" : "play.fill"), for: .normal)
         voicePlaybackButton.tintColor = style.tintColor
-        voicePlaybackButton.accessibilityLabel = row.isVoicePlaying ? "Stop Voice" : "Play Voice"
-        voiceDurationLabel.text = Self.durationText(milliseconds: row.voiceDurationMilliseconds ?? 0)
+        voicePlaybackButton.accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
+        voiceDurationLabel.text = Self.durationText(milliseconds: voice?.durationMilliseconds ?? 0)
         voiceDurationLabel.textColor = style.textColor
-        voiceUnreadDotView.isHidden = !row.isVoiceUnplayed
+        voiceUnreadDotView.isHidden = !(voice?.isUnplayed == true)
     }
 
     private func configureView() {
@@ -382,12 +427,13 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
         accessibilityLabel = Self.accessibilityLabel(for: row)
         configureAvatar(for: row)
 
-        let bubbleStyle: ChatBubbleBackgroundView.Style = row.isRevoked ? .revoked : (row.isOutgoing ? .outgoing : .incoming)
+        let isRevoked = row.content.kind == .revoked
+        let bubbleStyle: ChatBubbleBackgroundView.Style = isRevoked ? .revoked : (row.isOutgoing ? .outgoing : .incoming)
         bubbleView.apply(style: bubbleStyle)
 
-        let foregroundColor: UIColor = row.isOutgoing && !row.isRevoked ? .white : .label
-        let secondaryColor: UIColor = row.isOutgoing && !row.isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel
-        let tintColor: UIColor = row.isOutgoing && !row.isRevoked ? .white : .systemBlue
+        let foregroundColor: UIColor = row.isOutgoing && !isRevoked ? .white : .label
+        let secondaryColor: UIColor = row.isOutgoing && !isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel
+        let tintColor: UIColor = row.isOutgoing && !isRevoked ? .white : .systemBlue
         let contentStyle = ChatMessageContentStyle(
             textColor: foregroundColor,
             secondaryTextColor: secondaryColor,
@@ -608,8 +654,7 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
     }
 
     private static func accessibilityLabel(for row: ChatMessageRowState) -> String {
-        let contentText = row.isVideo ? "Video" : (row.isImage ? "Image" : row.text)
-        var parts = [contentText]
+        var parts = [row.content.accessibilityText]
 
         if let statusText = row.statusText {
             parts.append(statusText)

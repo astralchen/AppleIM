@@ -1028,12 +1028,11 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
         return ChatMessageRowState(
             id: message.id,
-            text: isRevoked ? (message.revokeReplacementText ?? "你撤回了一条消息") : Self.rowText(for: message),
-            imageThumbnailPath: isRevoked ? nil : message.image?.thumbnailPath,
-            videoThumbnailPath: isRevoked ? nil : message.video?.thumbnailPath,
-            videoLocalPath: isRevoked ? nil : message.video?.localPath,
-            videoDurationMilliseconds: isRevoked ? nil : message.video?.durationMilliseconds,
-            voiceDurationMilliseconds: isRevoked ? nil : message.voice?.durationMilliseconds,
+            content: Self.rowContent(
+                for: message,
+                isOutgoing: isOutgoing,
+                isRevoked: isRevoked
+            ),
             sortSequence: message.sortSequence,
             timeText: Self.timeText(from: message.localTime),
             statusText: isRevoked ? nil : Self.statusText(for: message),
@@ -1045,31 +1044,66 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 && message.sendStatus == .failed
                 && !isRevoked,
             canDelete: !message.isDeleted,
-            canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked,
-            isRevoked: isRevoked,
-            voiceLocalPath: isRevoked ? nil : message.voice?.localPath,
-            isVoiceUnplayed: !isOutgoing && message.type == .voice && message.readStatus == .unread && !isRevoked,
-            isVoicePlaying: false
+            canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked
         )
     }
 
-    /// 生成消息主文本
-    nonisolated private static func rowText(for message: StoredMessage) -> String {
-        if message.type == .voice, let voice = message.voice {
-            return "Voice \(voiceDurationText(milliseconds: voice.durationMilliseconds))"
+    /// 生成消息内容状态
+    nonisolated private static func rowContent(
+        for message: StoredMessage,
+        isOutgoing: Bool,
+        isRevoked: Bool
+    ) -> ChatMessageRowContent {
+        if isRevoked {
+            return .revoked(message.revokeReplacementText ?? "你撤回了一条消息")
         }
 
-        if message.type == .video, let video = message.video {
-            return "Video \(voiceDurationText(milliseconds: video.durationMilliseconds))"
+        switch message.type {
+        case .image:
+            if let image = message.image {
+                return .image(
+                    ChatMessageRowContent.ImageContent(
+                        thumbnailPath: image.thumbnailPath
+                    )
+                )
+            }
+        case .voice:
+            if let voice = message.voice {
+                return .voice(
+                    ChatMessageRowContent.VoiceContent(
+                        localPath: voice.localPath,
+                        durationMilliseconds: voice.durationMilliseconds,
+                        isUnplayed: !isOutgoing && message.readStatus == .unread,
+                        isPlaying: false
+                    )
+                )
+            }
+        case .video:
+            if let video = message.video {
+                return .video(
+                    ChatMessageRowContent.VideoContent(
+                        thumbnailPath: video.thumbnailPath,
+                        localPath: video.localPath,
+                        durationMilliseconds: video.durationMilliseconds
+                    )
+                )
+            }
+        case .file:
+            if let file = message.file {
+                return .file(
+                    ChatMessageRowContent.FileContent(
+                        fileName: file.fileName,
+                        fileExtension: file.fileExtension,
+                        localPath: file.localPath,
+                        sizeBytes: file.sizeBytes
+                    )
+                )
+            }
+        case .text, .system, .emoji, .quote, .revoked:
+            break
         }
 
-        return message.text ?? ""
-    }
-
-    /// 格式化语音或视频时长
-    nonisolated private static func voiceDurationText(milliseconds: Int) -> String {
-        let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
-        return "\(seconds)s"
+        return .text(message.text ?? "")
     }
 
     /// 生成发出消息状态文本

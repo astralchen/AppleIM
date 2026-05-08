@@ -423,21 +423,29 @@ final class ChatViewController: UIViewController {
             .store(in: &cancellables)
     }
 
-    /// 根据聊天页状态刷新消息列表和输入栏
+    /// 将最新的聊天页状态渲染到 UIKit 视图层。
+    ///
+    /// 这个方法集中处理状态到界面的单向同步：先刷新导航标题、空态和输入栏，
+    /// 再计算消息列表的增量快照，最后根据消息插入位置决定是否保持当前位置或滚动到底部。
     private func render(_ state: ChatViewState) {
+        // 同步不依赖 collection view diff 的轻量 UI 状态。
         title = state.title
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
 
+        // 用户正在输入时不覆盖输入框内容，避免 Combine 状态回放打断编辑。
         if !inputBarView.isEditingText, inputBarView.text != state.draftText {
             inputBarView.setText(state.draftText, animated: false)
         }
 
+        // 在应用新快照前记录旧列表状态，用于判断本次渲染属于首屏、上拉加载还是新消息追加。
         let previousRowsByID = rowsByID
         let previousRowIDs = lastRenderedRowIDs
         let previousContentHeight = collectionView.contentSize.height
         let previousContentOffsetY = collectionView.contentOffset.y
         let wasNearBottom = isNearBottom()
+
+        // Diffable data source 的 item identifier 使用消息 ID；内容变化通过 changedRowIDs 触发 reload。
         let newRowIDs = state.rows.map { $0.id.rawValue }
         let isInitialMessageRender = previousRowIDs.isEmpty && !newRowIDs.isEmpty
         let isPrependingOlderMessages = previousRowIDs.first.map { newRowIDs.contains($0) } == true
@@ -449,6 +457,7 @@ final class ChatViewController: UIViewController {
             return previousRowsByID[id] == row ? nil : id
         }
 
+        // 缓存最新 row 内容，供 cell registration 和下一次 render diff 对比使用。
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
         lastRenderedRowIDs = newRowIDs
 
@@ -466,6 +475,7 @@ final class ChatViewController: UIViewController {
 
             self.collectionView.layoutIfNeeded()
 
+            // 上拉加载历史消息时，保持用户当前看到的第一条附近内容不跳动。
             if isPrependingOlderMessages {
                 let heightDelta = self.collectionView.contentSize.height - previousContentHeight
                 let adjustedOffsetY = previousContentOffsetY + heightDelta
@@ -474,6 +484,7 @@ final class ChatViewController: UIViewController {
                     animated: false
                 )
             } else if isInitialMessageRender || didAppendNewMessage || wasNearBottom {
+                // 首屏、新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: !isInitialMessageRender)
             }
         }
@@ -647,31 +658,31 @@ final class ChatViewController: UIViewController {
 
     /// 播放或停止语音消息
     private func handleVoicePlayback(_ row: ChatMessageRowState) {
-        guard row.isVoice else { return }
+        guard let voice = row.voiceContent else { return }
 
-        if row.isVoicePlaying {
+        if voice.isPlaying {
             voicePlaybackController.stop()
             return
         }
 
-        guard let localPath = row.voiceLocalPath else {
+        guard !voice.localPath.isEmpty else {
             showTransientRecordingMessage("Voice file unavailable")
             return
         }
 
-        voicePlaybackController.play(messageID: row.id, fileURL: URL(fileURLWithPath: localPath))
+        voicePlaybackController.play(messageID: row.id, fileURL: URL(fileURLWithPath: voice.localPath))
     }
 
     /// 使用系统播放器播放本地视频消息
     private func handleVideoPlayback(_ row: ChatMessageRowState) {
-        guard row.isVideo else { return }
-        guard let localPath = row.videoLocalPath, FileManager.default.fileExists(atPath: localPath) else {
+        guard case let .video(video) = row.content else { return }
+        guard FileManager.default.fileExists(atPath: video.localPath) else {
             showTransientRecordingMessage("Video file unavailable")
             return
         }
 
         let playerViewController = AVPlayerViewController()
-        playerViewController.player = AVPlayer(url: URL(fileURLWithPath: localPath))
+        playerViewController.player = AVPlayer(url: URL(fileURLWithPath: video.localPath))
         present(playerViewController, animated: true) {
             playerViewController.player?.play()
         }
@@ -713,32 +724,18 @@ extension ChatViewController: UICollectionViewDelegate {
 extension ChatMessageRowState {
     /// 用于触发 cell reconfigure 的稳定差异标识
     var diffIdentifier: String {
-        let voiceDurationText = voiceDurationMilliseconds.map { String($0) } ?? ""
-        let videoDurationText = videoDurationMilliseconds.map { String($0) } ?? ""
         let progressText = uploadProgress.map { String(Int($0 * 100)) } ?? ""
         let retryText = canRetry ? "retry" : "no-retry"
         let revokeText = canRevoke ? "revoke" : "no-revoke"
-        let revokeStatusText = isRevoked ? "revoked" : "normal"
-        let voiceUnreadText = isVoiceUnplayed ? "voice-unplayed" : "voice-played"
-        let voicePlayingText = isVoicePlaying ? "voice-playing" : "voice-stopped"
 
         return [
             id.rawValue,
-            text,
-            imageThumbnailPath ?? "",
-            videoThumbnailPath ?? "",
-            videoLocalPath ?? "",
-            videoDurationText,
-            voiceLocalPath ?? "",
-            voiceDurationText,
+            "\(content)",
             senderAvatarURL ?? "",
             statusText ?? "",
             progressText,
             retryText,
-            revokeText,
-            revokeStatusText,
-            voiceUnreadText,
-            voicePlayingText
+            revokeText
         ].joined(separator: "|")
     }
 }
