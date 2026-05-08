@@ -1812,7 +1812,7 @@ struct AppleIMTests {
         )
 
         #expect(rows.first?.statusText == "Sending")
-        #expect(rows.first?.isVoice == true)
+        #expect(rows.first.map(isVoiceContent) == true)
         #expect(rows.compactMap(\.uploadProgress) == [0.3, 0.6, 1.0])
         #expect(rows.last?.statusText == nil)
         #expect(storedMessage?.sendStatus == .success)
@@ -1857,8 +1857,8 @@ struct AppleIMTests {
         )
 
         #expect(rows.first?.statusText == "Sending")
-        #expect(rows.first?.isVideo == true)
-        #expect(rows.first?.videoThumbnailPath != nil)
+        #expect(rows.first.map(isVideoContent) == true)
+        #expect(rows.first.flatMap(videoThumbnailPath) != nil)
         #expect(rows.compactMap(\.uploadProgress) == [0.2, 0.8, 1.0])
         #expect(rows.last?.statusText == nil)
         #expect(storedMessage?.sendStatus == .success)
@@ -2245,7 +2245,7 @@ struct AppleIMTests {
         )
         let page = try await useCase.loadInitialMessages()
 
-        #expect(page.rows.map(\.text) == ["First", "Second"])
+        #expect(page.rows.map(rowText) == ["First", "Second"])
         #expect(page.hasMore == false)
         #expect(page.nextBeforeSortSequence == 100)
     }
@@ -2334,8 +2334,8 @@ struct AppleIMTests {
         let page = try await useCase.loadInitialMessages()
 
         #expect(page.rows.count == 50)
-        #expect(page.rows.first?.text == "Message 11")
-        #expect(page.rows.last?.text == "Message 60")
+        #expect(page.rows.first.map(rowText) == "Message 11")
+        #expect(page.rows.last.map(rowText) == "Message 60")
         #expect(page.hasMore == true)
         #expect(page.nextBeforeSortSequence == 11)
     }
@@ -2375,8 +2375,8 @@ struct AppleIMTests {
         let olderPage = try await useCase.loadOlderMessages(beforeSortSequence: 11, limit: 50)
 
         #expect(olderPage.rows.count == 10)
-        #expect(olderPage.rows.first?.text == "Older 1")
-        #expect(olderPage.rows.last?.text == "Older 10")
+        #expect(olderPage.rows.first.map(rowText) == "Older 1")
+        #expect(olderPage.rows.last.map(rowText) == "Older 10")
         #expect(olderPage.hasMore == false)
         #expect(olderPage.nextBeforeSortSequence == 1)
     }
@@ -2408,13 +2408,13 @@ struct AppleIMTests {
         let olderPage = try await useCase.loadOlderMessages(beforeSortSequence: 99_951, limit: 50)
 
         #expect(initialPage.rows.count == 50)
-        #expect(initialPage.rows.first?.text == "Perf Message 99951")
-        #expect(initialPage.rows.last?.text == "Perf Message 100000")
+        #expect(initialPage.rows.first.map(rowText) == "Perf Message 99951")
+        #expect(initialPage.rows.last.map(rowText) == "Perf Message 100000")
         #expect(initialPage.hasMore == true)
         #expect(initialPage.nextBeforeSortSequence == 99_951)
         #expect(olderPage.rows.count == 50)
-        #expect(olderPage.rows.first?.text == "Perf Message 99901")
-        #expect(olderPage.rows.last?.text == "Perf Message 99950")
+        #expect(olderPage.rows.first.map(rowText) == "Perf Message 99901")
+        #expect(olderPage.rows.last.map(rowText) == "Perf Message 99950")
         #expect(olderPage.hasMore == true)
         #expect(olderPage.nextBeforeSortSequence == 99_901)
     }
@@ -3512,9 +3512,9 @@ struct AppleIMTests {
         let playedRow = try await useCase.markVoicePlayed(messageID: insertedMessage.id)
         let storedMessage = try await repository.message(messageID: insertedMessage.id)
 
-        #expect(initialPage.rows.first?.isVoiceUnplayed == true)
-        #expect(initialPage.rows.first?.voiceLocalPath == voice.localPath)
-        #expect(playedRow?.isVoiceUnplayed == false)
+        #expect(initialPage.rows.first.map(isUnplayedVoiceContent) == true)
+        #expect(initialPage.rows.first.flatMap(voiceLocalPath) == voice.localPath)
+        #expect(playedRow.map(isUnplayedVoiceContent) == false)
         #expect(storedMessage?.readStatus == .read)
     }
 
@@ -3674,8 +3674,8 @@ struct AppleIMTests {
         try await Task.sleep(nanoseconds: 20_000_000)
 
         #expect(viewModel.currentState.rows.count == 1)
-        #expect(viewModel.currentState.rows.first?.imageThumbnailPath == "/tmp/chat-thumb.jpg")
-        #expect(viewModel.currentState.rows.first?.isImage == true)
+        #expect(viewModel.currentState.rows.first.flatMap(imageThumbnailPath) == "/tmp/chat-thumb.jpg")
+        #expect(viewModel.currentState.rows.first.map(isImageContent) == true)
         #expect(useCase.sentImageCount == 1)
     }
 
@@ -3712,7 +3712,7 @@ struct AppleIMTests {
         }
 
         #expect(useCase.events == ["video:mov"])
-        #expect(viewModel.currentState.rows.first?.isVideo == true)
+        #expect(viewModel.currentState.rows.first.map(isVideoContent) == true)
     }
 
     @MainActor
@@ -4031,19 +4031,19 @@ struct AppleIMTests {
         try await waitForCondition {
             await MainActor.run {
                 useCase.markedMessageIDs == ["voice_a"]
-                    && viewModel.currentState.rows.first { $0.id == "voice_a" }?.isVoicePlaying == true
+                    && viewModel.currentState.rows.first { $0.id == "voice_a" }.map(isPlayingVoiceContent) == true
             }
         }
 
         let rowsAfterStart = viewModel.currentState.rows
-        #expect(rowsAfterStart.first { $0.id == "voice_a" }?.isVoicePlaying == true)
-        #expect(rowsAfterStart.first { $0.id == "voice_a" }?.isVoiceUnplayed == false)
-        #expect(rowsAfterStart.first { $0.id == "voice_b" }?.isVoicePlaying == false)
-        #expect(rowsAfterStart.first { $0.id == "voice_b" }?.isVoiceUnplayed == true)
+        #expect(rowsAfterStart.first { $0.id == "voice_a" }.map(isPlayingVoiceContent) == true)
+        #expect(rowsAfterStart.first { $0.id == "voice_a" }.map(isUnplayedVoiceContent) == false)
+        #expect(rowsAfterStart.first { $0.id == "voice_b" }.map(isPlayingVoiceContent) == false)
+        #expect(rowsAfterStart.first { $0.id == "voice_b" }.map(isUnplayedVoiceContent) == true)
         #expect(useCase.markedMessageIDs == ["voice_a"])
 
         viewModel.voicePlaybackStopped(messageID: "voice_a")
-        #expect(viewModel.currentState.rows.first { $0.id == "voice_a" }?.isVoicePlaying == false)
+        #expect(viewModel.currentState.rows.first { $0.id == "voice_a" }.map(isPlayingVoiceContent) == false)
     }
 
     @Test func chatMessageContentKindClassifiesExistingRows() {
@@ -4051,7 +4051,8 @@ struct AppleIMTests {
         #expect(ChatMessageContentKind(row: makeImageRow(id: "image_kind", sortSequence: 2)) == .image)
         #expect(ChatMessageContentKind(row: makeVideoRow(id: "video_kind", sortSequence: 3)) == .video)
         #expect(ChatMessageContentKind(row: makeVoiceRow(id: "voice_kind", sortSequence: 4, isUnplayed: true)) == .voice)
-        #expect(ChatMessageContentKind(row: makeRevokedRow(id: "revoked_kind", sortSequence: 5)) == .revoked)
+        #expect(ChatMessageContentKind(row: makeFileRow(id: "file_kind", sortSequence: 5)) == .file)
+        #expect(ChatMessageContentKind(row: makeRevokedRow(id: "revoked_kind", sortSequence: 6)) == .revoked)
     }
 
     @MainActor
@@ -4082,9 +4083,14 @@ struct AppleIMTests {
         let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
         let row = ChatMessageRowState(
             id: "cell_voice",
-            text: "Voice 2s",
-            imageThumbnailPath: nil,
-            voiceDurationMilliseconds: 2_000,
+            content: .voice(
+                ChatMessageRowContent.VoiceContent(
+                    localPath: "/tmp/cell_voice.m4a",
+                    durationMilliseconds: 2_000,
+                    isUnplayed: false,
+                    isPlaying: true
+                )
+            ),
             sortSequence: 1,
             timeText: "Now",
             statusText: "Failed",
@@ -4092,11 +4098,7 @@ struct AppleIMTests {
             isOutgoing: true,
             canRetry: true,
             canDelete: true,
-            canRevoke: false,
-            isRevoked: false,
-            voiceLocalPath: "/tmp/cell_voice.m4a",
-            isVoiceUnplayed: false,
-            isVoicePlaying: true
+            canRevoke: false
         )
 
         cell.configure(row: row, actions: .empty)
@@ -5590,9 +5592,11 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
             continuation.yield(
                 ChatMessageRowState(
                     id: "image_stub_message",
-                    text: "",
-                    imageThumbnailPath: "/tmp/chat-thumb.jpg",
-                    voiceDurationMilliseconds: nil,
+                    content: .image(
+                        ChatMessageRowContent.ImageContent(
+                            thumbnailPath: "/tmp/chat-thumb.jpg"
+                        )
+                    ),
                     sortSequence: 1,
                     timeText: "Now",
                     statusText: nil,
@@ -5600,8 +5604,7 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
                     isOutgoing: true,
                     canRetry: false,
                     canDelete: true,
-                    canRevoke: false,
-                    isRevoked: false
+                    canRevoke: false
                 )
             )
             continuation.finish()
@@ -5664,9 +5667,11 @@ private final class ComposerSendingStubChatUseCase: @unchecked Sendable, ChatUse
             continuation.yield(
                 ChatMessageRowState(
                     id: "composer_image",
-                    text: "",
-                    imageThumbnailPath: "/tmp/composer-image.jpg",
-                    voiceDurationMilliseconds: nil,
+                    content: .image(
+                        ChatMessageRowContent.ImageContent(
+                            thumbnailPath: "/tmp/composer-image.jpg"
+                        )
+                    ),
                     sortSequence: 1,
                     timeText: "Now",
                     statusText: nil,
@@ -5674,8 +5679,7 @@ private final class ComposerSendingStubChatUseCase: @unchecked Sendable, ChatUse
                     isOutgoing: true,
                     canRetry: false,
                     canDelete: true,
-                    canRevoke: false,
-                    isRevoked: false
+                    canRevoke: false
                 )
             )
             continuation.finish()
@@ -5695,12 +5699,13 @@ private final class ComposerSendingStubChatUseCase: @unchecked Sendable, ChatUse
             continuation.yield(
                 ChatMessageRowState(
                     id: "composer_video",
-                    text: "",
-                    imageThumbnailPath: nil,
-                    videoThumbnailPath: "/tmp/composer-video.jpg",
-                    videoLocalPath: fileURL.path,
-                    videoDurationMilliseconds: 1_000,
-                    voiceDurationMilliseconds: nil,
+                    content: .video(
+                        ChatMessageRowContent.VideoContent(
+                            thumbnailPath: "/tmp/composer-video.jpg",
+                            localPath: fileURL.path,
+                            durationMilliseconds: 1_000
+                        )
+                    ),
                     sortSequence: 1,
                     timeText: "Now",
                     statusText: nil,
@@ -5708,8 +5713,7 @@ private final class ComposerSendingStubChatUseCase: @unchecked Sendable, ChatUse
                     isOutgoing: true,
                     canRetry: false,
                     canDelete: true,
-                    canRevoke: false,
-                    isRevoked: false
+                    canRevoke: false
                 )
             )
             continuation.finish()
@@ -5820,9 +5824,7 @@ private extension ChatUseCase {
 private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
-        text: text,
-        imageThumbnailPath: nil,
-        voiceDurationMilliseconds: nil,
+        content: .text(text),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -5830,17 +5832,21 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
         isOutgoing: true,
         canRetry: false,
         canDelete: true,
-        canRevoke: false,
-        isRevoked: false
+        canRevoke: false
     )
 }
 
 private func makeVoiceRow(id: MessageID, sortSequence: Int64, isUnplayed: Bool) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
-        text: "Voice 2s",
-        imageThumbnailPath: nil,
-        voiceDurationMilliseconds: 2_000,
+        content: .voice(
+            ChatMessageRowContent.VoiceContent(
+                localPath: "/tmp/\(id.rawValue).m4a",
+                durationMilliseconds: 2_000,
+                isUnplayed: isUnplayed,
+                isPlaying: false
+            )
+        ),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -5848,20 +5854,18 @@ private func makeVoiceRow(id: MessageID, sortSequence: Int64, isUnplayed: Bool) 
         isOutgoing: false,
         canRetry: false,
         canDelete: true,
-        canRevoke: false,
-        isRevoked: false,
-        voiceLocalPath: "/tmp/\(id.rawValue).m4a",
-        isVoiceUnplayed: isUnplayed,
-        isVoicePlaying: false
+        canRevoke: false
     )
 }
 
 private func makeImageRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
-        text: "Image",
-        imageThumbnailPath: "/tmp/\(id.rawValue).jpg",
-        voiceDurationMilliseconds: nil,
+        content: .image(
+            ChatMessageRowContent.ImageContent(
+                thumbnailPath: "/tmp/\(id.rawValue).jpg"
+            )
+        ),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -5869,20 +5873,20 @@ private func makeImageRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowS
         isOutgoing: false,
         canRetry: false,
         canDelete: true,
-        canRevoke: false,
-        isRevoked: false
+        canRevoke: false
     )
 }
 
 private func makeVideoRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
-        text: "Video",
-        imageThumbnailPath: nil,
-        videoThumbnailPath: "/tmp/\(id.rawValue).jpg",
-        videoLocalPath: "/tmp/\(id.rawValue).mov",
-        videoDurationMilliseconds: 3_000,
-        voiceDurationMilliseconds: nil,
+        content: .video(
+            ChatMessageRowContent.VideoContent(
+                thumbnailPath: "/tmp/\(id.rawValue).jpg",
+                localPath: "/tmp/\(id.rawValue).mov",
+                durationMilliseconds: 3_000
+            )
+        ),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -5890,17 +5894,36 @@ private func makeVideoRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowS
         isOutgoing: false,
         canRetry: false,
         canDelete: true,
-        canRevoke: false,
-        isRevoked: false
+        canRevoke: false
+    )
+}
+
+private func makeFileRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        content: .file(
+            ChatMessageRowContent.FileContent(
+                fileName: "\(id.rawValue).pdf",
+                fileExtension: "pdf",
+                localPath: "/tmp/\(id.rawValue).pdf",
+                sizeBytes: 1_024
+            )
+        ),
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: false,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false
     )
 }
 
 private func makeRevokedRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
-        text: "你撤回了一条消息",
-        imageThumbnailPath: nil,
-        voiceDurationMilliseconds: nil,
+        content: .revoked("你撤回了一条消息"),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -5908,17 +5931,21 @@ private func makeRevokedRow(id: MessageID, sortSequence: Int64) -> ChatMessageRo
         isOutgoing: true,
         canRetry: false,
         canDelete: true,
-        canRevoke: false,
-        isRevoked: true
+        canRevoke: false
     )
 }
 
 @Test func chatMessageRowStateWithVoicePlaybackPreservesSenderAvatarURL() {
     let row = ChatMessageRowState(
         id: "avatar_voice",
-        text: "Voice 2s",
-        imageThumbnailPath: nil,
-        voiceDurationMilliseconds: 2_000,
+        content: .voice(
+            ChatMessageRowContent.VoiceContent(
+                localPath: "/tmp/avatar_voice.m4a",
+                durationMilliseconds: 2_000,
+                isUnplayed: true,
+                isPlaying: false
+            )
+        ),
         sortSequence: 1,
         timeText: "Now",
         statusText: nil,
@@ -5927,17 +5954,89 @@ private func makeRevokedRow(id: MessageID, sortSequence: Int64) -> ChatMessageRo
         isOutgoing: false,
         canRetry: false,
         canDelete: true,
-        canRevoke: false,
-        isRevoked: false,
-        voiceLocalPath: "/tmp/avatar_voice.m4a",
-        isVoiceUnplayed: true,
-        isVoicePlaying: false
+        canRevoke: false
     )
 
     let updatedRow = row.withVoicePlayback(isPlaying: true)
 
     #expect(updatedRow.senderAvatarURL == "https://example.com/voice-avatar.png")
-    #expect(updatedRow.isVoicePlaying)
+    #expect(isPlayingVoiceContent(updatedRow))
+}
+
+private func rowText(_ row: ChatMessageRowState) -> String {
+    switch row.content {
+    case let .text(text), let .revoked(text):
+        return text
+    case .image:
+        return "Image"
+    case let .voice(voice):
+        return "Voice \(durationText(milliseconds: voice.durationMilliseconds))"
+    case let .video(video):
+        return "Video \(durationText(milliseconds: video.durationMilliseconds))"
+    case let .file(file):
+        return file.fileName
+    }
+}
+
+private func isImageContent(_ row: ChatMessageRowState) -> Bool {
+    if case .image = row.content {
+        return true
+    }
+    return false
+}
+
+private func imageThumbnailPath(_ row: ChatMessageRowState) -> String? {
+    if case let .image(image) = row.content {
+        return image.thumbnailPath
+    }
+    return nil
+}
+
+private func isVoiceContent(_ row: ChatMessageRowState) -> Bool {
+    if case .voice = row.content {
+        return true
+    }
+    return false
+}
+
+private func voiceLocalPath(_ row: ChatMessageRowState) -> String? {
+    if case let .voice(voice) = row.content {
+        return voice.localPath
+    }
+    return nil
+}
+
+private func isUnplayedVoiceContent(_ row: ChatMessageRowState) -> Bool {
+    if case let .voice(voice) = row.content {
+        return voice.isUnplayed
+    }
+    return false
+}
+
+private func isPlayingVoiceContent(_ row: ChatMessageRowState) -> Bool {
+    if case let .voice(voice) = row.content {
+        return voice.isPlaying
+    }
+    return false
+}
+
+private func isVideoContent(_ row: ChatMessageRowState) -> Bool {
+    if case .video = row.content {
+        return true
+    }
+    return false
+}
+
+private func videoThumbnailPath(_ row: ChatMessageRowState) -> String? {
+    if case let .video(video) = row.content {
+        return video.thumbnailPath
+    }
+    return nil
+}
+
+private func durationText(milliseconds: Int) -> String {
+    let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
+    return "\(seconds)s"
 }
 
 private func temporaryDirectory() -> URL {

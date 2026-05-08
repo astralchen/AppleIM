@@ -7,24 +7,96 @@
 
 import Foundation
 
+/// 聊天消息行内容
+///
+/// 按消息类型隔离展示属性，避免把不同类型的可选字段平铺到行状态中。
+nonisolated enum ChatMessageRowContent: Hashable, Sendable {
+    nonisolated enum Kind: Hashable, Sendable {
+        case text
+        case image
+        case voice
+        case video
+        case file
+        case revoked
+    }
+
+    nonisolated struct ImageContent: Hashable, Sendable {
+        let thumbnailPath: String
+    }
+
+    nonisolated struct VoiceContent: Hashable, Sendable {
+        let localPath: String
+        let durationMilliseconds: Int
+        let isUnplayed: Bool
+        let isPlaying: Bool
+    }
+
+    nonisolated struct VideoContent: Hashable, Sendable {
+        let thumbnailPath: String
+        let localPath: String
+        let durationMilliseconds: Int
+    }
+
+    nonisolated struct FileContent: Hashable, Sendable {
+        let fileName: String
+        let fileExtension: String?
+        let localPath: String
+        let sizeBytes: Int64
+    }
+
+    case text(String)
+    case image(ImageContent)
+    case voice(VoiceContent)
+    case video(VideoContent)
+    case file(FileContent)
+    case revoked(String)
+
+    var kind: Kind {
+        switch self {
+        case .text:
+            return .text
+        case .image:
+            return .image
+        case .voice:
+            return .voice
+        case .video:
+            return .video
+        case .file:
+            return .file
+        case .revoked:
+            return .revoked
+        }
+    }
+
+    var accessibilityText: String {
+        switch self {
+        case let .text(text), let .revoked(text):
+            return text
+        case .image:
+            return "Image"
+        case let .voice(voice):
+            return "Voice \(Self.durationText(milliseconds: voice.durationMilliseconds))"
+        case .video:
+            return "Video"
+        case let .file(file):
+            return file.fileName
+        }
+    }
+
+    static func durationText(milliseconds: Int) -> String {
+        let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
+        return "\(seconds)s"
+    }
+}
+
 /// 聊天消息行状态
 ///
-/// 用于 UI 展示的消息行数据，包含显示所需的所有信息
+/// 用于 UI 展示的消息行数据，包含公共行信息和按类型隔离的内容 payload。
 nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     /// 消息 ID
     let id: MessageID
-    /// 文本内容
-    let text: String
-    /// 图片缩略图路径
-    let imageThumbnailPath: String?
-    /// 视频缩略图路径
-    let videoThumbnailPath: String?
-    /// 视频本地路径
-    let videoLocalPath: String?
-    /// 视频时长（毫秒）
-    let videoDurationMilliseconds: Int?
-    /// 语音时长（毫秒）
-    let voiceDurationMilliseconds: Int?
+    /// 消息内容
+    let content: ChatMessageRowContent
     /// 排序序号
     let sortSequence: Int64
     /// 时间文本
@@ -43,23 +115,10 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let canDelete: Bool
     /// 是否可以撤回
     let canRevoke: Bool
-    /// 是否已撤回
-    let isRevoked: Bool
-    /// 语音本地路径
-    let voiceLocalPath: String?
-    /// 收到的语音是否未播放
-    let isVoiceUnplayed: Bool
-    /// 语音是否正在播放
-    let isVoicePlaying: Bool
 
     init(
         id: MessageID,
-        text: String,
-        imageThumbnailPath: String?,
-        videoThumbnailPath: String? = nil,
-        videoLocalPath: String? = nil,
-        videoDurationMilliseconds: Int? = nil,
-        voiceDurationMilliseconds: Int?,
+        content: ChatMessageRowContent,
         sortSequence: Int64,
         timeText: String,
         statusText: String?,
@@ -68,19 +127,10 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         isOutgoing: Bool,
         canRetry: Bool,
         canDelete: Bool,
-        canRevoke: Bool,
-        isRevoked: Bool,
-        voiceLocalPath: String? = nil,
-        isVoiceUnplayed: Bool = false,
-        isVoicePlaying: Bool = false
+        canRevoke: Bool
     ) {
         self.id = id
-        self.text = text
-        self.imageThumbnailPath = imageThumbnailPath
-        self.videoThumbnailPath = videoThumbnailPath
-        self.videoLocalPath = videoLocalPath
-        self.videoDurationMilliseconds = videoDurationMilliseconds
-        self.voiceDurationMilliseconds = voiceDurationMilliseconds
+        self.content = content
         self.sortSequence = sortSequence
         self.timeText = timeText
         self.statusText = statusText
@@ -90,36 +140,23 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         self.canRetry = canRetry
         self.canDelete = canDelete
         self.canRevoke = canRevoke
-        self.isRevoked = isRevoked
-        self.voiceLocalPath = voiceLocalPath
-        self.isVoiceUnplayed = isVoiceUnplayed
-        self.isVoicePlaying = isVoicePlaying
-    }
-
-    /// 是否为图片消息
-    var isImage: Bool {
-        imageThumbnailPath != nil
-    }
-
-    /// 是否为视频消息
-    var isVideo: Bool {
-        videoThumbnailPath != nil || videoLocalPath != nil || videoDurationMilliseconds != nil
-    }
-
-    /// 是否为语音消息
-    var isVoice: Bool {
-        voiceDurationMilliseconds != nil
     }
 
     func withVoicePlayback(isPlaying: Bool, isUnplayed: Bool? = nil) -> ChatMessageRowState {
-        ChatMessageRowState(
+        guard let voice = voiceContent else {
+            return self
+        }
+
+        let updatedVoice = ChatMessageRowContent.VoiceContent(
+            localPath: voice.localPath,
+            durationMilliseconds: voice.durationMilliseconds,
+            isUnplayed: isUnplayed ?? voice.isUnplayed,
+            isPlaying: isPlaying
+        )
+
+        return ChatMessageRowState(
             id: id,
-            text: text,
-            imageThumbnailPath: imageThumbnailPath,
-            videoThumbnailPath: videoThumbnailPath,
-            videoLocalPath: videoLocalPath,
-            videoDurationMilliseconds: videoDurationMilliseconds,
-            voiceDurationMilliseconds: voiceDurationMilliseconds,
+            content: .voice(updatedVoice),
             sortSequence: sortSequence,
             timeText: timeText,
             statusText: statusText,
@@ -128,12 +165,15 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             isOutgoing: isOutgoing,
             canRetry: canRetry,
             canDelete: canDelete,
-            canRevoke: canRevoke,
-            isRevoked: isRevoked,
-            voiceLocalPath: voiceLocalPath,
-            isVoiceUnplayed: isUnplayed ?? isVoiceUnplayed,
-            isVoicePlaying: isPlaying
+            canRevoke: canRevoke
         )
+    }
+
+    var voiceContent: ChatMessageRowContent.VoiceContent? {
+        if case let .voice(voice) = content {
+            return voice
+        }
+        return nil
     }
 }
 
