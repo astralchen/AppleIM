@@ -4046,6 +4046,71 @@ struct AppleIMTests {
         #expect(viewModel.currentState.rows.first { $0.id == "voice_a" }?.isVoicePlaying == false)
     }
 
+    @Test func chatMessageContentKindClassifiesExistingRows() {
+        #expect(ChatMessageContentKind(row: makeChatRow(id: "text_kind", text: "Hello", sortSequence: 1)) == .text)
+        #expect(ChatMessageContentKind(row: makeImageRow(id: "image_kind", sortSequence: 2)) == .image)
+        #expect(ChatMessageContentKind(row: makeVideoRow(id: "video_kind", sortSequence: 3)) == .video)
+        #expect(ChatMessageContentKind(row: makeVoiceRow(id: "voice_kind", sortSequence: 4, isUnplayed: true)) == .voice)
+        #expect(ChatMessageContentKind(row: makeRevokedRow(id: "revoked_kind", sortSequence: 5)) == .revoked)
+    }
+
+    @MainActor
+    @Test func chatMessageContentFactoryCreatesAndReusesContentViews() throws {
+        let factory = ChatMessageContentViewFactory()
+
+        let textView = factory.view(for: .text, reusing: nil)
+        #expect(textView is TextMessageContentView)
+
+        let reusedTextView = factory.view(for: .text, reusing: textView)
+        #expect(reusedTextView === textView)
+
+        let imageView = factory.view(for: .image, reusing: textView)
+        #expect(imageView is MediaMessageContentView)
+        #expect(imageView !== textView)
+
+        let videoView = factory.view(for: .video, reusing: imageView)
+        #expect(videoView is MediaMessageContentView)
+        #expect(videoView === imageView)
+
+        let voiceView = factory.view(for: .voice, reusing: videoView)
+        #expect(voiceView is VoiceMessageContentView)
+        #expect(voiceView !== videoView)
+    }
+
+    @MainActor
+    @Test func chatMessageCellConfigurationPreservesIdentifiersMetadataAndPlaybackState() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = ChatMessageRowState(
+            id: "cell_voice",
+            text: "Voice 2s",
+            imageThumbnailPath: nil,
+            voiceDurationMilliseconds: 2_000,
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: "Failed",
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: true,
+            canDelete: true,
+            canRevoke: false,
+            isRevoked: false,
+            voiceLocalPath: "/tmp/cell_voice.m4a",
+            isVoiceUnplayed: false,
+            isVoicePlaying: true
+        )
+
+        cell.configure(row: row, actions: .empty)
+
+        #expect(cell.accessibilityIdentifier == "chat.messageCell.cell_voice")
+        #expect(cell.accessibilityLabel == "Voice 2s, Failed")
+        #expect(findView(in: cell, identifier: "chat.retryButton.cell_voice") != nil)
+        #expect(findLabel(withText: "Now · Failed", in: cell) != nil)
+        #expect(findLabel(withText: "2s", in: cell) != nil)
+
+        let voiceButton = try #require(button(in: cell, accessibilityLabel: "Stop Voice"))
+        #expect(voiceButton.image(for: .normal) == UIImage(systemName: "pause.fill"))
+    }
+
     @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -5791,6 +5856,63 @@ private func makeVoiceRow(id: MessageID, sortSequence: Int64, isUnplayed: Bool) 
     )
 }
 
+private func makeImageRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        text: "Image",
+        imageThumbnailPath: "/tmp/\(id.rawValue).jpg",
+        voiceDurationMilliseconds: nil,
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: false,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false,
+        isRevoked: false
+    )
+}
+
+private func makeVideoRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        text: "Video",
+        imageThumbnailPath: nil,
+        videoThumbnailPath: "/tmp/\(id.rawValue).jpg",
+        videoLocalPath: "/tmp/\(id.rawValue).mov",
+        videoDurationMilliseconds: 3_000,
+        voiceDurationMilliseconds: nil,
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: false,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false,
+        isRevoked: false
+    )
+}
+
+private func makeRevokedRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        text: "你撤回了一条消息",
+        imageThumbnailPath: nil,
+        voiceDurationMilliseconds: nil,
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: true,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false,
+        isRevoked: true
+    )
+}
+
 @Test func chatMessageRowStateWithVoicePlaybackPreservesSenderAvatarURL() {
     let row = ChatMessageRowState(
         id: "avatar_voice",
@@ -6182,6 +6304,21 @@ private func button(in view: UIView, identifier: String) -> UIButton? {
 
     for subview in view.subviews {
         if let button = button(in: subview, identifier: identifier) {
+            return button
+        }
+    }
+
+    return nil
+}
+
+@MainActor
+private func button(in view: UIView, accessibilityLabel: String) -> UIButton? {
+    if let button = view as? UIButton, button.accessibilityLabel == accessibilityLabel {
+        return button
+    }
+
+    for subview in view.subviews {
+        if let button = button(in: subview, accessibilityLabel: accessibilityLabel) {
             return button
         }
     }
