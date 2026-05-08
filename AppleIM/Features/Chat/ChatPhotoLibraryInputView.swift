@@ -841,13 +841,15 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
     private func configureView() {
         contentView.backgroundColor = .secondarySystemGroupedBackground
         contentView.clipsToBounds = true
+        contentView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment
+        contentView.layer.cornerCurve = .continuous
 
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.contentMode = .scaleAspectFill
         imageView.clipsToBounds = true
 
         gradientView.translatesAutoresizingMaskIntoConstraints = false
-        gradientView.backgroundColor = UIColor.black.withAlphaComponent(0.34)
+        gradientView.backgroundColor = UIColor.black.withAlphaComponent(0.32)
         gradientView.isUserInteractionEnabled = false
 
         videoIconView.translatesAutoresizingMaskIntoConstraints = false
@@ -856,16 +858,18 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
 
         selectionBorderView.translatesAutoresizingMaskIntoConstraints = false
         selectionBorderView.isUserInteractionEnabled = false
-        selectionBorderView.layer.borderColor = UIColor.systemBlue.cgColor
+        selectionBorderView.layer.borderColor = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing.cgColor
         selectionBorderView.layer.borderWidth = 3
+        selectionBorderView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment
+        selectionBorderView.layer.cornerCurve = .continuous
         selectionBorderView.isHidden = true
 
         selectionBadgeView.translatesAutoresizingMaskIntoConstraints = false
-        selectionBadgeView.backgroundColor = .systemBlue
+        selectionBadgeView.backgroundColor = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
         selectionBadgeView.textColor = .white
         selectionBadgeView.font = .monospacedDigitSystemFont(ofSize: 13, weight: .bold)
         selectionBadgeView.textAlignment = .center
-        selectionBadgeView.layer.cornerRadius = 12
+        selectionBadgeView.layer.cornerRadius = 13
         selectionBadgeView.layer.masksToBounds = true
         selectionBadgeView.isHidden = true
 
@@ -892,7 +896,7 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
             gradientView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             gradientView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             gradientView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            gradientView.heightAnchor.constraint(equalToConstant: 28),
+            gradientView.heightAnchor.constraint(equalToConstant: 30),
 
             videoIconView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
             videoIconView.centerYAnchor.constraint(equalTo: gradientView.centerYAnchor),
@@ -908,10 +912,10 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
             selectionBorderView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             selectionBorderView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-            selectionBadgeView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 7),
-            selectionBadgeView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -7),
-            selectionBadgeView.widthAnchor.constraint(equalToConstant: 24),
-            selectionBadgeView.heightAnchor.constraint(equalToConstant: 24)
+            selectionBadgeView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
+            selectionBadgeView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -6),
+            selectionBadgeView.widthAnchor.constraint(equalToConstant: 26),
+            selectionBadgeView.heightAnchor.constraint(equalToConstant: 26)
         ])
     }
 }

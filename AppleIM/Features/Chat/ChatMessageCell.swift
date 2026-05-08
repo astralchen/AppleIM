@@ -75,11 +75,16 @@ final class ChatMessageContentViewFactory {
         reusing existingView: (UIView & ChatMessageContentView)?
     ) -> UIView & ChatMessageContentView {
         switch kind {
-        case .text, .file, .revoked:
+        case .text, .revoked:
             if let textView = existingView as? TextMessageContentView {
                 return textView
             }
             return TextMessageContentView()
+        case .file:
+            if let fileView = existingView as? FileMessageContentView {
+                return fileView
+            }
+            return FileMessageContentView()
         case .image, .video:
             if let mediaView = existingView as? MediaMessageContentView {
                 return mediaView
@@ -151,15 +156,123 @@ final class TextMessageContentView: UIView, ChatMessageContentView {
     }
 }
 
+/// 文件消息内容视图
+@MainActor
+final class FileMessageContentView: UIView, ChatMessageContentView {
+    private let containerView = UIView()
+    private let iconContainerView = UIView()
+    private let iconView = UIImageView(image: UIImage(systemName: "doc.fill"))
+    private let textStackView = UIStackView()
+    private let fileNameLabel = UILabel()
+    private let fileSizeLabel = UILabel()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    func configure(
+        row: ChatMessageRowState,
+        style: ChatMessageContentStyle,
+        actions: ChatMessageCellActions
+    ) {
+        guard case let .file(file) = row.content else { return }
+
+        fileNameLabel.text = file.fileName
+        fileNameLabel.textColor = style.textColor
+        fileSizeLabel.text = Self.fileSizeText(bytes: file.sizeBytes)
+        fileSizeLabel.textColor = style.secondaryTextColor
+        iconView.tintColor = style.tintColor
+        iconContainerView.backgroundColor = style.tintColor.withAlphaComponent(row.isOutgoing ? 0.22 : 0.14)
+    }
+
+    private func configureView() {
+        translatesAutoresizingMaskIntoConstraints = false
+
+        containerView.translatesAutoresizingMaskIntoConstraints = false
+        containerView.backgroundColor = .clear
+
+        iconContainerView.translatesAutoresizingMaskIntoConstraints = false
+        iconContainerView.layer.cornerRadius = 10
+        iconContainerView.layer.masksToBounds = true
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.contentMode = .scaleAspectFit
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+
+        textStackView.translatesAutoresizingMaskIntoConstraints = false
+        textStackView.axis = .vertical
+        textStackView.spacing = 2
+
+        fileNameLabel.font = .preferredFont(forTextStyle: .subheadline)
+        fileNameLabel.adjustsFontForContentSizeCategory = true
+        fileNameLabel.numberOfLines = 2
+
+        fileSizeLabel.font = .preferredFont(forTextStyle: .caption1)
+        fileSizeLabel.adjustsFontForContentSizeCategory = true
+        fileSizeLabel.numberOfLines = 1
+
+        addSubview(containerView)
+        containerView.addSubview(iconContainerView)
+        iconContainerView.addSubview(iconView)
+        containerView.addSubview(textStackView)
+        textStackView.addArrangedSubview(fileNameLabel)
+        textStackView.addArrangedSubview(fileSizeLabel)
+
+        NSLayoutConstraint.activate([
+            containerView.topAnchor.constraint(equalTo: topAnchor),
+            containerView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            containerView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            containerView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            iconContainerView.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            iconContainerView.centerYAnchor.constraint(equalTo: containerView.centerYAnchor),
+            iconContainerView.widthAnchor.constraint(equalToConstant: 38),
+            iconContainerView.heightAnchor.constraint(equalToConstant: 38),
+
+            iconView.centerXAnchor.constraint(equalTo: iconContainerView.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconContainerView.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 20),
+            iconView.heightAnchor.constraint(equalToConstant: 20),
+
+            textStackView.topAnchor.constraint(equalTo: containerView.topAnchor),
+            textStackView.leadingAnchor.constraint(equalTo: iconContainerView.trailingAnchor, constant: 10),
+            textStackView.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            textStackView.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
+        ])
+    }
+
+    private static func fileSizeText(bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+}
+
 /// 图片和视频消息内容视图
 @MainActor
 final class MediaMessageContentView: UIView, ChatMessageContentView {
-    private let stackView = UIStackView()
+    private enum Layout {
+        static let maxDisplaySize = CGSize(width: 228, height: 304)
+        static let fallbackDisplaySize = CGSize(width: 206, height: 152)
+    }
+
+    private let mediaContainerView = UIView()
     private let thumbnailImageView = UIImageView()
+    private let videoOverlayView = UIView()
+    private let videoGradientView = UIView()
     private let videoStackView = UIStackView()
     private let videoPlaybackButton = UIButton(type: .system)
     private let videoDurationLabel = UILabel()
     private let fallbackLabel = UILabel()
+    private var mediaWidthConstraint: NSLayoutConstraint?
+    private var mediaHeightConstraint: NSLayoutConstraint?
     private var row: ChatMessageRowState?
     private var actions = ChatMessageCellActions.empty
 
@@ -205,30 +318,39 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
         } else {
             thumbnailImageView.image = nil
         }
+        updateMediaSize(for: thumbnailImageView.image?.size)
 
-        thumbnailImageView.isHidden = false
+        thumbnailImageView.isHidden = thumbnailImageView.image == nil
         fallbackLabel.text = isVideo ? "Video unavailable" : "Image unavailable"
         fallbackLabel.textColor = style.textColor
         fallbackLabel.isHidden = thumbnailImageView.image != nil
 
-        videoStackView.isHidden = !isVideo
-        videoPlaybackButton.tintColor = style.tintColor
+        videoOverlayView.isHidden = !isVideo || thumbnailImageView.image == nil
+        videoStackView.isHidden = !isVideo || thumbnailImageView.image == nil
+        videoPlaybackButton.tintColor = .white
         videoPlaybackButton.accessibilityLabel = "Play Video"
         videoDurationLabel.text = Self.durationText(milliseconds: videoDurationMilliseconds ?? 0)
-        videoDurationLabel.textColor = style.textColor
+        videoDurationLabel.textColor = .white
     }
 
     private func configureView() {
         translatesAutoresizingMaskIntoConstraints = false
 
-        stackView.translatesAutoresizingMaskIntoConstraints = false
-        stackView.axis = .vertical
-        stackView.spacing = 4
+        mediaContainerView.translatesAutoresizingMaskIntoConstraints = false
+        mediaContainerView.clipsToBounds = true
+        mediaContainerView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleMessageMedia
+        mediaContainerView.backgroundColor = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming
 
         thumbnailImageView.translatesAutoresizingMaskIntoConstraints = false
         thumbnailImageView.contentMode = .scaleAspectFill
         thumbnailImageView.clipsToBounds = true
-        thumbnailImageView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.media
+
+        videoOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        videoOverlayView.isUserInteractionEnabled = false
+
+        videoGradientView.translatesAutoresizingMaskIntoConstraints = false
+        videoGradientView.backgroundColor = UIColor.black.withAlphaComponent(0.38)
+        videoGradientView.isUserInteractionEnabled = false
 
         videoStackView.translatesAutoresizingMaskIntoConstraints = false
         videoStackView.axis = .horizontal
@@ -236,39 +358,94 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
         videoStackView.spacing = 8
 
         videoPlaybackButton.translatesAutoresizingMaskIntoConstraints = false
-        videoPlaybackButton.setImage(UIImage(systemName: "play.circle.fill"), for: .normal)
+        videoPlaybackButton.setImage(UIImage(systemName: "play.fill"), for: .normal)
         videoPlaybackButton.addTarget(self, action: #selector(videoPlaybackButtonTapped), for: .touchUpInside)
 
-        videoDurationLabel.font = .preferredFont(forTextStyle: .body)
+        videoDurationLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
         videoDurationLabel.adjustsFontForContentSizeCategory = true
 
-        fallbackLabel.font = .preferredFont(forTextStyle: .body)
+        fallbackLabel.font = .preferredFont(forTextStyle: .subheadline)
         fallbackLabel.adjustsFontForContentSizeCategory = true
         fallbackLabel.numberOfLines = 0
+        fallbackLabel.textAlignment = .center
 
         videoStackView.addArrangedSubview(videoPlaybackButton)
         videoStackView.addArrangedSubview(videoDurationLabel)
-        stackView.addArrangedSubview(thumbnailImageView)
-        stackView.addArrangedSubview(videoStackView)
-        stackView.addArrangedSubview(fallbackLabel)
-        addSubview(stackView)
+        addSubview(mediaContainerView)
+        mediaContainerView.addSubview(thumbnailImageView)
+        mediaContainerView.addSubview(fallbackLabel)
+        mediaContainerView.addSubview(videoOverlayView)
+        videoOverlayView.addSubview(videoGradientView)
+        videoOverlayView.addSubview(videoStackView)
 
         NSLayoutConstraint.activate([
-            stackView.topAnchor.constraint(equalTo: topAnchor),
-            stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stackView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            mediaContainerView.topAnchor.constraint(equalTo: topAnchor),
+            mediaContainerView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            mediaContainerView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            mediaContainerView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            thumbnailImageView.widthAnchor.constraint(equalToConstant: 180),
-            thumbnailImageView.heightAnchor.constraint(equalToConstant: 180),
-            videoPlaybackButton.widthAnchor.constraint(equalToConstant: 28),
-            videoPlaybackButton.heightAnchor.constraint(equalToConstant: 28)
+            thumbnailImageView.topAnchor.constraint(equalTo: mediaContainerView.topAnchor),
+            thumbnailImageView.leadingAnchor.constraint(equalTo: mediaContainerView.leadingAnchor),
+            thumbnailImageView.trailingAnchor.constraint(equalTo: mediaContainerView.trailingAnchor),
+            thumbnailImageView.bottomAnchor.constraint(equalTo: mediaContainerView.bottomAnchor),
+
+            fallbackLabel.leadingAnchor.constraint(equalTo: mediaContainerView.leadingAnchor, constant: 12),
+            fallbackLabel.trailingAnchor.constraint(equalTo: mediaContainerView.trailingAnchor, constant: -12),
+            fallbackLabel.centerYAnchor.constraint(equalTo: mediaContainerView.centerYAnchor),
+
+            videoOverlayView.leadingAnchor.constraint(equalTo: mediaContainerView.leadingAnchor),
+            videoOverlayView.trailingAnchor.constraint(equalTo: mediaContainerView.trailingAnchor),
+            videoOverlayView.bottomAnchor.constraint(equalTo: mediaContainerView.bottomAnchor),
+            videoOverlayView.heightAnchor.constraint(equalToConstant: 34),
+
+            videoGradientView.topAnchor.constraint(equalTo: videoOverlayView.topAnchor),
+            videoGradientView.leadingAnchor.constraint(equalTo: videoOverlayView.leadingAnchor),
+            videoGradientView.trailingAnchor.constraint(equalTo: videoOverlayView.trailingAnchor),
+            videoGradientView.bottomAnchor.constraint(equalTo: videoOverlayView.bottomAnchor),
+
+            videoStackView.trailingAnchor.constraint(equalTo: videoOverlayView.trailingAnchor, constant: -10),
+            videoStackView.centerYAnchor.constraint(equalTo: videoOverlayView.centerYAnchor),
+
+            videoPlaybackButton.widthAnchor.constraint(equalToConstant: 18),
+            videoPlaybackButton.heightAnchor.constraint(equalToConstant: 18)
         ])
+
+        mediaWidthConstraint = mediaContainerView.widthAnchor.constraint(equalToConstant: Layout.fallbackDisplaySize.width)
+        mediaHeightConstraint = mediaContainerView.heightAnchor.constraint(equalToConstant: Layout.fallbackDisplaySize.height)
+        mediaWidthConstraint?.isActive = true
+        mediaHeightConstraint?.isActive = true
     }
 
     @objc private func videoPlaybackButtonTapped() {
         guard let row else { return }
         actions.onPlayVideo(row)
+    }
+
+    private func updateMediaSize(for imageSize: CGSize?) {
+        let displaySize = Self.displaySize(for: imageSize)
+        mediaWidthConstraint?.constant = displaySize.width
+        mediaHeightConstraint?.constant = displaySize.height
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
+
+    private static func displaySize(for imageSize: CGSize?) -> CGSize {
+        guard
+            let imageSize,
+            imageSize.width > 0,
+            imageSize.height > 0
+        else {
+            return Layout.fallbackDisplaySize
+        }
+
+        let aspectRatio = imageSize.width / imageSize.height
+        let maxSize = Layout.maxDisplaySize
+        if aspectRatio >= 1 {
+            return CGSize(width: maxSize.width, height: maxSize.width / aspectRatio)
+        }
+
+        let height = min(maxSize.height, maxSize.width / aspectRatio)
+        return CGSize(width: height * aspectRatio, height: height)
     }
 
     private static func durationText(milliseconds: Int) -> String {
@@ -282,6 +459,7 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
 final class VoiceMessageContentView: UIView, ChatMessageContentView {
     private let stackView = UIStackView()
     private let voicePlaybackButton = UIButton(type: .system)
+    private let waveformView = MessageVoiceWaveformView()
     private let voiceDurationLabel = UILabel()
     private let voiceUnreadDotView = UIView()
     private var row: ChatMessageRowState?
@@ -316,6 +494,8 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
         voicePlaybackButton.setImage(UIImage(systemName: isPlaying ? "pause.fill" : "play.fill"), for: .normal)
         voicePlaybackButton.tintColor = style.tintColor
         voicePlaybackButton.accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
+        waveformView.tintColor = style.tintColor
+        waveformView.isPlaying = isPlaying
         voiceDurationLabel.text = Self.durationText(milliseconds: voice?.durationMilliseconds ?? 0)
         voiceDurationLabel.textColor = style.textColor
         voiceUnreadDotView.isHidden = !(voice?.isUnplayed == true)
@@ -327,20 +507,23 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .horizontal
         stackView.alignment = .center
-        stackView.spacing = 8
+        stackView.spacing = 9
 
         voicePlaybackButton.translatesAutoresizingMaskIntoConstraints = false
         voicePlaybackButton.addTarget(self, action: #selector(voicePlaybackButtonTapped), for: .touchUpInside)
 
-        voiceDurationLabel.font = .preferredFont(forTextStyle: .body)
+        waveformView.translatesAutoresizingMaskIntoConstraints = false
+
+        voiceDurationLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
         voiceDurationLabel.adjustsFontForContentSizeCategory = true
 
         voiceUnreadDotView.translatesAutoresizingMaskIntoConstraints = false
-        voiceUnreadDotView.backgroundColor = .systemRed
-        voiceUnreadDotView.layer.cornerRadius = 4
+        voiceUnreadDotView.backgroundColor = ChatBridgeDesignSystem.ColorToken.coral
+        voiceUnreadDotView.layer.cornerRadius = 3.5
         voiceUnreadDotView.isHidden = true
 
         stackView.addArrangedSubview(voicePlaybackButton)
+        stackView.addArrangedSubview(waveformView)
         stackView.addArrangedSubview(voiceDurationLabel)
         stackView.addArrangedSubview(voiceUnreadDotView)
         addSubview(stackView)
@@ -353,8 +536,10 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
 
             voicePlaybackButton.widthAnchor.constraint(equalToConstant: 28),
             voicePlaybackButton.heightAnchor.constraint(equalToConstant: 28),
-            voiceUnreadDotView.widthAnchor.constraint(equalToConstant: 8),
-            voiceUnreadDotView.heightAnchor.constraint(equalToConstant: 8)
+            waveformView.widthAnchor.constraint(equalToConstant: 70),
+            waveformView.heightAnchor.constraint(equalToConstant: 22),
+            voiceUnreadDotView.widthAnchor.constraint(equalToConstant: 7),
+            voiceUnreadDotView.heightAnchor.constraint(equalToConstant: 7)
         ])
     }
 
@@ -369,6 +554,52 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
     }
 }
 
+/// Apple Messages 风格的简易语音波形
+@MainActor
+private final class MessageVoiceWaveformView: UIView {
+    var isPlaying = false {
+        didSet {
+            setNeedsDisplay()
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        backgroundColor = .clear
+        isOpaque = false
+    }
+
+    override func draw(_ rect: CGRect) {
+        guard rect.width > 0, rect.height > 0 else { return }
+
+        let bars = 13
+        let spacing: CGFloat = 3
+        let barWidth = max(2, (rect.width - CGFloat(bars - 1) * spacing) / CGFloat(bars))
+        let activeBars = isPlaying ? bars : 0
+
+        for index in 0..<bars {
+            let progress = CGFloat(index) / CGFloat(max(bars - 1, 1))
+            let wave = 0.28 + 0.72 * abs(sin(progress * .pi * 1.35))
+            let barHeight = max(5, rect.height * wave)
+            let x = CGFloat(index) * (barWidth + spacing)
+            let y = (rect.height - barHeight) / 2
+            let path = UIBezierPath(
+                roundedRect: CGRect(x: x, y: y, width: barWidth, height: barHeight),
+                cornerRadius: barWidth / 2
+            )
+            let alpha: CGFloat = index < activeBars ? 0.95 : 0.34
+            tintColor.withAlphaComponent(alpha).setFill()
+            path.fill()
+        }
+    }
+}
+
 /// 聊天消息单元格
 @MainActor
 final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDelegate {
@@ -379,14 +610,18 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
     private let avatarInitialLabel = UILabel()
     private let bubbleView = ChatBubbleBackgroundView()
     private let stackView = UIStackView()
+    private let metadataStackView = UIStackView()
     private let metadataLabel = UILabel()
     private let retryButton = UIButton(type: .system)
     private let contentFactory = ChatMessageContentViewFactory()
 
     private var incomingAvatarLeadingConstraint: NSLayoutConstraint?
     private var incomingBubbleLeadingConstraint: NSLayoutConstraint?
-    private var outgoingAvatarTrailingConstraint: NSLayoutConstraint?
     private var outgoingBubbleTrailingConstraint: NSLayoutConstraint?
+    private var stackTopConstraint: NSLayoutConstraint?
+    private var stackLeadingConstraint: NSLayoutConstraint?
+    private var stackTrailingConstraint: NSLayoutConstraint?
+    private var stackBottomConstraint: NSLayoutConstraint?
     private var avatarDataTask: URLSessionDataTask?
     private var expectedAvatarURL: String?
     private var row: ChatMessageRowState?
@@ -428,29 +663,32 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
         configureAvatar(for: row)
 
         let isRevoked = row.content.kind == .revoked
-        let bubbleStyle: ChatBubbleBackgroundView.Style = isRevoked ? .revoked : (row.isOutgoing ? .outgoing : .incoming)
+        let isMedia = row.content.kind == .image || row.content.kind == .video
+        let bubbleStyle: ChatBubbleBackgroundView.Style = isRevoked
+            ? .revoked
+            : (isMedia ? .media : (row.isOutgoing ? .outgoing : .incoming))
         bubbleView.apply(style: bubbleStyle)
 
         let foregroundColor: UIColor = row.isOutgoing && !isRevoked ? .white : .label
         let secondaryColor: UIColor = row.isOutgoing && !isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel
-        let tintColor: UIColor = row.isOutgoing && !isRevoked ? .white : .systemBlue
+        let tintColor: UIColor = row.isOutgoing && !isRevoked ? .white : ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
         let contentStyle = ChatMessageContentStyle(
             textColor: foregroundColor,
             secondaryTextColor: secondaryColor,
             tintColor: tintColor
         )
         configureContent(row: row, style: contentStyle, actions: actions)
+        configureBubblePadding(style: bubbleStyle)
 
         let progressText = row.uploadProgress.map { "Uploading \(Int($0 * 100))%" }
         metadataLabel.text = [row.timeText, progressText ?? row.statusText].compactMap { $0 }.joined(separator: " · ")
-        metadataLabel.textColor = secondaryColor
+        metadataLabel.textColor = .secondaryLabel
         retryButton.isHidden = !row.canRetry
-        retryButton.tintColor = row.isOutgoing ? .white : .systemBlue
+        retryButton.tintColor = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
         retryButton.accessibilityIdentifier = "chat.retryButton.\(row.id.rawValue)"
 
         incomingAvatarLeadingConstraint?.isActive = !row.isOutgoing
         incomingBubbleLeadingConstraint?.isActive = !row.isOutgoing
-        outgoingAvatarTrailingConstraint?.isActive = row.isOutgoing
         outgoingBubbleTrailingConstraint?.isActive = row.isOutgoing
     }
 
@@ -475,13 +713,33 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
         contentView.configure(row: row, style: style, actions: actions)
     }
 
+    private func configureBubblePadding(style: ChatBubbleBackgroundView.Style) {
+        guard style != .media else {
+            stackTopConstraint?.constant = 0
+            stackLeadingConstraint?.constant = 0
+            stackTrailingConstraint?.constant = 0
+            stackBottomConstraint?.constant = 0
+            return
+        }
+
+        let tailWidth: CGFloat = 7
+        let vertical: CGFloat = 10
+        let horizontal: CGFloat = 13
+        let leading = horizontal + (style == .incoming ? tailWidth : 0)
+        let trailing = horizontal + (style == .outgoing ? tailWidth : 0)
+        stackTopConstraint?.constant = vertical
+        stackLeadingConstraint?.constant = leading
+        stackTrailingConstraint?.constant = -trailing
+        stackBottomConstraint?.constant = -vertical
+    }
+
     private func configureView() {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.setColors(ChatBridgeDesignSystem.GradientToken.playfulAvatar)
-        avatarView.layer.cornerRadius = 18
+        avatarView.layer.cornerRadius = 15
         avatarView.layer.masksToBounds = true
         avatarView.isAccessibilityElement = false
 
@@ -500,40 +758,56 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
 
         bubbleView.translatesAutoresizingMaskIntoConstraints = false
         bubbleView.isUserInteractionEnabled = true
-        bubbleView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.messageBubble
-        bubbleView.layer.masksToBounds = true
         bubbleView.addInteraction(UIContextMenuInteraction(delegate: self))
 
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .vertical
         stackView.spacing = 4
 
+        metadataStackView.translatesAutoresizingMaskIntoConstraints = false
+        metadataStackView.axis = .horizontal
+        metadataStackView.alignment = .center
+        metadataStackView.spacing = 5
+
         metadataLabel.font = .preferredFont(forTextStyle: .caption2)
         metadataLabel.adjustsFontForContentSizeCategory = true
         metadataLabel.numberOfLines = 1
+        metadataLabel.textAlignment = .center
 
-        retryButton.setTitle("Retry", for: .normal)
-        retryButton.titleLabel?.font = .preferredFont(forTextStyle: .caption1)
-        retryButton.contentHorizontalAlignment = .leading
+        retryButton.setTitle(nil, for: .normal)
+        retryButton.setImage(UIImage(systemName: "exclamationmark.circle.fill"), for: .normal)
+        retryButton.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold),
+            forImageIn: .normal
+        )
         retryButton.addTarget(self, action: #selector(retryButtonTapped), for: .touchUpInside)
 
         contentView.addSubview(avatarView)
         avatarView.addSubview(avatarInitialLabel)
         avatarView.addSubview(avatarImageView)
         contentView.addSubview(bubbleView)
+        contentView.addSubview(metadataStackView)
         bubbleView.addSubview(stackView)
-        stackView.addArrangedSubview(metadataLabel)
-        stackView.addArrangedSubview(retryButton)
+        metadataStackView.addArrangedSubview(metadataLabel)
+        metadataStackView.addArrangedSubview(retryButton)
 
         incomingAvatarLeadingConstraint = avatarView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
         incomingBubbleLeadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 8)
-        outgoingAvatarTrailingConstraint = avatarView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
-        outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: avatarView.leadingAnchor, constant: -8)
+        outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+
+        let stackTopConstraint = stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10)
+        let stackLeadingConstraint = stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 13)
+        let stackTrailingConstraint = stackView.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -13)
+        let stackBottomConstraint = stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -10)
+        self.stackTopConstraint = stackTopConstraint
+        self.stackLeadingConstraint = stackLeadingConstraint
+        self.stackTrailingConstraint = stackTrailingConstraint
+        self.stackBottomConstraint = stackBottomConstraint
 
         NSLayoutConstraint.activate([
             avatarView.topAnchor.constraint(equalTo: bubbleView.topAnchor),
-            avatarView.widthAnchor.constraint(equalToConstant: 36),
-            avatarView.heightAnchor.constraint(equalToConstant: 36),
+            avatarView.widthAnchor.constraint(equalToConstant: 30),
+            avatarView.heightAnchor.constraint(equalToConstant: 30),
 
             avatarInitialLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
             avatarInitialLabel.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),
@@ -545,14 +819,22 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
             avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
             avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
 
-            bubbleView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-            bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
-            bubbleView.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.64),
+            metadataStackView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
+            metadataStackView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            metadataStackView.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.layoutMarginsGuide.leadingAnchor),
+            metadataStackView.trailingAnchor.constraint(lessThanOrEqualTo: contentView.layoutMarginsGuide.trailingAnchor),
 
-            stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10),
-            stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 12),
-            stackView.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -12),
-            stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -8)
+            bubbleView.topAnchor.constraint(equalTo: metadataStackView.bottomAnchor, constant: 4),
+            bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
+            bubbleView.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.72),
+
+            retryButton.widthAnchor.constraint(equalToConstant: 22),
+            retryButton.heightAnchor.constraint(equalToConstant: 22),
+
+            stackTopConstraint,
+            stackLeadingConstraint,
+            stackTrailingConstraint,
+            stackBottomConstraint
         ])
     }
 
@@ -560,6 +842,7 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
         avatarDataTask?.cancel()
         avatarDataTask = nil
         expectedAvatarURL = row.senderAvatarURL
+        avatarView.isHidden = row.isOutgoing
         avatarInitialLabel.text = row.isOutgoing ? "Me" : "C"
         avatarImageView.image = nil
         avatarImageView.isHidden = true

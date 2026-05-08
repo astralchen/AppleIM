@@ -54,6 +54,23 @@ enum ChatBridgeDesignSystem {
                     : mint.withAlphaComponent(0.14)
             }
         }
+
+        /// Apple Messages 风格的发出消息蓝色
+        static let appleMessageOutgoing = UIColor.systemBlue
+
+        /// Apple Messages 风格的收到消息灰色
+        static let appleMessageIncoming = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.tertiarySystemFill
+                : UIColor.systemGray5
+        }
+
+        /// Apple Messages 风格的附件卡片背景
+        static let appleMessageAttachment = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.secondarySystemGroupedBackground
+                : UIColor.systemBackground
+        }
     }
 
     /// 渐变令牌
@@ -82,6 +99,12 @@ enum ChatBridgeDesignSystem {
         static let badge: CGFloat = 11
         /// 输入框圆角
         static let field: CGFloat = 17
+        /// Apple Messages 风格消息气泡圆角
+        static let appleMessageBubble: CGFloat = 18
+        /// Apple Messages 风格媒体预览圆角
+        static let appleMessageMedia: CGFloat = 20
+        /// Apple Messages 风格 composer 附件圆角
+        static let appleComposerAttachment: CGFloat = 16
     }
 
     /// 间距令牌
@@ -329,10 +352,12 @@ final class GradientButtonBackgroundView: UIView {
 final class ChatBubbleBackgroundView: UIView {
     /// 气泡背景绘制样式
     enum Style {
-        /// 发出消息渐变
+        /// 发出消息
         case outgoing
-        /// 收到消息纯色卡片
+        /// 收到消息
         case incoming
+        /// 图片或视频媒体消息
+        case media
         /// 撤回消息纯色背景
         case revoked
     }
@@ -349,6 +374,8 @@ final class ChatBubbleBackgroundView: UIView {
 
     /// 当前背景样式
     private(set) var style: Style = .incoming
+    /// 气泡外形遮罩
+    private let shapeMaskLayer = CAShapeLayer()
 
     /// 初始化气泡背景
     override init(frame: CGRect) {
@@ -368,14 +395,19 @@ final class ChatBubbleBackgroundView: UIView {
 
         switch style {
         case .outgoing:
-            gradientLayer.colors = ChatBridgeDesignSystem.GradientToken.outgoingBubble.map(\.cgColor)
+            let color = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
+            gradientLayer.colors = [color.cgColor, color.cgColor]
         case .incoming:
-            let color = ChatBridgeDesignSystem.ColorToken.incomingCard
+            let color = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming
+            gradientLayer.colors = [color.cgColor, color.cgColor]
+        case .media:
+            let color = UIColor.clear
             gradientLayer.colors = [color.cgColor, color.cgColor]
         case .revoked:
-            let color = UIColor.tertiarySystemGroupedBackground
+            let color = UIColor.tertiarySystemFill
             gradientLayer.colors = [color.cgColor, color.cgColor]
         }
+        setNeedsLayout()
     }
 
     /// 应用聊天气泡样式
@@ -389,13 +421,80 @@ final class ChatBubbleBackgroundView: UIView {
         apply(style: style)
     }
 
+    /// 布局变化时刷新气泡尾角遮罩
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        shapeMaskLayer.frame = bounds
+        shapeMaskLayer.path = makeMaskPath().cgPath
+    }
+
     /// 配置默认圆角、渐变方向和样式
     private func configure() {
-        layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.messageBubble
-        layer.masksToBounds = true
+        layer.cornerRadius = 0
+        layer.masksToBounds = false
+        layer.mask = shapeMaskLayer
         gradientLayer.startPoint = CGPoint(x: 0.0, y: 0.15)
         gradientLayer.endPoint = CGPoint(x: 1.0, y: 1.0)
         apply(style: Style.incoming)
+    }
+
+    /// 生成类似 Apple Messages 的圆角气泡和尾角外形。
+    static func maskPath(in bounds: CGRect, style: Style) -> UIBezierPath {
+        let radius = ChatBridgeDesignSystem.RadiusToken.appleMessageBubble
+        let tailWidth: CGFloat = 7
+        let rect: CGRect
+
+        switch style {
+        case .outgoing:
+            rect = bounds.inset(by: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: tailWidth))
+        case .incoming:
+            rect = bounds.inset(by: UIEdgeInsets(top: 0, left: tailWidth, bottom: 0, right: 0))
+        case .media, .revoked:
+            return UIBezierPath(roundedRect: bounds, cornerRadius: radius)
+        }
+
+        let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
+        let maxY = rect.maxY
+        let tailTopY = maxY - min(16, rect.height * 0.42)
+        let tailTipY = maxY - min(10, rect.height * 0.28)
+        let tailBottomY = maxY - min(6, rect.height * 0.18)
+
+        switch style {
+        case .outgoing:
+            path.move(to: CGPoint(x: rect.maxX - 1, y: tailTopY))
+            path.addCurve(
+                to: CGPoint(x: bounds.maxX, y: tailTipY),
+                controlPoint1: CGPoint(x: rect.maxX + 3, y: tailTopY + 1),
+                controlPoint2: CGPoint(x: bounds.maxX - 1, y: tailTipY - 2)
+            )
+            path.addCurve(
+                to: CGPoint(x: rect.maxX - 3, y: tailBottomY),
+                controlPoint1: CGPoint(x: bounds.maxX - 1, y: tailTipY + 2),
+                controlPoint2: CGPoint(x: rect.maxX + 2, y: tailBottomY)
+            )
+            path.close()
+        case .incoming:
+            path.move(to: CGPoint(x: rect.minX + 1, y: tailTopY))
+            path.addCurve(
+                to: CGPoint(x: bounds.minX, y: tailTipY),
+                controlPoint1: CGPoint(x: rect.minX - 3, y: tailTopY + 1),
+                controlPoint2: CGPoint(x: bounds.minX + 1, y: tailTipY - 2)
+            )
+            path.addCurve(
+                to: CGPoint(x: rect.minX + 3, y: tailBottomY),
+                controlPoint1: CGPoint(x: bounds.minX + 1, y: tailTipY + 2),
+                controlPoint2: CGPoint(x: rect.minX - 2, y: tailBottomY)
+            )
+            path.close()
+        case .media, .revoked:
+            break
+        }
+
+        return path
+    }
+
+    private func makeMaskPath() -> UIBezierPath {
+        Self.maskPath(in: bounds, style: style)
     }
 }
 

@@ -3671,7 +3671,11 @@ struct AppleIMTests {
         let viewModel = ChatViewModel(useCase: useCase, title: "Images")
 
         viewModel.sendImage(data: samplePNGData(), preferredFileExtension: "png")
-        try await Task.sleep(nanoseconds: 20_000_000)
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 1
+            }
+        }
 
         #expect(viewModel.currentState.rows.count == 1)
         #expect(viewModel.currentState.rows.first.flatMap(imageThumbnailPath) == "/tmp/chat-thumb.jpg")
@@ -3938,7 +3942,7 @@ struct AppleIMTests {
 
     @MainActor
     @Test func chatInputBarRemovesSelectedAttachmentPreviewItem() throws {
-        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
         var removedIDs: [String] = []
         inputBar.onAttachmentRemoved = { id in
             removedIDs.append(id)
@@ -3979,8 +3983,8 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func chatInputBarKeepsAttachmentRemoveButtonInsidePreviewItemBounds() throws {
-        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+    @Test func chatInputBarUsesCompactMessagesAttachmentPreviewControls() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
 
         inputBar.setPendingAttachmentPreviews([
             ChatPendingAttachmentPreviewItem(
@@ -4002,14 +4006,16 @@ struct AppleIMTests {
         let buttonFrameInItem = removeButton.convert(removeButton.bounds, to: itemView)
         let buttonFrameInScrollView = removeButton.convert(removeButton.bounds, to: scrollView)
 
-        #expect(buttonFrameInItem.width == 30)
-        #expect(buttonFrameInItem.height == 30)
+        #expect(itemView.bounds.width == 74)
+        #expect(itemView.bounds.height == 74)
+        #expect(buttonFrameInItem.width == 24)
+        #expect(buttonFrameInItem.height == 24)
         #expect(buttonFrameInScrollView.minX >= 0)
         #expect(buttonFrameInScrollView.minY >= 0)
         #expect(buttonFrameInScrollView.maxX <= scrollView.bounds.maxX)
         #expect(buttonFrameInScrollView.maxY <= scrollView.bounds.maxY)
         #expect(removeButton.clipsToBounds == true)
-        #expect(removeButton.layer.cornerRadius == 15)
+        #expect(removeButton.layer.cornerRadius == 12)
     }
 
     @MainActor
@@ -4272,6 +4278,38 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatDesignSystemExposesAppleMessagesChatTokens() {
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        let outgoing = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing.resolvedColor(with: traits)
+        let incoming = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming.resolvedColor(with: traits)
+
+        #expect(outgoing == UIColor.systemBlue.resolvedColor(with: traits))
+        #expect(incoming == UIColor.systemGray5.resolvedColor(with: traits))
+        #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageBubble == 18)
+        #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageMedia == 20)
+        #expect(ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment == 16)
+    }
+
+    @MainActor
+    @Test func chatBubbleTailDoesNotCreateBottomCornerSpur() {
+        let bounds = CGRect(x: 0, y: 0, width: 128, height: 46)
+        let outgoingPath = ChatBubbleBackgroundView.maskPath(in: bounds, style: .outgoing)
+        let incomingPath = ChatBubbleBackgroundView.maskPath(in: bounds, style: .incoming)
+
+        #expect(outgoingPath.contains(CGPoint(x: bounds.maxX - 3, y: bounds.maxY - 3)) == false)
+        #expect(outgoingPath.contains(CGPoint(x: bounds.maxX - 2, y: bounds.maxY - 10)) == true)
+        #expect(incomingPath.contains(CGPoint(x: bounds.minX + 3, y: bounds.maxY - 3)) == false)
+        #expect(incomingPath.contains(CGPoint(x: bounds.minX + 2, y: bounds.maxY - 10)) == true)
+
+        let bubbleView = ChatBubbleBackgroundView(frame: bounds)
+        bubbleView.apply(style: ChatBubbleBackgroundView.Style.outgoing)
+        bubbleView.layoutIfNeeded()
+
+        #expect(bubbleView.layer.cornerRadius == 0)
+        #expect(bubbleView.layer.masksToBounds == false)
+    }
+
+    @MainActor
     @Test func chatMessageContentFactoryCreatesAndReusesContentViews() throws {
         let factory = ChatMessageContentViewFactory()
 
@@ -4292,6 +4330,87 @@ struct AppleIMTests {
         let voiceView = factory.view(for: .voice, reusing: videoView)
         #expect(voiceView is VoiceMessageContentView)
         #expect(voiceView !== videoView)
+
+        let fileView = factory.view(for: .file, reusing: voiceView)
+        #expect(fileView is FileMessageContentView)
+        #expect(fileView !== voiceView)
+    }
+
+    @MainActor
+    @Test func mediaMessageCellsSizeImagesAndVideosToThumbnailAspectRatio() throws {
+        let directory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let landscapeURL = directory.appendingPathComponent("landscape.jpg")
+        let portraitURL = directory.appendingPathComponent("portrait.jpg")
+        try makeJPEGData(width: 320, height: 180, quality: 0.9).write(to: landscapeURL, options: [.atomic])
+        try makeJPEGData(width: 180, height: 320, quality: 0.9).write(to: portraitURL, options: [.atomic])
+
+        let landscapeCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 260))
+        landscapeCell.configure(
+            row: ChatMessageRowState(
+                id: "landscape_image",
+                content: .image(.init(thumbnailPath: landscapeURL.path)),
+                sortSequence: 1,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: true,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
+        landscapeCell.setNeedsLayout()
+        landscapeCell.layoutIfNeeded()
+
+        let portraitCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 360))
+        portraitCell.configure(
+            row: ChatMessageRowState(
+                id: "portrait_video",
+                content: .video(.init(
+                    thumbnailPath: portraitURL.path,
+                    localPath: directory.appendingPathComponent("portrait.mov").path,
+                    durationMilliseconds: 2_000
+                )),
+                sortSequence: 2,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
+        portraitCell.setNeedsLayout()
+        portraitCell.layoutIfNeeded()
+
+        let landscapeSize = try #require(largestLoadedImageView(in: landscapeCell)?.bounds.size)
+        let portraitSize = try #require(largestLoadedImageView(in: portraitCell)?.bounds.size)
+        let landscapeCellSize = landscapeCell.systemLayoutSizeFitting(
+            CGSize(width: 390, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        let portraitCellSize = portraitCell.systemLayoutSizeFitting(
+            CGSize(width: 390, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+
+        #expect(abs((landscapeSize.width / landscapeSize.height) - (16.0 / 9.0)) < 0.02)
+        #expect(abs((portraitSize.width / portraitSize.height) - (9.0 / 16.0)) < 0.02)
+        #expect(landscapeSize.width > landscapeSize.height)
+        #expect(portraitSize.height > portraitSize.width)
+        #expect(landscapeSize.width <= 240)
+        #expect(portraitSize.height <= 304)
+        #expect(portraitCellSize.height > landscapeCellSize.height + 90)
     }
 
     @MainActor
@@ -4327,6 +4446,36 @@ struct AppleIMTests {
 
         let voiceButton = try #require(button(in: cell, accessibilityLabel: "Stop Voice"))
         #expect(voiceButton.image(for: .normal) == UIImage(systemName: "pause.fill"))
+    }
+
+    @MainActor
+    @Test func chatMessageCellCentersMessageTimeMetadata() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = ChatMessageRowState(
+            id: "cell_time",
+            content: .text("Hello"),
+            sortSequence: 1,
+            timeText: "18:08",
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        let timeLabel = try #require(findLabel(withText: "18:08", in: cell))
+        let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+        let timeCenterX = timeLabel.convert(timeLabel.bounds, to: cell.contentView).midX
+        let timeFrame = timeLabel.convert(timeLabel.bounds, to: cell.contentView)
+        let bubbleFrame = bubbleView.convert(bubbleView.bounds, to: cell.contentView)
+
+        #expect(abs(timeCenterX - cell.contentView.bounds.midX) < 1)
+        #expect(timeFrame.maxY < bubbleFrame.minY)
     }
 
     @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {
@@ -6248,6 +6397,23 @@ private func videoThumbnailPath(_ row: ChatMessageRowState) -> String? {
         return video.thumbnailPath
     }
     return nil
+}
+
+@MainActor
+private func largestLoadedImageView(in view: UIView) -> UIImageView? {
+    var candidates: [UIImageView] = []
+
+    func collect(from view: UIView) {
+        if let imageView = view as? UIImageView, imageView.image != nil {
+            candidates.append(imageView)
+        }
+        view.subviews.forEach(collect)
+    }
+
+    collect(from: view)
+    return candidates.max { lhs, rhs in
+        (lhs.bounds.width * lhs.bounds.height) < (rhs.bounds.width * rhs.bounds.height)
+    }
 }
 
 private func durationText(milliseconds: Int) -> String {

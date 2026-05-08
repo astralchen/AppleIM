@@ -371,7 +371,7 @@ final class ChatInputBarView: UIView {
             attachmentPreviewScrollView.leadingAnchor.constraint(equalTo: attachmentPreviewView.leadingAnchor),
             attachmentPreviewScrollView.trailingAnchor.constraint(equalTo: attachmentPreviewView.trailingAnchor),
             attachmentPreviewScrollView.bottomAnchor.constraint(equalTo: attachmentPreviewView.bottomAnchor, constant: -4),
-            attachmentPreviewScrollView.heightAnchor.constraint(equalToConstant: 82),
+            attachmentPreviewScrollView.heightAnchor.constraint(equalToConstant: 74),
 
             attachmentPreviewStackView.topAnchor.constraint(equalTo: attachmentPreviewScrollView.contentLayoutGuide.topAnchor),
             attachmentPreviewStackView.leadingAnchor.constraint(equalTo: attachmentPreviewScrollView.contentLayoutGuide.leadingAnchor),
@@ -892,13 +892,13 @@ private final class PendingAttachmentPreviewItemView: UIView {
         clipsToBounds = false
 
         imageView.translatesAutoresizingMaskIntoConstraints = false
-        imageView.backgroundColor = .secondarySystemGroupedBackground
+        imageView.backgroundColor = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming
         imageView.clipsToBounds = true
         imageView.contentMode = .scaleAspectFill
-        imageView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.media
+        imageView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment
 
         overlayView.translatesAutoresizingMaskIntoConstraints = false
-        overlayView.backgroundColor = UIColor.black.withAlphaComponent(0.46)
+        overlayView.backgroundColor = UIColor.black.withAlphaComponent(0.34)
         overlayView.isUserInteractionEnabled = false
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
@@ -906,7 +906,7 @@ private final class PendingAttachmentPreviewItemView: UIView {
         iconView.tintColor = .white
 
         durationLabel.translatesAutoresizingMaskIntoConstraints = false
-        durationLabel.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+        durationLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         durationLabel.textColor = .white
         durationLabel.adjustsFontSizeToFitWidth = true
         durationLabel.minimumScaleFactor = 0.76
@@ -920,13 +920,13 @@ private final class PendingAttachmentPreviewItemView: UIView {
         removeButton.accessibilityLabel = "Remove Attachment"
         removeButton.accessibilityIdentifier = "chat.removeAttachmentButton.\(itemID)"
         removeButton.configuration = nil
-        removeButton.backgroundColor = UIColor.black.withAlphaComponent(0.56)
+        removeButton.backgroundColor = UIColor.systemGray.withAlphaComponent(0.88)
         removeButton.tintColor = .white
         removeButton.clipsToBounds = true
-        removeButton.layer.cornerRadius = 15
+        removeButton.layer.cornerRadius = 12
         removeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
         removeButton.setPreferredSymbolConfiguration(
-            UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold),
+            UIImage.SymbolConfiguration(pointSize: 12, weight: .bold),
             forImageIn: .normal
         )
         removeButton.addTarget(self, action: #selector(removeButtonTapped), for: .touchUpInside)
@@ -939,25 +939,25 @@ private final class PendingAttachmentPreviewItemView: UIView {
         addSubview(removeButton)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: 82),
-            heightAnchor.constraint(equalToConstant: 82),
+            widthAnchor.constraint(equalToConstant: 74),
+            heightAnchor.constraint(equalToConstant: 74),
 
             imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
             imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: 72),
-            imageView.heightAnchor.constraint(equalToConstant: 72),
+            imageView.widthAnchor.constraint(equalToConstant: 66),
+            imageView.heightAnchor.constraint(equalToConstant: 66),
 
             overlayView.leadingAnchor.constraint(equalTo: imageView.leadingAnchor),
             overlayView.trailingAnchor.constraint(equalTo: imageView.trailingAnchor),
             overlayView.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
-            overlayView.heightAnchor.constraint(equalToConstant: 24),
+            overlayView.heightAnchor.constraint(equalToConstant: 22),
 
-            iconView.leadingAnchor.constraint(equalTo: overlayView.leadingAnchor, constant: 7),
+            iconView.leadingAnchor.constraint(equalTo: overlayView.leadingAnchor, constant: 6),
             iconView.centerYAnchor.constraint(equalTo: overlayView.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 13),
-            iconView.heightAnchor.constraint(equalToConstant: 13),
+            iconView.widthAnchor.constraint(equalToConstant: 12),
+            iconView.heightAnchor.constraint(equalToConstant: 12),
 
-            durationLabel.trailingAnchor.constraint(equalTo: overlayView.trailingAnchor, constant: -6),
+            durationLabel.trailingAnchor.constraint(equalTo: overlayView.trailingAnchor, constant: -5),
             durationLabel.centerYAnchor.constraint(equalTo: overlayView.centerYAnchor),
             durationLabel.leadingAnchor.constraint(greaterThanOrEqualTo: iconView.trailingAnchor, constant: 4),
 
@@ -966,8 +966,8 @@ private final class PendingAttachmentPreviewItemView: UIView {
 
             removeButton.topAnchor.constraint(equalTo: topAnchor),
             removeButton.trailingAnchor.constraint(equalTo: trailingAnchor),
-            removeButton.widthAnchor.constraint(equalToConstant: 30),
-            removeButton.heightAnchor.constraint(equalToConstant: 30)
+            removeButton.widthAnchor.constraint(equalToConstant: 24),
+            removeButton.heightAnchor.constraint(equalToConstant: 24)
         ])
     }
 
