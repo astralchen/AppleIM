@@ -181,18 +181,39 @@ nonisolated struct ConversationDAO: Sendable {
     ///   - userID: 用户 ID
     /// - Throws: 数据库操作失败时抛出错误
     func markRead(conversationID: ConversationID, userID: UserID) async throws {
+        let statement = Self.markReadStatement(
+            conversationID: conversationID,
+            userID: userID,
+            updatedAt: Self.currentTimestamp()
+        )
         try await database.execute(
+            statement.sql,
+            parameters: statement.parameters,
+            paths: paths
+        )
+    }
+
+    /// 生成会话已读 SQL 语句
+    ///
+    /// 用于和消息已读状态在同一事务中提交。
+    ///
+    /// - Parameters:
+    ///   - conversationID: 会话 ID
+    ///   - userID: 用户 ID
+    ///   - updatedAt: 更新时间戳
+    /// - Returns: SQL 语句
+    static func markReadStatement(conversationID: ConversationID, userID: UserID, updatedAt: Int64) -> SQLiteStatement {
+        SQLiteStatement(
             """
             UPDATE conversation
             SET unread_count = 0, updated_at = ?
             WHERE conversation_id = ? AND user_id = ?;
             """,
             parameters: [
-                .integer(Self.currentTimestamp()),
+                .integer(updatedAt),
                 .text(conversationID.rawValue),
                 .text(userID.rawValue)
-            ],
-            paths: paths
+            ]
         )
     }
 

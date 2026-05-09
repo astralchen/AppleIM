@@ -143,7 +143,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     ///   - userID: 用户 ID
     /// - Throws: 数据库更新错误
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
-        try await conversationDAO.markRead(conversationID: conversationID, userID: userID)
+        let now = Self.currentTimestamp()
+        try await database.performTransaction(
+            [
+                ConversationDAO.markReadStatement(conversationID: conversationID, userID: userID, updatedAt: now),
+                MessageDAO.markIncomingMessagesReadStatement(conversationID: conversationID)
+            ],
+            paths: paths
+        )
         _ = try await refreshApplicationBadge(userID: userID)
     }
 

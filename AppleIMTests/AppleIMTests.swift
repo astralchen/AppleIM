@@ -3491,6 +3491,54 @@ struct AppleIMTests {
         #expect(conversations.first?.unreadCount == 0)
     }
 
+    @Test func localChatRepositoryMarksIncomingMessagesReadWhenConversationIsRead() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "message_read_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "message_read_conversation",
+                userID: "message_read_user",
+                title: "Message Read",
+                unreadCount: 1,
+                sortTimestamp: 1
+            )
+        )
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "message_read_user",
+                conversationID: "message_read_conversation",
+                senderID: "friend_user",
+                text: "Unread before opening",
+                localTime: 10,
+                messageID: "message_read_text",
+                clientMessageID: "message_read_client",
+                sortSequence: 10
+            )
+        )
+        try await databaseContext.databaseActor.execute(
+            "UPDATE message SET direction = ?, read_status = ? WHERE message_id = ?;",
+            parameters: [
+                .integer(Int64(MessageDirection.incoming.rawValue)),
+                .integer(Int64(MessageReadStatus.unread.rawValue)),
+                .text(message.id.rawValue)
+            ],
+            paths: databaseContext.paths
+        )
+
+        let unreadMessage = try await repository.message(messageID: message.id)
+        try await repository.markConversationRead(conversationID: "message_read_conversation", userID: "message_read_user")
+
+        let conversations = try await repository.listConversations(for: "message_read_user")
+        let storedMessage = try await repository.message(messageID: message.id)
+        #expect(unreadMessage?.readStatus == .unread)
+        #expect(conversations.first?.unreadCount == 0)
+        #expect(storedMessage?.readStatus == .read)
+    }
+
     @Test func chatUseCaseMarksIncomingVoicePlayedAndClearsUnreadDot() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

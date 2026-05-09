@@ -57,7 +57,7 @@
 |---|---|---|---|---|---|
 | 已完成 | 第 4 周 | 会话列表 MVVM | Combine 输出 row state，Diffable 增量刷新 | 首屏可展示会话 | iOS |
 | 已完成 | 第 4 周 | 会话排序 | 置顶优先，`sort_ts` 倒序 | 新消息会话移动到顶部 | iOS |
-| 部分完成 | 第 4 周 | 未读数 | 本地准确累加、清零 | 进入会话后未读清零 | iOS |
+| 已完成 | 第 4 周 | 未读数 | 本地准确累加、清零；进入会话后会话未读数与 incoming 消息 read_status 同事务置已读 | 进入会话后列表未读数清零，消息级未读状态不残留 | iOS |
 | 已完成 | 第 5 周 | 聊天页 MVVM | 游标分页，UI 状态只在 MainActor 更新 | 首屏消息小于 300ms | iOS |
 | 已完成 | 第 5 周 | 文本消息入库 | message + message_text + conversation 同事务 | 发送后立即展示 sending | iOS |
 | 待联调 | 第 5 周 | 文本消息发送 | `async/await` 请求服务端，ack 回写 | success/failed 状态正确 | iOS/Server |
@@ -120,6 +120,7 @@
 > 回归记录：当前环境已完成 iOS 26.4.1 Simulator 回归；iOS 15 真机/旧系统矩阵待 QA 设备补跑。  
 > 本轮验证（2026-05-09）：撤回/删除 UI 已接入长按菜单后的二次确认，并补充 ViewModel 单元测试与 UI 回归用例；`AppleIMTests/AppleIMTests/chatViewModelDeleteRemovesMessageRow`、`chatViewModelRevokeReloadsRevokedMessageRow`、`chatViewModelDeleteFailureKeepsRowsAndReportsFailure`、`chatViewModelRevokeFailureKeepsRowsAndReportsFailure` 在 iPhone 17 Simulator 通过；`AppleIMUITests/AppleIMUITests/testMessageCanBeRevokedAfterConfirmation`、`testMessageCanBeDeletedAfterConfirmation`、`testCancellingMessageActionKeepsMessageVisible` 在 iPhone 17 Simulator 通过。  
 > 进度更新（2026-05-09）：已输出 `ChatBridge_MVP_Acceptance_Report.md`，完成第一阶段 MVP 功能、性能、稳定性、安全项验收归档；`xcodebuild -list -project AppleIM.xcodeproj` 已确认存在共享 scheme `AppleIM`，`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing` 通过并输出 `TEST BUILD SUCCEEDED`。完整 `xcodebuild ... -destination 'platform=iOS Simulator,name=iPhone 17' test` 在启动 `AppleIMUITests.xctrunner` 阶段遇到 Simulator/LLDB 环境异常，最终 `BUILD INTERRUPTED`，需重启 CoreSimulator/Xcode 后补跑。后续剩余风险集中在服务端文本 ack、重发、图片/视频上传、撤回/删除多端一致性联调，以及 iOS 15 真机/旧系统矩阵补测。
+> 进度更新（2026-05-09）：收口未读数本地链路，`markConversationRead` 现在在同一事务中清零 conversation.unread_count 并将会话内 incoming unread message.read_status 置为 read，避免进入聊天后消息级未读状态残留；新增 `AppleIMTests/AppleIMTests/localChatRepositoryMarksIncomingMessagesReadWhenConversationIsRead` 覆盖该行为。`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests` 已通过。
 
 ---
 

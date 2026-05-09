@@ -216,6 +216,31 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    /// 生成会话内 incoming 消息已读 SQL 语句
+    ///
+    /// 进入会话后，消息级未读状态需要和会话未读数一起清理，避免语音未读点等状态残留。
+    ///
+    /// - Parameter conversationID: 会话 ID
+    /// - Returns: SQL 语句
+    static func markIncomingMessagesReadStatement(conversationID: ConversationID) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            UPDATE message
+            SET read_status = ?
+            WHERE conversation_id = ?
+            AND direction = ?
+            AND read_status = ?
+            AND is_deleted = 0;
+            """,
+            parameters: [
+                .integer(Int64(MessageReadStatus.read.rawValue)),
+                .text(conversationID.rawValue),
+                .integer(Int64(MessageDirection.incoming.rawValue)),
+                .integer(Int64(MessageReadStatus.unread.rawValue))
+            ]
+        )
+    }
+
     /// 准备文本消息重发
     ///
     /// 检查消息是否可以重发，并将状态更新为 sending
