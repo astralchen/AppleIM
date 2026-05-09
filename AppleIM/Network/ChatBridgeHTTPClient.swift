@@ -35,6 +35,42 @@ nonisolated protocol ChatBridgeHTTPPosting: Sendable {
     ) async throws -> Response
 }
 
+/// 带 token 刷新的一次性重放 HTTP 客户端。
+///
+/// 只在服务端返回 401 时触发刷新；刷新成功后重放原请求一次，避免无限循环。
+nonisolated struct TokenRefreshingHTTPClient: ChatBridgeHTTPPosting {
+    private let httpClient: any ChatBridgeHTTPPosting
+    private let authTokenRefresher: @Sendable () async -> String?
+
+    init(
+        httpClient: any ChatBridgeHTTPPosting,
+        authTokenRefresher: @escaping @Sendable () async -> String?
+    ) {
+        self.httpClient = httpClient
+        self.authTokenRefresher = authTokenRefresher
+    }
+
+    func postJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
+        path: String,
+        body: Request,
+        responseType: Response.Type
+    ) async throws -> Response {
+        do {
+            return try await httpClient.postJSON(path: path, body: body, responseType: responseType)
+        } catch let error as ChatBridgeHTTPError {
+            guard case .unacceptableStatus(401) = error else {
+                throw error
+            }
+
+            guard let refreshedToken = await authTokenRefresher(), !refreshedToken.isEmpty else {
+                throw error
+            }
+
+            return try await httpClient.postJSON(path: path, body: body, responseType: responseType)
+        }
+    }
+}
+
 /// 基于 URLSession 的 ChatBridge HTTP 客户端。
 ///
 /// `URLSession` 可安全跨并发任务使用；encoder/decoder 仅在请求方法内部顺序访问。

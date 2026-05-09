@@ -64,16 +64,20 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         let baseURL: URL
         /// 鉴权 token provider
         let authTokenProvider: @Sendable () async -> String?
+        /// 401 后主动刷新 token
+        let authTokenRefresher: @Sendable () async -> String?
         /// 请求超时时间
         let timeoutSeconds: TimeInterval
 
         init(
             baseURL: URL,
             authTokenProvider: @escaping @Sendable () async -> String?,
+            authTokenRefresher: @escaping @Sendable () async -> String? = { nil },
             timeoutSeconds: TimeInterval = 15
         ) {
             self.baseURL = baseURL
             self.authTokenProvider = authTokenProvider
+            self.authTokenRefresher = authTokenRefresher
             self.timeoutSeconds = max(1, timeoutSeconds)
         }
 
@@ -98,7 +102,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         /// 生产 App 默认不启用真实发送；只有显式提供 baseURL 时才切换到服务端适配层。
         static func fromEnvironment(
             _ environment: [String: String] = ProcessInfo.processInfo.environment,
-            authTokenProvider: @escaping @Sendable () async -> String?
+            authTokenProvider: @escaping @Sendable () async -> String?,
+            authTokenRefresher: @escaping @Sendable () async -> String? = { nil }
         ) -> Configuration? {
             guard
                 let baseURLValue = nonEmptyValue(environment["CHATBRIDGE_SERVER_BASE_URL"]),
@@ -115,6 +120,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             return Configuration(
                 baseURL: baseURL,
                 authTokenProvider: authTokenProvider,
+                authTokenRefresher: authTokenRefresher,
                 timeoutSeconds: timeoutSeconds
             )
         }
@@ -128,12 +134,16 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     private let httpClient: any ChatBridgeHTTPPosting
 
     init(configuration: Configuration) {
-        self.httpClient = ChatBridgeHTTPClient(
+        let httpClient = ChatBridgeHTTPClient(
             configuration: ChatBridgeHTTPClient.Configuration(
                 baseURL: configuration.baseURL,
                 authTokenProvider: configuration.authTokenProvider,
                 timeoutSeconds: configuration.timeoutSeconds
             )
+        )
+        self.httpClient = TokenRefreshingHTTPClient(
+            httpClient: httpClient,
+            authTokenRefresher: configuration.authTokenRefresher
         )
     }
 

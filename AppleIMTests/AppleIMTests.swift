@@ -2698,6 +2698,81 @@ struct AppleIMTests {
         #expect(ackMissingResult == .failure(.ackMissing))
     }
 
+    @Test func tokenRefreshingHTTPClientRefreshesAfterUnauthorizedAndRetriesWithUpdatedToken() async throws {
+        let tokenBox = TokenBox(token: "expired_token")
+        let httpClient = ExpiringTextHTTPClient(
+            tokenProvider: {
+                await tokenBox.token
+            },
+            response: ServerTextMessageSendResponse(
+                serverMessageID: "refreshed_ack",
+                sequence: 77,
+                serverTime: 1_777_777_077
+            )
+        )
+        let refreshingClient = TokenRefreshingHTTPClient(httpClient: httpClient) {
+            await tokenBox.updateToken("fresh_token")
+            return "fresh_token"
+        }
+        let service = ServerMessageSendService(httpClient: refreshingClient)
+
+        let result = await service.sendText(message: makeStoredTextMessage(clientMessageID: "refresh_client"))
+
+        #expect(result == .success(MessageSendAck(serverMessageID: "refreshed_ack", sequence: 77, serverTime: 1_777_777_077)))
+        #expect(await httpClient.textSendCallCount == 2)
+        #expect(await httpClient.observedTokens == ["expired_token", "fresh_token"])
+    }
+
+    @Test func tokenRefreshingHTTPClientDoesNotRefreshNonUnauthorizedFailures() async throws {
+        let httpClient = ExpiringTextHTTPClient(error: ChatBridgeHTTPError.timeout)
+        let refreshCallCount = Counter()
+        let refreshingClient = TokenRefreshingHTTPClient(httpClient: httpClient) {
+            await refreshCallCount.increment()
+            return "fresh_token"
+        }
+        let service = ServerMessageSendService(httpClient: refreshingClient)
+
+        let result = await service.sendText(message: makeStoredTextMessage())
+
+        #expect(result == .failure(.timeout))
+        #expect(await refreshCallCount.value == 0)
+        #expect(await httpClient.textSendCallCount == 1)
+    }
+
+    @Test func chatUseCaseQueuesPendingJobWhenUnauthorizedRefreshFails() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "refresh_fail_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "refresh_fail_conversation", userID: "refresh_fail_user", title: "Refresh Fail", sortTimestamp: 1)
+        )
+        let httpClient = ExpiringTextHTTPClient(error: ChatBridgeHTTPError.unacceptableStatus(401))
+        let refreshingClient = TokenRefreshingHTTPClient(httpClient: httpClient) {
+            nil
+        }
+        let useCase = LocalChatUseCase(
+            userID: "refresh_fail_user",
+            conversationID: "refresh_fail_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: ServerMessageSendService(httpClient: refreshingClient),
+            retryPolicy: MessageRetryPolicy(initialDelaySeconds: 2, maxDelaySeconds: 10, maxRetryCount: 3)
+        )
+
+        let rows = try await collectRows(from: useCase.sendText("Queue after refresh fail"))
+        let failedMessage = try await repository.message(messageID: rows[0].id)!
+        let pendingJob = try #require(try await repository.pendingJob(id: PendingMessageJobFactory.messageResendJobID(clientMessageID: failedMessage.clientMessageID ?? "")))
+
+        #expect(rows.map(\.statusText) == ["Sending", "Failed"])
+        #expect(failedMessage.sendStatus == .failed)
+        #expect(pendingJob.type == .messageResend)
+        #expect(pendingJob.payloadJSON.contains("unknown"))
+        #expect(await httpClient.textSendCallCount == 1)
+    }
+
     @Test func chatUseCasePersistsServerAckFromServerMessageSendService() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -7698,6 +7773,71 @@ private actor RecordingHTTPClient: ChatBridgeHTTPPosting {
         }
 
         return response
+    }
+}
+
+private actor ExpiringTextHTTPClient: ChatBridgeHTTPPosting {
+    private let tokenProvider: (@Sendable () async -> String?)?
+    private let response: ServerTextMessageSendResponse?
+    private let error: ChatBridgeHTTPError?
+    private(set) var textSendCallCount = 0
+    private(set) var observedTokens: [String?] = []
+
+    init(
+        tokenProvider: (@Sendable () async -> String?)? = nil,
+        response: ServerTextMessageSendResponse? = nil,
+        error: ChatBridgeHTTPError? = nil
+    ) {
+        self.tokenProvider = tokenProvider
+        self.response = response
+        self.error = error
+    }
+
+    func postJSON<Request, Response>(
+        path: String,
+        body: Request,
+        responseType: Response.Type
+    ) async throws -> Response where Request: Encodable & Sendable, Response: Decodable & Sendable {
+        if body is ServerTextMessageSendRequest {
+            textSendCallCount += 1
+            if let tokenProvider {
+                observedTokens.append(await tokenProvider())
+            }
+        }
+
+        if let error {
+            throw error
+        }
+
+        if textSendCallCount == 1 {
+            throw ChatBridgeHTTPError.unacceptableStatus(401)
+        }
+
+        guard let response = response as? Response else {
+            throw ChatBridgeHTTPError.ackMissing
+        }
+
+        return response
+    }
+}
+
+private actor TokenBox {
+    private(set) var token: String
+
+    init(token: String) {
+        self.token = token
+    }
+
+    func updateToken(_ token: String) {
+        self.token = token
+    }
+}
+
+private actor Counter {
+    private(set) var value = 0
+
+    func increment() {
+        value += 1
     }
 }
 

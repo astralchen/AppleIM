@@ -243,9 +243,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             )
         )
 
-        return ServerMessageSendService.Configuration.fromEnvironment(environment) {
-            await tokenActor.validToken()
-        }
+        return ServerMessageSendService.Configuration.fromEnvironment(
+            environment,
+            authTokenProvider: {
+                await tokenActor.validToken()
+            },
+            authTokenRefresher: {
+                await tokenActor.refreshToken()
+            }
+        )
     }
 }
 
