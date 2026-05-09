@@ -387,6 +387,141 @@ struct AppleIMTests {
         }
     }
 
+    @Test func serverMessageSendConfigurationRequiresExplicitBaseURL() async throws {
+        let missingConfiguration = ServerMessageSendService.Configuration.fromEnvironment([:], token: "secret_token")
+        let missingTokenConfiguration = ServerMessageSendService.Configuration.fromEnvironment(
+            ["CHATBRIDGE_SERVER_BASE_URL": "https://api.example.com"],
+            token: nil
+        )
+        let configuration = try #require(
+            ServerMessageSendService.Configuration.fromEnvironment(
+                [
+                    "CHATBRIDGE_SERVER_BASE_URL": "https://api.example.com",
+                    "CHATBRIDGE_SERVER_TIMEOUT_SECONDS": "7"
+                ],
+                token: "secret_token"
+            )
+        )
+
+        #expect(missingConfiguration == nil)
+        #expect(missingTokenConfiguration == nil)
+        #expect(configuration.baseURL.absoluteString == "https://api.example.com")
+        #expect(configuration.timeoutSeconds == 7)
+        #expect(await configuration.authTokenProvider() == "secret_token")
+    }
+
+    @Test func tokenRefreshActorReturnsCachedTokenAndPersistsRefresh() async throws {
+        let suiteName = "AppleIMTests.TokenRefresh.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+        let sessionStore = UserDefaultsAccountSessionStore(userDefaults: userDefaults)
+        let session = AccountSession(
+            userID: "refresh_user",
+            displayName: "Refresh User",
+            token: "old_token",
+            loggedInAt: 1
+        )
+        try sessionStore.saveSession(session)
+        let httpClient = RecordingHTTPClient(
+            tokenRefreshResponse: ServerTokenRefreshResponse(token: "new_token")
+        )
+        let tokenActor = TokenRefreshActor(
+            session: session,
+            sessionStore: sessionStore,
+            httpClient: httpClient
+        )
+
+        let cachedToken = await tokenActor.validToken()
+        let refreshedToken = await tokenActor.refreshToken()
+        let persistedSession = sessionStore.loadSession()
+        let request = await httpClient.lastTokenRefreshRequest
+
+        #expect(cachedToken == "old_token")
+        #expect(refreshedToken == "new_token")
+        #expect(await tokenActor.validToken() == "new_token")
+        #expect(persistedSession?.token == "new_token")
+        #expect(request?.token == "old_token")
+    }
+
+    @Test func tokenRefreshActorCoalescesConcurrentRefreshes() async throws {
+        let sessionStore = InMemoryAccountSessionStore(
+            session: AccountSession(
+                userID: "coalesce_user",
+                displayName: "Coalesce User",
+                token: "coalesce_old_token",
+                loggedInAt: 1
+            )
+        )
+        let httpClient = RecordingHTTPClient(
+            tokenRefreshResponse: ServerTokenRefreshResponse(token: "coalesce_new_token"),
+            delayNanoseconds: 100_000_000
+        )
+        let tokenActor = TokenRefreshActor(
+            session: try #require(sessionStore.loadSession()),
+            sessionStore: sessionStore,
+            httpClient: httpClient
+        )
+
+        async let first = tokenActor.refreshToken()
+        async let second = tokenActor.refreshToken()
+        async let third = tokenActor.refreshToken()
+        let tokens = await [first, second, third]
+
+        #expect(tokens == ["coalesce_new_token", "coalesce_new_token", "coalesce_new_token"])
+        #expect(await httpClient.tokenRefreshCallCount == 1)
+        #expect(sessionStore.loadSession()?.token == "coalesce_new_token")
+    }
+
+    @Test func serverMessageSendConfigurationUsesTokenProviderActor() async throws {
+        let sessionStore = InMemoryAccountSessionStore(
+            session: AccountSession(
+                userID: "provider_user",
+                displayName: "Provider User",
+                token: "provider_old_token",
+                loggedInAt: 1
+            )
+        )
+        let tokenActor = TokenRefreshActor(
+            session: try #require(sessionStore.loadSession()),
+            sessionStore: sessionStore,
+            httpClient: RecordingHTTPClient(tokenRefreshResponse: ServerTokenRefreshResponse(token: "provider_new_token"))
+        )
+        let authTokenProvider: @Sendable () async -> String? = {
+            await tokenActor.validToken()
+        }
+        let optionalConfiguration = ServerMessageSendService.Configuration.fromEnvironment(
+            ["CHATBRIDGE_SERVER_BASE_URL": "https://api.example.com"],
+            authTokenProvider: authTokenProvider
+        )
+        let configuration = try #require(optionalConfiguration)
+
+        #expect(await configuration.authTokenProvider() == "provider_old_token")
+        _ = await tokenActor.refreshToken()
+        #expect(await configuration.authTokenProvider() == "provider_new_token")
+    }
+
+    @MainActor
+    @Test func uiTestMessageSendConfigurationKeepsUsingMockService() async throws {
+        let service = AppUITestConfiguration.makeMessageSendService(
+            for: AppUITestConfiguration.Configuration(
+                runID: "ui_send_config",
+                sendMode: .success,
+                resetSession: true
+            )
+        )
+        let result = await service.sendText(message: makeStoredTextMessage(messageID: "ui_config_message"))
+
+        guard case let .success(ack) = result else {
+            Issue.record("Expected UI test send service to use mock success")
+            return
+        }
+
+        #expect(ack.serverMessageID == "server_ui_config_message")
+        #expect(ack.sequence == 100)
+    }
+
     @MainActor
     @Test func accountDatabaseKeyStoreGeneratesStableIsolatedKeys() async throws {
         let keyStore = InMemoryAccountDatabaseKeyStore()
@@ -2512,6 +2647,145 @@ struct AppleIMTests {
         #expect(rows[0].statusText == "Sending")
         #expect(rows[1].statusText == nil)
         #expect(storedMessage?.sendStatus == .success)
+    }
+
+    @Test func serverMessageSendServiceMapsTextAckToSendResult() async throws {
+        let httpClient = RecordingHTTPClient(
+            response: ServerTextMessageSendResponse(
+                serverMessageID: "server_contract_ack",
+                sequence: 42,
+                serverTime: 1_777_777_777
+            )
+        )
+        let service = ServerMessageSendService(httpClient: httpClient)
+        let message = makeStoredTextMessage(
+            messageID: "local_contract_message",
+            conversationID: "contract_conversation",
+            senderID: "contract_user",
+            clientMessageID: "client_contract_message",
+            text: "Hello server"
+        )
+
+        let result = await service.sendText(message: message)
+        let request = await httpClient.lastTextRequest
+
+        #expect(result == .success(MessageSendAck(serverMessageID: "server_contract_ack", sequence: 42, serverTime: 1_777_777_777)))
+        #expect(request?.conversationID == "contract_conversation")
+        #expect(request?.clientMessageID == "client_contract_message")
+        #expect(request?.senderID == "contract_user")
+        #expect(request?.text == "Hello server")
+        #expect(request?.localTime == 100)
+    }
+
+    @Test func serverMessageSendServiceMapsTransportFailuresToSendFailures() async throws {
+        let offlineService = ServerMessageSendService(
+            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.offline)
+        )
+        let timeoutService = ServerMessageSendService(
+            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.timeout)
+        )
+        let ackMissingService = ServerMessageSendService(
+            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.ackMissing)
+        )
+        let message = makeStoredTextMessage()
+
+        let offlineResult = await offlineService.sendText(message: message)
+        let timeoutResult = await timeoutService.sendText(message: message)
+        let ackMissingResult = await ackMissingService.sendText(message: message)
+
+        #expect(offlineResult == .failure(.offline))
+        #expect(timeoutResult == .failure(.timeout))
+        #expect(ackMissingResult == .failure(.ackMissing))
+    }
+
+    @Test func chatUseCasePersistsServerAckFromServerMessageSendService() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "server_ack_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "server_ack_conversation", userID: "server_ack_user", title: "Server Ack", sortTimestamp: 1)
+        )
+        let service = ServerMessageSendService(
+            httpClient: RecordingHTTPClient(
+                response: ServerTextMessageSendResponse(
+                    serverMessageID: "server_ack_message",
+                    sequence: 909,
+                    serverTime: 1_777_777_909
+                )
+            )
+        )
+        let useCase = LocalChatUseCase(
+            userID: "server_ack_user",
+            conversationID: "server_ack_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: service
+        )
+
+        let rows = try await collectRows(from: useCase.sendText("Persist server ack"))
+        let storedMessage = try await repository.message(messageID: rows[0].id)
+
+        #expect(rows.map(\.statusText) == ["Sending", nil])
+        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.serverMessageID == "server_ack_message")
+        #expect(storedMessage?.sequence == 909)
+        #expect(storedMessage?.serverTime == 1_777_777_909)
+    }
+
+    @Test func chatUseCaseQueuesPendingJobForServerAckFailureAndResendsWithSameClientMessageID() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "server_retry_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "server_retry_conversation", userID: "server_retry_user", title: "Server Retry", sortTimestamp: 1)
+        )
+        let failingUseCase = LocalChatUseCase(
+            userID: "server_retry_user",
+            conversationID: "server_retry_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: ServerMessageSendService(httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.ackMissing)),
+            retryPolicy: MessageRetryPolicy(initialDelaySeconds: 2, maxDelaySeconds: 10, maxRetryCount: 3)
+        )
+
+        let failedRows = try await collectRows(from: failingUseCase.sendText("Retry with same client id"))
+        let failedMessageID = failedRows[0].id
+        let failedMessage = try await repository.message(messageID: failedMessageID)!
+        let pendingJob = try #require(try await repository.pendingJob(id: PendingMessageJobFactory.messageResendJobID(clientMessageID: failedMessage.clientMessageID ?? "")))
+
+        let successClient = RecordingHTTPClient(
+            response: ServerTextMessageSendResponse(
+                serverMessageID: "server_retry_ack",
+                sequence: 808,
+                serverTime: 1_777_777_808
+            )
+        )
+        let retryingUseCase = LocalChatUseCase(
+            userID: "server_retry_user",
+            conversationID: "server_retry_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: ServerMessageSendService(httpClient: successClient)
+        )
+        let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
+        let storedMessages = try await repository.listMessages(conversationID: "server_retry_conversation", limit: 20, beforeSortSeq: nil)
+        let resentMessage = try await repository.message(messageID: failedMessageID)
+        let retryRequest = await successClient.lastTextRequest
+
+        #expect(failedRows.map(\.statusText) == ["Sending", "Failed"])
+        #expect(pendingJob.type == .messageResend)
+        #expect(pendingJob.payloadJSON.contains("ackMissing"))
+        #expect(retryRows.map(\.statusText) == ["Sending", nil])
+        #expect(storedMessages.count == 1)
+        #expect(resentMessage?.clientMessageID == failedMessage.clientMessageID)
+        #expect(resentMessage?.serverMessageID == "server_retry_ack")
+        #expect(retryRequest?.clientMessageID == failedMessage.clientMessageID)
     }
 
     @Test func chatUseCaseDoesNotSendBlankText() async throws {
@@ -7333,4 +7607,123 @@ private func collectRows(from stream: AsyncThrowingStream<ChatMessageRowState, E
     }
 
     return rows
+}
+
+private func makeStoredTextMessage(
+    messageID: MessageID = "local_message",
+    conversationID: ConversationID = "local_conversation",
+    senderID: UserID = "local_user",
+    clientMessageID: String? = "local_client_message",
+    text: String = "Hello",
+    localTime: Int64 = 100
+) -> StoredMessage {
+    StoredMessage(
+        id: messageID,
+        conversationID: conversationID,
+        senderID: senderID,
+        clientMessageID: clientMessageID,
+        serverMessageID: nil,
+        sequence: nil,
+        type: .text,
+        direction: .outgoing,
+        sendStatus: .sending,
+        readStatus: .read,
+        serverTime: nil,
+        isRevoked: false,
+        isDeleted: false,
+        revokeReplacementText: nil,
+        text: text,
+        image: nil,
+        voice: nil,
+        video: nil,
+        file: nil,
+        sortSequence: localTime,
+        localTime: localTime
+    )
+}
+
+private actor RecordingHTTPClient: ChatBridgeHTTPPosting {
+    private let response: ServerTextMessageSendResponse?
+    private let tokenRefreshResponse: ServerTokenRefreshResponse?
+    private let error: ChatBridgeHTTPError?
+    private let delayNanoseconds: UInt64
+    private(set) var lastTextRequest: ServerTextMessageSendRequest?
+    private(set) var lastTokenRefreshRequest: ServerTokenRefreshRequest?
+    private(set) var tokenRefreshCallCount = 0
+
+    init(
+        response: ServerTextMessageSendResponse? = nil,
+        tokenRefreshResponse: ServerTokenRefreshResponse? = nil,
+        error: ChatBridgeHTTPError? = nil,
+        delayNanoseconds: UInt64 = 0
+    ) {
+        self.response = response
+        self.tokenRefreshResponse = tokenRefreshResponse
+        self.error = error
+        self.delayNanoseconds = delayNanoseconds
+    }
+
+    func postJSON<Request, Response>(
+        path: String,
+        body: Request,
+        responseType: Response.Type
+    ) async throws -> Response where Request: Encodable & Sendable, Response: Decodable & Sendable {
+        if delayNanoseconds > 0 {
+            try await Task.sleep(nanoseconds: delayNanoseconds)
+        }
+
+        if let textRequest = body as? ServerTextMessageSendRequest {
+            lastTextRequest = textRequest
+        }
+
+        if let tokenRefreshRequest = body as? ServerTokenRefreshRequest {
+            lastTokenRefreshRequest = tokenRefreshRequest
+            tokenRefreshCallCount += 1
+        }
+
+        if let error {
+            throw error
+        }
+
+        if let response = response as? Response {
+            return response
+        }
+
+        if let tokenRefreshResponse = tokenRefreshResponse as? Response {
+            return tokenRefreshResponse
+        }
+
+        guard let response = response as? Response else {
+            throw ChatBridgeHTTPError.ackMissing
+        }
+
+        return response
+    }
+}
+
+private final class InMemoryAccountSessionStore: AccountSessionStore, @unchecked Sendable {
+    private let lock = NSLock()
+    private var session: AccountSession?
+
+    init(session: AccountSession? = nil) {
+        self.session = session
+    }
+
+    nonisolated func loadSession() -> AccountSession? {
+        lock.lock()
+        defer { lock.unlock() }
+        return session
+    }
+
+    nonisolated func saveSession(_ session: AccountSession) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.session = session
+    }
+
+    nonisolated func clearSession() {
+        lock.lock()
+        defer { lock.unlock() }
+        session = nil
+    }
 }

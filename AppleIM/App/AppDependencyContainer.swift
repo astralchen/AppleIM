@@ -51,6 +51,7 @@ final class AppDependencyContainer {
         database: DatabaseActor = DatabaseActor(),
         databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
         messageSendService: any MessageSendService = MockMessageSendService(),
+        serverMessageSendConfiguration: ServerMessageSendService.Configuration? = nil,
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager(),
         applicationBadgeManager: any ApplicationBadgeManaging = UIKitApplicationBadgeManager()
@@ -64,6 +65,7 @@ final class AppDependencyContainer {
             : InMemoryAccountDatabaseKeyStore()
         let resolvedMessageSendService = uiTestConfiguration
             .map(AppUITestConfiguration.makeMessageSendService)
+            ?? serverMessageSendConfiguration.map(ServerMessageSendService.init(configuration:))
             ?? messageSendService
 
         self.isUITesting = uiTestConfiguration != nil

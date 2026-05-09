@@ -188,7 +188,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///   - window: 主窗口
     private func showMainInterface(for session: AccountSession, in window: UIWindow) {
         do {
-            let dependencies = try AppDependencyContainer(accountID: session.userID, accountAvatarURL: session.avatarURL)
+            let serverMessageSendConfiguration = makeServerMessageSendConfiguration(for: session)
+            let dependencies = try AppDependencyContainer(
+                accountID: session.userID,
+                accountAvatarURL: session.avatarURL,
+                serverMessageSendConfiguration: serverMessageSendConfiguration
+            )
             self.dependencies = dependencies
             if !dependencies.isUITesting {
                 dependencies.requestLocalNotificationAuthorization()
@@ -209,6 +214,37 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             window.rootViewController = rootViewController
         } catch {
             window.rootViewController = makeStartupErrorViewController()
+        }
+    }
+
+    private func makeServerMessageSendConfiguration(for session: AccountSession) -> ServerMessageSendService.Configuration? {
+        let environment = ProcessInfo.processInfo.environment
+        guard
+            let baseURLValue = environment["CHATBRIDGE_SERVER_BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !baseURLValue.isEmpty,
+            let baseURL = URL(string: baseURLValue)
+        else {
+            return nil
+        }
+
+        let timeoutSeconds = environment["CHATBRIDGE_SERVER_TIMEOUT_SECONDS"]
+            .flatMap { value in
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : TimeInterval(trimmed)
+            }
+            ?? 15
+        let tokenActor = TokenRefreshActor(
+            session: session,
+            sessionStore: sessionStore,
+            configuration: ChatBridgeHTTPClient.Configuration(
+                baseURL: baseURL,
+                authTokenProvider: { nil },
+                timeoutSeconds: timeoutSeconds
+            )
+        )
+
+        return ServerMessageSendService.Configuration.fromEnvironment(environment) {
+            await tokenActor.validToken()
         }
     }
 }
