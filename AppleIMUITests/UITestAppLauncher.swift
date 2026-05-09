@@ -220,6 +220,44 @@ func messageCell(containing text: String, in app: XCUIApplication) -> XCUIElemen
 }
 
 @MainActor
+func sendTextMessage(
+    _ message: String,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let input = app.textViews["chat.messageInput"]
+    XCTAssertTrue(input.waitForExistence(timeout: 5), "Expected chat input", file: file, line: line)
+    input.tap()
+    input.typeText(message)
+    XCTAssertTrue(app.buttons["chat.sendButton"].waitForExistence(timeout: 5), "Expected send button", file: file, line: line)
+    app.buttons["chat.sendButton"].tap()
+    XCTAssertTrue(
+        messageCell(containing: message, in: app).waitForExistence(timeout: 5),
+        "Expected sent message",
+        file: file,
+        line: line
+    )
+}
+
+@MainActor
+func openMessageAction(
+    _ actionTitle: String,
+    forMessageContaining text: String,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let message = messageCell(containing: text, in: app)
+    XCTAssertTrue(message.waitForExistence(timeout: 5), "Expected message \(text)", file: file, line: line)
+    message.press(forDuration: 1.0)
+
+    let action = app.buttons[actionTitle].firstMatch
+    XCTAssertTrue(action.waitForExistence(timeout: 5), "Expected message action \(actionTitle)", file: file, line: line)
+    action.tap()
+}
+
+@MainActor
 func conversationCell(containing text: String, in app: XCUIApplication) -> XCUIElement {
     app.cells
         .matching(NSPredicate(format: "label CONTAINS %@", text))

@@ -291,4 +291,67 @@ final class AppleIMUITests: XCTestCase {
         waitForExpectations(timeout: 5)
         XCTAssertTrue(messageCell(containing: message, in: app).exists)
     }
+
+    @MainActor
+    func testMessageCanBeRevokedAfterConfirmation() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        let message = "UI revoke \(UUID().uuidString)"
+        sendTextMessage(message, in: app)
+
+        openMessageAction("Revoke", forMessageContaining: message, in: app)
+        let confirmButton = app.buttons["chat.confirmRevokeMessage"].firstMatch
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 5), "Expected revoke confirmation")
+        confirmButton.tap()
+
+        XCTAssertTrue(
+            messageCell(containing: "你撤回了一条消息", in: app).waitForExistence(timeout: 5),
+            "Expected revoked replacement text"
+        )
+    }
+
+    @MainActor
+    func testMessageCanBeDeletedAfterConfirmation() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        let message = "UI delete \(UUID().uuidString)"
+        sendTextMessage(message, in: app)
+
+        openMessageAction("Delete", forMessageContaining: message, in: app)
+        let confirmButton = app.buttons["chat.confirmDeleteMessage"].firstMatch
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 5), "Expected delete confirmation")
+        confirmButton.tap()
+
+        let deletedMessage = messageCell(containing: message, in: app)
+        let deletedMessageHidden = NSPredicate(format: "exists == false")
+        expectation(for: deletedMessageHidden, evaluatedWith: deletedMessage)
+        waitForExpectations(timeout: 5)
+    }
+
+    @MainActor
+    func testCancellingMessageActionKeepsMessageVisible() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        let message = "UI cancel action \(UUID().uuidString)"
+        sendTextMessage(message, in: app)
+
+        openMessageAction("Delete", forMessageContaining: message, in: app)
+        let cancelButton = app.buttons["chat.cancelMessageAction"].firstMatch
+        XCTAssertTrue(cancelButton.waitForExistence(timeout: 5), "Expected message action cancel button")
+        cancelButton.tap()
+
+        XCTAssertTrue(
+            messageCell(containing: message, in: app).waitForExistence(timeout: 5),
+            "Expected cancelled action to keep message visible"
+        )
+    }
 }
