@@ -112,6 +112,19 @@ final class ChatPhotoLibraryInputView: UIView {
     private static let dismissDistanceThreshold: CGFloat = 92
     /// 下滑关闭最小速度
     private static let dismissVelocityThreshold: CGFloat = 780
+    /// 系统风格的动态拖拽提示条颜色
+    private static func grabberColor(for traits: UITraitCollection) -> UIColor {
+        switch (traits.userInterfaceStyle, traits.accessibilityContrast) {
+        case (.dark, .high):
+            return UIColor.white.withAlphaComponent(0.84)
+        case (.dark, _):
+            return UIColor.white.withAlphaComponent(0.68)
+        case (_, .high):
+            return UIColor.black.withAlphaComponent(0.64)
+        default:
+            return UIColor.black.withAlphaComponent(0.48)
+        }
+    }
 
     /// 面板模糊背景
     private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
@@ -231,13 +244,19 @@ final class ChatPhotoLibraryInputView: UIView {
         tintView.isUserInteractionEnabled = false
 
         grabberView.translatesAutoresizingMaskIntoConstraints = false
-        grabberView.backgroundColor = UIColor.secondaryLabel.withAlphaComponent(0.38)
+        grabberView.backgroundColor = UIColor { traits in
+            Self.grabberColor(for: traits)
+        }
         grabberView.layer.cornerRadius = 3
+        grabberView.layer.shadowColor = UIColor.black.cgColor
+        grabberView.layer.shadowOpacity = 0.18
+        grabberView.layer.shadowRadius = 2
+        grabberView.layer.shadowOffset = CGSize(width: 0, height: 1)
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
         collectionView.alwaysBounceVertical = true
-        collectionView.contentInset = UIEdgeInsets(top: 18, left: 0, bottom: 0, right: 0)
+        collectionView.contentInset = .zero
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.register(ChatPhotoLibraryCell.self, forCellWithReuseIdentifier: ChatPhotoLibraryCell.reuseIdentifier)

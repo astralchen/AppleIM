@@ -4287,6 +4287,43 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatPhotoLibraryInputStartsGridWithoutTopGap() throws {
+        let photoPanel = ChatPhotoLibraryInputView(frame: CGRect(x: 0, y: 0, width: 390, height: 342))
+        photoPanel.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: photoPanel, identifier: "chat.photoLibraryGrid") as? UICollectionView)
+        #expect(collectionView.contentInset.top == 0)
+    }
+
+    @MainActor
+    @Test func chatPhotoLibraryInputGrabberUsesDynamicSystemLikeOverlayColor() throws {
+        let photoPanel = ChatPhotoLibraryInputView(frame: CGRect(x: 0, y: 0, width: 390, height: 342))
+        photoPanel.layoutIfNeeded()
+
+        let grabberView = try #require(
+            Mirror(reflecting: photoPanel).children.first { $0.label == "grabberView" }?.value as? UIView
+        )
+        let backgroundColor = try #require(grabberView.backgroundColor)
+        let lightColor = backgroundColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        let darkColor = backgroundColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .dark))
+        let highContrastColor = backgroundColor.resolvedColor(
+            with: UITraitCollection(traitsFrom: [
+                UITraitCollection(userInterfaceStyle: .light),
+                UITraitCollection(accessibilityContrast: .high)
+            ])
+        )
+
+        let lightComponents = rgbaComponents(for: lightColor)
+        let darkComponents = rgbaComponents(for: darkColor)
+        let highContrastComponents = rgbaComponents(for: highContrastColor)
+
+        #expect(lightComponents.alpha >= 0.45)
+        #expect(darkComponents.alpha >= 0.65)
+        #expect(lightComponents.red < darkComponents.red)
+        #expect(highContrastComponents.alpha > lightComponents.alpha)
+    }
+
+    @MainActor
     @Test func chatInputBarKeepsMoreButtonOutsideInputCapsule() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         inputBar.layoutIfNeeded()
@@ -6900,6 +6937,16 @@ private func findView<T: UIView>(ofType type: T.Type, in view: UIView) -> T? {
     }
 
     return nil
+}
+
+@MainActor
+private func rgbaComponents(for color: UIColor) -> (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+    var red: CGFloat = 0
+    var green: CGFloat = 0
+    var blue: CGFloat = 0
+    var alpha: CGFloat = 0
+    color.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+    return (red, green, blue, alpha)
 }
 
 @MainActor
