@@ -24,8 +24,8 @@ nonisolated struct VoiceRecordingState: Equatable, Sendable {
 
 /// 语音录制完成结果
 nonisolated enum VoiceRecordingCompletion: Equatable, Sendable {
-    /// 发送录音文件
-    case send(VoiceRecordingFile)
+    /// 录音文件已完成，等待用户预览确认
+    case completed(VoiceRecordingFile)
     /// 用户取消
     case cancelled
     /// 录制时长太短
@@ -56,7 +56,7 @@ nonisolated enum VoiceRecordingCompletion: Equatable, Sendable {
 /// 2. 通过 `onStateChange` 接收实时状态更新
 /// 3. 调用 `updateCanceling(_:)` 更新取消状态
 /// 4. 调用 `finishRecording(cancelled:)` 结束录制
-/// 5. 通过 `onCompletion` 接收完成结果
+/// 5. 通过 `onCompletion` 接收完成结果，成功录音进入待发送预览
 @MainActor
 final class VoiceRecordingController: NSObject {
     private static let minimumDurationMilliseconds = 1_000
@@ -191,7 +191,7 @@ final class VoiceRecordingController: NSObject {
         }
 
         onCompletion?(
-            .send(
+            .completed(
                 VoiceRecordingFile(
                     fileURL: url,
                     durationMilliseconds: elapsedMilliseconds,
@@ -237,7 +237,7 @@ final class VoiceRecordingController: NSObject {
                 isCanceling: isCanceling,
                 elapsedMilliseconds: elapsedMilliseconds,
                 averagePowerLevel: normalizedPower,
-                hintText: isCanceling ? "Release to cancel" : "Release to send"
+                hintText: isCanceling ? "Release to cancel" : "Release to preview"
             )
         )
     }

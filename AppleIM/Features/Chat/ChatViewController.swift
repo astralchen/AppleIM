@@ -9,6 +9,8 @@ import UIKit
 
 /// 聊天消息 section 标识
 private let chatSection = "messages"
+/// 待发送语音预览播放使用的本地占位 ID，避免影响消息列表播放态
+private let pendingVoicePreviewMessageID = MessageID(rawValue: "__pending_voice_preview__")
 
 /// 聊天页控制器
 @MainActor
@@ -59,6 +61,8 @@ final class ChatViewController: UIViewController {
     private var pendingAttachmentPreviews: [ChatPendingAttachmentPreviewItem] = []
     /// 待发送媒体内容缓存
     private var pendingComposerMediaByID: [String: ChatComposerMedia] = [:]
+    /// 待确认发送的本地语音录音
+    private var pendingVoiceRecording: VoiceRecordingFile?
 
     /// 初始化聊天页
     init(viewModel: ChatViewModel) {
@@ -91,6 +95,8 @@ final class ChatViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         voicePlaybackController.stop()
+        removePendingVoiceRecordingFile()
+        inputBarView.clearPendingVoicePreview(animated: false)
         viewModel.cancel()
         viewModel.flushDraft(inputBarView.text)
     }
@@ -206,6 +212,15 @@ final class ChatViewController: UIViewController {
         }
         inputBarView.onVoiceTouchCancel = { [weak self] in
             self?.voiceButtonTouchCancel()
+        }
+        inputBarView.onVoicePreviewCancel = { [weak self] in
+            self?.cancelPendingVoicePreview()
+        }
+        inputBarView.onVoicePreviewPlayToggle = { [weak self] in
+            self?.togglePendingVoicePreviewPlayback()
+        }
+        inputBarView.onVoicePreviewSend = { [weak self] in
+            self?.sendPendingVoicePreview()
         }
         inputBarView.onHeightWillChange = { [weak self] in
             self?.shouldStickToBottomForLayoutChange() ?? false
@@ -465,12 +480,25 @@ final class ChatViewController: UIViewController {
     /// 绑定语音播放回调
     private func configureVoicePlayback() {
         voicePlaybackController.onStarted = { [weak self] messageID in
+            if messageID == pendingVoicePreviewMessageID {
+                self?.renderPendingVoicePreview(isPlaying: true)
+                return
+            }
             self?.viewModel.voicePlaybackStarted(messageID: messageID)
         }
         voicePlaybackController.onStopped = { [weak self] messageID in
+            if messageID == pendingVoicePreviewMessageID {
+                self?.renderPendingVoicePreview(isPlaying: false)
+                return
+            }
             self?.viewModel.voicePlaybackStopped(messageID: messageID)
         }
         voicePlaybackController.onFailed = { [weak self] messageID in
+            if messageID == pendingVoicePreviewMessageID {
+                self?.renderPendingVoicePreview(isPlaying: false)
+                self?.showTransientRecordingMessage("Unable to play voice")
+                return
+            }
             self?.viewModel.voicePlaybackStopped(messageID: messageID)
             self?.showTransientRecordingMessage("Unable to play voice")
         }
@@ -747,8 +775,13 @@ final class ChatViewController: UIViewController {
     /// 处理录音完成结果
     private func handleVoiceRecordingCompletion(_ completion: VoiceRecordingCompletion) {
         switch completion {
-        case let .send(recording):
-            viewModel.sendVoice(recording: recording)
+        case let .completed(recording):
+            pendingVoiceRecording = recording
+            inputBarView.setPendingVoicePreview(
+                durationMilliseconds: recording.durationMilliseconds,
+                isPlaying: false,
+                animated: true
+            )
         case .tooShort:
             showTransientRecordingMessage("Voice too short")
         case .permissionDenied:
@@ -758,6 +791,55 @@ final class ChatViewController: UIViewController {
         case .cancelled:
             showTransientRecordingMessage("Voice cancelled")
         }
+    }
+
+    /// 取消待发送语音预览
+    private func cancelPendingVoicePreview() {
+        voicePlaybackController.stop()
+        removePendingVoiceRecordingFile()
+        inputBarView.clearPendingVoicePreview(animated: true)
+        showTransientRecordingMessage("Voice cancelled")
+    }
+
+    /// 播放或停止待发送语音预览
+    private func togglePendingVoicePreviewPlayback() {
+        guard let pendingVoiceRecording else { return }
+
+        if voicePlaybackController.isPlaying(messageID: pendingVoicePreviewMessageID) {
+            voicePlaybackController.stop()
+            return
+        }
+
+        voicePlaybackController.play(
+            messageID: pendingVoicePreviewMessageID,
+            fileURL: pendingVoiceRecording.fileURL
+        )
+    }
+
+    /// 发送待确认的语音预览
+    private func sendPendingVoicePreview() {
+        guard let recording = pendingVoiceRecording else { return }
+        voicePlaybackController.stop()
+        pendingVoiceRecording = nil
+        inputBarView.clearPendingVoicePreview(animated: true)
+        viewModel.sendVoice(recording: recording)
+    }
+
+    /// 重新渲染待发送语音预览播放态
+    private func renderPendingVoicePreview(isPlaying: Bool) {
+        guard let pendingVoiceRecording else { return }
+        inputBarView.setPendingVoicePreview(
+            durationMilliseconds: pendingVoiceRecording.durationMilliseconds,
+            isPlaying: isPlaying,
+            animated: false
+        )
+    }
+
+    /// 删除未发送的待确认语音文件
+    private func removePendingVoiceRecordingFile() {
+        guard let recording = pendingVoiceRecording else { return }
+        pendingVoiceRecording = nil
+        try? FileManager.default.removeItem(at: recording.fileURL)
     }
 
     /// 播放或停止语音消息

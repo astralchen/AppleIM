@@ -3941,6 +3941,71 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarShowsRecordingWaveformAndStopButtonWhileRecording() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+
+        inputBar.renderVoiceRecordingState(
+            VoiceRecordingState(
+                isRecording: true,
+                isCanceling: false,
+                elapsedMilliseconds: 4_200,
+                averagePowerLevel: 0.64,
+                hintText: "Release to preview"
+            )
+        )
+        inputBar.layoutIfNeeded()
+
+        #expect(findView(in: inputBar, identifier: "chat.recordingWaveform") != nil)
+        #expect(button(in: inputBar, identifier: "chat.voiceStopButton")?.isEnabled == true)
+        #expect(button(in: inputBar, identifier: "chat.sendButton") == nil)
+    }
+
+    @MainActor
+    @Test func chatInputBarShowsVoicePreviewControlsAfterRecordingCompletes() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+
+        inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
+        inputBar.layoutIfNeeded()
+
+        #expect(button(in: inputBar, identifier: "chat.voicePreviewCancelButton")?.isEnabled == true)
+        #expect(button(in: inputBar, identifier: "chat.voicePreviewPlayButton")?.isEnabled == true)
+        #expect(findView(in: inputBar, identifier: "chat.voicePreviewWaveform") != nil)
+        #expect(button(in: inputBar, identifier: "chat.voicePreviewSendButton")?.isEnabled == true)
+        #expect(button(in: inputBar, identifier: "chat.sendButton") == nil)
+    }
+
+    @MainActor
+    @Test func chatInputBarPreviewSendDoesNotTriggerTextSend() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        var textSendCount = 0
+        var voicePreviewSendCount = 0
+        inputBar.onSend = { _ in
+            textSendCount += 1
+        }
+        inputBar.onVoicePreviewSend = {
+            voicePreviewSendCount += 1
+        }
+
+        inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
+        button(in: inputBar, identifier: "chat.voicePreviewSendButton")?.sendActions(for: .touchUpInside)
+
+        #expect(textSendCount == 0)
+        #expect(voicePreviewSendCount == 1)
+    }
+
+    @MainActor
+    @Test func chatInputBarClearingVoicePreviewRestoresVoiceButton() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+
+        inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
+        inputBar.clearPendingVoicePreview(animated: false)
+        inputBar.layoutIfNeeded()
+
+        #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == true)
+        #expect(button(in: inputBar, identifier: "chat.voicePreviewSendButton") == nil)
+    }
+
+    @MainActor
     @Test func chatInputBarRemovesSelectedAttachmentPreviewItem() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
         var removedIDs: [String] = []
