@@ -8,7 +8,7 @@
 
 ChatBridge 第一阶段 MVP 的本地 Mock 链路已具备进入内测的基础条件：账号登录、会话列表、聊天页、文本/图片/语音消息、本地撤回/删除、草稿、搜索、通知、同步、账号隔离、数据库加密与媒体索引均已完成本地闭环或基础验证。
 
-真实生产发布仍依赖服务端联调与设备矩阵补测：文本消息 ack、消息重发、图片/视频上传、撤回/删除多端一致性需要在真实接口完成后补充端到端验收；iOS 15 真机和旧系统矩阵仍需 QA 补跑。
+真实生产发布仍依赖服务端联调、设备矩阵补测和本轮单元测试超时失败排查：文本消息 ack、消息重发、图片/视频上传、撤回/删除多端一致性需要在真实接口完成后补充端到端验收；当前本机无 iOS 15.x runtime 或可用 iOS 15 真机，iOS 15 真机和旧系统矩阵仍需 QA 补跑。
 
 ## 2. 功能验收
 
@@ -131,6 +131,74 @@ xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS
 
 结果：通过，输出 `TEST SUCCEEDED`。
 
+iOS 15 补测摸底与 iOS 26.4.1 对照验证：
+
+```sh
+xcrun simctl list devices available
+```
+
+结果：沙箱内失败，错误集中在 CoreSimulatorService connection invalid 和 CoreSimulator 日志权限；提权后通过，确认仅存在 iOS 26.4 Simulator runtime，无 iOS 15.x runtime。
+
+```sh
+xcrun xctrace list devices
+```
+
+结果：提权后通过，可见真机为 iOS 17.6.1、18.7.x、26.x 且处于离线/不可用状态，无 iOS 15.x 可测设备。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -showdestinations
+```
+
+结果：通过，可见 iOS 26.4.1 Simulator 目标与多台真机占位；未提供可用 iOS 15 目标。
+
+```sh
+rg -n "IPHONEOS_DEPLOYMENT_TARGET|SWIFT_VERSION|SWIFT_STRICT_CONCURRENCY|TARGETED_DEVICE_FAMILY" AppleIM.xcodeproj/project.pbxproj
+```
+
+结果：通过，确认各 target 仍配置 `IPHONEOS_DEPLOYMENT_TARGET = 15.0`、`SWIFT_VERSION = 6.0`、`SWIFT_STRICT_CONCURRENCY = complete`，App target 保持 iPhone/iPad。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing
+```
+
+结果：通过，输出 `TEST BUILD SUCCEEDED`。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests
+```
+
+结果：失败，iPhone 17 / iOS 26.4.1 Simulator 上 170 passed / 11 failed；失败均为 `Issue recorded: Timed out waiting for condition`。失败用例：
+
+- `AppleIMTests/AppleIMTests/chatViewModelAppendsImageRowAfterSendingImage`
+- `AppleIMTests/AppleIMTests/chatViewModelCanLoadOlderMessagesAfterPaginationFailure`
+- `AppleIMTests/AppleIMTests/chatViewModelLoadsGroupAnnouncementAndMentionOptions`
+- `AppleIMTests/AppleIMTests/chatViewModelPaginationFailureKeepsCurrentRows`
+- `AppleIMTests/AppleIMTests/chatViewModelPrependsOlderMessagesWithoutDuplicates`
+- `AppleIMTests/AppleIMTests/chatViewModelSendsComposerImageThenText`
+- `AppleIMTests/AppleIMTests/chatViewModelSendsComposerVideoOnly`
+- `AppleIMTests/AppleIMTests/chatViewModelSendsSelectedMentionMetadata`
+- `AppleIMTests/AppleIMTests/chatViewModelTracksOnlyActiveVoicePlaybackRow`
+- `AppleIMTests/AppleIMTests/conversationListViewControllerReportsInitialLoadFinishedOnce`
+- `AppleIMTests/AppleIMTests/conversationListViewModelRefreshesAfterPinAndMuteChanges`
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMUITests/AppleIMUITests/testLoginAndSendMessage
+```
+
+结果：通过，输出 `TEST SUCCEEDED`。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMUITests/AppleIMUITests/testFailedSendCanBeRetried
+```
+
+结果：通过，输出 `TEST SUCCEEDED`；执行期间出现一次 `DebuggerLLDB.DebuggerVersionStore.StoreError`，未阻塞测试完成。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMUITests/AppleIMUITests/testGroupChatAnnouncementAndMentionPicker
+```
+
+结果：通过，输出 `TEST SUCCEEDED`；执行期间出现一次 `DebuggerLLDB.DebuggerVersionStore.StoreError`，未阻塞测试完成。
+
 ## 5. 剩余风险
 
 | 风险 | 当前影响 | 后续动作 |
@@ -139,12 +207,12 @@ xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS
 | 媒体消息发送 ack 已具备但未端到端联调 | 上传完成后的图片、语音、视频、文件消息发送 DTO、ack 回写、失败分类和 401 重放已具备；真实服务端字段仍需确认 | Server 接口就绪后用真实 endpoint 补跑媒体消息发送 ack、失败入队与重试验收。 |
 | 图片与视频上传未完成联调 | 无法确认真实上传进度、CDN URL、上传失败恢复 | 用真实上传接口补跑媒体上传进度、失败重试和端到端发送测试。 |
 | 撤回/删除多端一致性未验证 | 本地状态正确，但无法证明其他端同步一致 | 服务端撤回/删除事件接入后补齐多端同步回归。 |
-| iOS 15 真机矩阵待补跑 | 低系统 API 兼容仍需设备级确认 | QA 使用 iOS 15+ 真机和旧系统模拟器补充回归。 |
+| iOS 15 真机矩阵待补跑 | 本机无 iOS 15.x Simulator runtime 或可用 iOS 15 真机，低系统 API 兼容仍需设备级确认 | QA 使用 iOS 15+ 真机和旧系统模拟器补充回归。 |
 | 生产推送链路待验证 | 本地通知已完成，真实 APNs 行为未覆盖 | 接入推送证书和服务端后补充前后台通知验收。 |
-| 当前 Simulator test runner 启动异常 | 本轮完整 UI/单元回归未能跑到测试汇总 | 重启 CoreSimulator/Xcode 后重新执行 `xcodebuild ... test`，必要时拆分 `AppleIMTests` 与 `AppleIMUITests` 单独跑。 |
+| AppleIMTests 对照回归存在超时失败 | iOS 26.4.1 Simulator 上单元全集 170 passed / 11 failed，失败均为等待条件超时，完整回归不能标记通过 | 优先排查 ChatViewModel/ConversationListViewModel 异步等待类测试，修复或稳定化后补跑 `AppleIMTests`。 |
 
 ## 6. 发布判断
 
 - 本地 Mock/MVP：可进入内测。
 - 真实服务端联调版本：文本消息适配层已就绪，仍需完成真实 endpoint ack、重发幂等、媒体上传、撤回/删除同步验证后再进入灰度。
-- 生产发布：需完成 iOS 15 真机/旧系统矩阵补跑，并确认无 P0/P1 阻塞问题。
+- 生产发布：需完成 iOS 15 真机/旧系统矩阵补跑，排查本轮 11 个单元测试超时失败，并确认无 P0/P1 阻塞问题。
