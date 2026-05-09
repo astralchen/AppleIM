@@ -25,6 +25,8 @@ nonisolated enum ConversationListAccountAction: Sendable {
     case switchAccount
     /// 退出当前账号
     case logOut
+    /// 删除当前账号本地数据
+    case deleteLocalData
 }
 
 /// 会话列表页面控制器
@@ -514,10 +516,16 @@ final class ConversationListViewController: UIViewController {
         }
         logOutAction.setValue("accountAction.logOut", forKey: "accessibilityIdentifier")
 
+        let deleteLocalDataAction = UIAlertAction(title: "Delete Local Data", style: .destructive) { [weak self] _ in
+            self?.presentDeleteLocalDataConfirmation()
+        }
+        deleteLocalDataAction.setValue("accountAction.deleteLocalData", forKey: "accessibilityIdentifier")
+
         let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
 
         alertController.addAction(switchAction)
         alertController.addAction(logOutAction)
+        alertController.addAction(deleteLocalDataAction)
         alertController.addAction(cancelAction)
 
         if let popover = alertController.popoverPresentationController {
@@ -525,6 +533,40 @@ final class ConversationListViewController: UIViewController {
         }
 
         present(alertController, animated: true)
+    }
+
+    /// 二次确认当前账号本地数据删除。
+    private func presentDeleteLocalDataConfirmation() {
+        let presentConfirmation = { [weak self] in
+            guard let self else { return }
+            self.present(self.makeDeleteLocalDataConfirmationController(), animated: true)
+        }
+
+        if presentedViewController != nil {
+            dismiss(animated: true) {
+                presentConfirmation()
+            }
+        } else {
+            presentConfirmation()
+        }
+    }
+
+    /// 构造当前账号本地数据删除确认弹窗。
+    func makeDeleteLocalDataConfirmationController() -> UIAlertController {
+        let alertController = UIAlertController(
+            title: "Delete Local Data?",
+            message: "This deletes the current account's local database, search index, media files, cache, and database key from this device. Other accounts and mock account records are not affected.",
+            preferredStyle: .alert
+        )
+
+        let confirmAction = UIAlertAction(title: "Delete Local Data", style: .destructive) { [weak self] _ in
+            self?.onAccountAction(.deleteLocalData)
+        }
+        confirmAction.setValue("accountAction.confirmDeleteLocalData", forKey: "accessibilityIdentifier")
+
+        alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alertController.addAction(confirmAction)
+        return alertController
     }
 }
 

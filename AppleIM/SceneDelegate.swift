@@ -125,6 +125,35 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         showLoginInterface(in: window)
     }
 
+    /// 删除当前账号本地数据后结束会话。
+    private func deleteCurrentAccountLocalData() {
+        guard let dependencies else {
+            endCurrentSession()
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            do {
+                try await dependencies.deleteCurrentAccountStorage()
+                self?.endCurrentSession()
+            } catch {
+                self?.showLocalDataDeletionError()
+            }
+        }
+    }
+
+    /// 显示当前账号本地数据删除失败提示。
+    private func showLocalDataDeletionError() {
+        let alertController = UIAlertController(
+            title: "Unable to Delete Local Data",
+            message: "Please try again.",
+            preferredStyle: .alert
+        )
+        alertController.addAction(UIAlertAction(title: "OK", style: .default))
+
+        window?.rootViewController?.topVisibleViewController.present(alertController, animated: true)
+    }
+
     /// 创建登录视图控制器
     ///
     /// 创建登录页面，登录成功后显示主界面
@@ -168,8 +197,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             dependencies.refreshApplicationBadge()
             dependencies.runStartupDataRepair()
             let rootViewController = UINavigationController(
-                rootViewController: dependencies.makeConversationListViewController { [weak self] _ in
-                    self?.endCurrentSession()
+                rootViewController: dependencies.makeConversationListViewController { [weak self] action in
+                    switch action {
+                    case .switchAccount, .logOut:
+                        self?.endCurrentSession()
+                    case .deleteLocalData:
+                        self?.deleteCurrentAccountLocalData()
+                    }
                 }
             )
             window.rootViewController = rootViewController
@@ -198,4 +232,18 @@ private func makeStartupErrorViewController() -> UIViewController {
     ])
 
     return viewController
+}
+
+private extension UIViewController {
+    var topVisibleViewController: UIViewController {
+        if let navigationController = self as? UINavigationController {
+            return navigationController.visibleViewController?.topVisibleViewController ?? navigationController
+        }
+
+        if let presentedViewController {
+            return presentedViewController.topVisibleViewController
+        }
+
+        return self
+    }
 }

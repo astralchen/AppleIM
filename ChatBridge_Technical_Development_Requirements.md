@@ -11,6 +11,7 @@
 
 - 当前仓库为 iOS UIKit 工程，工程名为 `AppleIM`，产品方向为 `ChatBridge`。
 - 主 App、单元测试、UI 测试 Target 已存在。
+- 会话列表账号入口已支持退出登录、切换账号和删除当前账号本地数据；删除本地数据复用存储层账号隔离能力，清理当前账号数据库、搜索库、媒体目录、缓存和账号绑定数据库密钥。
 - 主 App Target 当前启用了：
   - `SWIFT_APPROACHABLE_CONCURRENCY = YES`
   - `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`

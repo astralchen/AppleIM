@@ -73,6 +73,21 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testDeleteLocalDataReturnsToLoginAndReinitializesAccount() throws {
+        let runID = UUID().uuidString
+        let app = makeUITestApplication(runID: runID)
+        app.launch()
+        loginAsUITestUser(in: app)
+
+        deleteLocalData(in: app)
+
+        XCTAssertFalse(app.collectionViews["conversationList.collection"].exists)
+
+        loginAsUITestUser(in: app)
+        waitForConversationList(in: app)
+    }
+
+    @MainActor
     func testSwitchAccountCanLoginAsDifferentUser() throws {
         let app = makeUITestApplication()
         app.launch()

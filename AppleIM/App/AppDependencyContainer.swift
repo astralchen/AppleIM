@@ -250,6 +250,10 @@ final class AppDependencyContainer {
         _ = try await storeProvider.repository()
         return try await storageService.prepareStorage(for: accountID)
     }
+
+    func deleteCurrentAccountStorage() async throws {
+        try await storeProvider.deleteAccountStorage()
+    }
 }
 
 private extension UIViewController {

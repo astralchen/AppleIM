@@ -329,6 +329,33 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func appDependencyContainerDeletesCurrentAccountStorage() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let keyStore = InMemoryAccountDatabaseKeyStore()
+        let container = try AppDependencyContainer(
+            accountID: "delete_container_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: keyStore,
+            applicationBadgeManager: CapturingApplicationBadgeManager()
+        )
+
+        let paths = try await container.prepareCurrentAccountStorage()
+        let originalKey = try await keyStore.databaseKey(for: "delete_container_user")
+
+        try await container.deleteCurrentAccountStorage()
+        let regeneratedKey = try await keyStore.databaseKey(for: "delete_container_user")
+
+        #expect(FileManager.default.fileExists(atPath: paths.rootDirectory.path) == false)
+        #expect(regeneratedKey.count == 32)
+        #expect(regeneratedKey != originalKey)
+    }
+
+    @MainActor
     @Test func appDependencyContainerDefersStartupStorageWorkUntilConversationListLoads() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -4169,6 +4196,49 @@ struct AppleIMTests {
         #expect(avatarImageView.isHidden)
     }
 
+    @MainActor
+    @Test func conversationListAccountMenuConfirmsBeforeDeletingLocalData() async throws {
+        var actions: [ConversationListAccountAction] = []
+        let viewModel = ConversationListViewModel(useCase: StubConversationListUseCase())
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in },
+            onAccountAction: { actions.append($0) }
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let navigationController = UINavigationController(rootViewController: viewController)
+        window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let accountButton = try #require(viewController.navigationItem.leftBarButtonItem?.customView as? UIButton)
+        #expect(accountButton.accessibilityIdentifier == "conversationList.accountButton")
+        accountButton.sendActions(for: .touchUpInside)
+
+        let accountAlert = try #require(navigationController.presentedViewController as? UIAlertController)
+        let deleteAction = try #require(accountAlert.actions.first { $0.title == "Delete Local Data" })
+        #expect(deleteAction.value(forKey: "accessibilityIdentifier") as? String == "accountAction.deleteLocalData")
+
+        let confirmAlert = viewController.makeDeleteLocalDataConfirmationController()
+        #expect(confirmAlert.title == "Delete Local Data?")
+        #expect(confirmAlert.message?.contains("database") == true)
+        #expect(confirmAlert.message?.contains("media") == true)
+        let confirmAction = try #require(confirmAlert.actions.first { $0.title == "Delete Local Data" })
+        #expect(confirmAction.value(forKey: "accessibilityIdentifier") as? String == "accountAction.confirmDeleteLocalData")
+        #expect(actions.isEmpty)
+
+        let cancelAction = try #require(confirmAlert.actions.first { $0.style == .cancel })
+        cancelAction.triggerForTesting()
+
+        #expect(actions.isEmpty)
+    }
+
     @Test func photoLibrarySelectionStateKeepsSelectionOrderAndCapsAtNine() {
         var state = ChatPhotoLibrarySelectionState()
         let ids = (1...10).map { "asset-\($0)" }
@@ -6962,6 +7032,14 @@ private func findLabel(withText text: String, in view: UIView) -> UILabel? {
     }
 
     return nil
+}
+
+private extension UIAlertAction {
+    func triggerForTesting() {
+        typealias ActionHandler = @convention(block) (UIAlertAction) -> Void
+        let handler = value(forKey: "handler") as? ActionHandler
+        handler?(self)
+    }
 }
 
 private actor CapturingLocalNotificationManager: LocalNotificationManaging {
