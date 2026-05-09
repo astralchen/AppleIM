@@ -72,6 +72,12 @@ final class ChatInputBarView: UIView {
     var onVoiceTouchUpOutside: (() -> Void)?
     /// 语音按钮触摸取消回调
     var onVoiceTouchCancel: (() -> Void)?
+    /// 取消待发送语音预览回调
+    var onVoicePreviewCancel: (() -> Void)?
+    /// 播放或暂停待发送语音预览回调
+    var onVoicePreviewPlayToggle: (() -> Void)?
+    /// 发送待发送语音预览回调
+    var onVoicePreviewSend: (() -> Void)?
     /// 高度变化前回调，返回是否需要保持贴底
     var onHeightWillChange: (() -> Bool)?
     /// 高度变化完成回调
@@ -117,11 +123,33 @@ final class ChatInputBarView: UIView {
     private let recordingLevelMeterView = VoiceLevelMeterView()
     /// 录音提示标签
     private let recordingHintLabel = UILabel()
+    /// 录音停止按钮
+    private let recordingStopButton = UIButton(type: .system)
+    /// 待发送语音预览胶囊
+    private let voicePreviewCapsuleView = UIView()
+    /// 待发送语音预览内容栈
+    private let voicePreviewStackView = UIStackView()
+    /// 待发送语音取消按钮
+    private let voicePreviewCancelButton = UIButton(type: .system)
+    /// 待发送语音播放按钮
+    private let voicePreviewPlayButton = UIButton(type: .system)
+    /// 待发送语音波形
+    private let voicePreviewWaveformView = VoiceLevelMeterView()
+    /// 待发送语音时长标签
+    private let voicePreviewDurationLabel = UILabel()
+    /// 待发送语音发送按钮
+    private let voicePreviewSendButton = UIButton(type: .system)
 
     /// 文本输入高度约束
     private var textInputHeightConstraint: NSLayoutConstraint?
     /// 是否正在录音
     private var isRecording = false
+    /// 是否存在待发送语音预览
+    private var hasPendingVoicePreview = false
+    /// 待发送语音预览是否正在播放
+    private var isPendingVoicePreviewPlaying = false
+    /// 待发送语音预览时长
+    private var pendingVoicePreviewDurationMilliseconds = 0
     /// 是否正在展示相册输入视图
     private var isShowingPhotoLibraryInput = false
     /// 是否正在等待控制器完成相册面板到系统键盘的切换
@@ -154,12 +182,12 @@ final class ChatInputBarView: UIView {
 
     /// 当前是否可发送文本或附件组合
     private var canSendComposition: Bool {
-        canSendText || (hasPendingAttachment && !isPendingAttachmentLoading)
+        !hasPendingVoicePreview && (canSendText || (hasPendingAttachment && !isPendingAttachmentLoading))
     }
 
     /// 当前是否可开始语音录制
     private var canRecordVoice: Bool {
-        !canSendText && !hasPendingAttachment && textView.isEditable
+        !hasPendingVoicePreview && !canSendText && !hasPendingAttachment && textView.isEditable
     }
 
     /// 默认文本输入背景色
@@ -231,6 +259,7 @@ final class ChatInputBarView: UIView {
         renderRecordingCapsule(state)
         textView.isEditable = !state.isRecording
         moreButton.isEnabled = !state.isRecording
+        moreButton.isHidden = state.isRecording || hasPendingVoicePreview
         renderTextViewPlaceholder()
         renderTrailingActionState()
     }
@@ -318,6 +347,33 @@ final class ChatInputBarView: UIView {
         renderTrailingActionState()
     }
 
+    /// 展示待发送语音预览。
+    ///
+    /// 录音完成后先进入预览态，用户可以取消、播放确认或手动发送。
+    func setPendingVoicePreview(durationMilliseconds: Int, isPlaying: Bool, animated: Bool) {
+        hasPendingVoicePreview = true
+        isPendingVoicePreviewPlaying = isPlaying
+        pendingVoicePreviewDurationMilliseconds = durationMilliseconds
+        textView.isEditable = false
+        moreButton.isHidden = true
+        renderVoicePreviewCapsule()
+        setVoicePreviewHidden(false, animated: animated)
+        renderTextViewPlaceholder()
+        renderTrailingActionState()
+    }
+
+    /// 清空待发送语音预览并恢复普通输入态。
+    func clearPendingVoicePreview(animated: Bool) {
+        hasPendingVoicePreview = false
+        isPendingVoicePreviewPlaying = false
+        pendingVoicePreviewDurationMilliseconds = 0
+        textView.isEditable = true
+        moreButton.isHidden = false
+        setVoicePreviewHidden(true, animated: animated)
+        renderTextViewPlaceholder()
+        renderTrailingActionState()
+    }
+
     /// 配置输入栏视图层级和约束
     private func configureView() {
         directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
@@ -340,6 +396,7 @@ final class ChatInputBarView: UIView {
         configureTextView()
         configureTrailingActionButton()
         configureRecordingCapsuleView()
+        configureVoicePreviewCapsuleView()
         configureRecordingStatusLabel()
 
         addSubview(contentStackView)
@@ -418,7 +475,26 @@ final class ChatInputBarView: UIView {
             recordingIconView.widthAnchor.constraint(equalToConstant: 24),
             recordingIconView.heightAnchor.constraint(equalToConstant: 24),
             recordingLevelMeterView.widthAnchor.constraint(equalToConstant: 72),
-            recordingLevelMeterView.heightAnchor.constraint(equalToConstant: 20)
+            recordingLevelMeterView.heightAnchor.constraint(equalToConstant: 20),
+            recordingStopButton.widthAnchor.constraint(equalToConstant: 34),
+            recordingStopButton.heightAnchor.constraint(equalToConstant: 34),
+
+            voicePreviewCapsuleView.topAnchor.constraint(equalTo: textInputContainerView.topAnchor),
+            voicePreviewCapsuleView.leadingAnchor.constraint(equalTo: textInputContainerView.leadingAnchor),
+            voicePreviewCapsuleView.trailingAnchor.constraint(equalTo: textInputContainerView.trailingAnchor),
+            voicePreviewCapsuleView.bottomAnchor.constraint(equalTo: textInputContainerView.bottomAnchor),
+
+            voicePreviewStackView.leadingAnchor.constraint(equalTo: voicePreviewCapsuleView.leadingAnchor, constant: 8),
+            voicePreviewStackView.trailingAnchor.constraint(equalTo: voicePreviewCapsuleView.trailingAnchor, constant: -8),
+            voicePreviewStackView.centerYAnchor.constraint(equalTo: voicePreviewCapsuleView.centerYAnchor),
+            voicePreviewCancelButton.widthAnchor.constraint(equalToConstant: 34),
+            voicePreviewCancelButton.heightAnchor.constraint(equalToConstant: 34),
+            voicePreviewPlayButton.widthAnchor.constraint(equalToConstant: 34),
+            voicePreviewPlayButton.heightAnchor.constraint(equalToConstant: 34),
+            voicePreviewWaveformView.widthAnchor.constraint(greaterThanOrEqualToConstant: 96),
+            voicePreviewWaveformView.heightAnchor.constraint(equalToConstant: 20),
+            voicePreviewSendButton.widthAnchor.constraint(equalToConstant: 42),
+            voicePreviewSendButton.heightAnchor.constraint(equalToConstant: 34)
         ])
     }
 
@@ -525,7 +601,7 @@ final class ChatInputBarView: UIView {
     private func configureRecordingCapsuleView() {
         recordingCapsuleView.translatesAutoresizingMaskIntoConstraints = false
         recordingCapsuleView.isHidden = true
-        recordingCapsuleView.isUserInteractionEnabled = false
+        recordingCapsuleView.isUserInteractionEnabled = true
 
         recordingStackView.translatesAutoresizingMaskIntoConstraints = false
         recordingStackView.axis = .horizontal
@@ -544,6 +620,7 @@ final class ChatInputBarView: UIView {
         recordingDurationLabel.setContentHuggingPriority(.required, for: .horizontal)
 
         recordingLevelMeterView.translatesAutoresizingMaskIntoConstraints = false
+        recordingLevelMeterView.accessibilityIdentifier = "chat.recordingWaveform"
 
         recordingHintLabel.translatesAutoresizingMaskIntoConstraints = false
         recordingHintLabel.font = .preferredFont(forTextStyle: .subheadline)
@@ -552,11 +629,102 @@ final class ChatInputBarView: UIView {
         recordingHintLabel.numberOfLines = 1
         recordingHintLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        recordingStopButton.translatesAutoresizingMaskIntoConstraints = false
+        recordingStopButton.accessibilityLabel = "Stop Voice Recording"
+        recordingStopButton.accessibilityIdentifier = "chat.voiceStopButton"
+        recordingStopButton.addTarget(self, action: #selector(recordingStopButtonTapped), for: .touchUpInside)
+
         recordingCapsuleView.addSubview(recordingStackView)
         recordingStackView.addArrangedSubview(recordingIconView)
-        recordingStackView.addArrangedSubview(recordingDurationLabel)
         recordingStackView.addArrangedSubview(recordingLevelMeterView)
+        recordingStackView.addArrangedSubview(recordingDurationLabel)
         recordingStackView.addArrangedSubview(recordingHintLabel)
+        recordingStackView.addArrangedSubview(recordingStopButton)
+    }
+
+    /// 配置待发送语音预览胶囊
+    private func configureVoicePreviewCapsuleView() {
+        voicePreviewCapsuleView.translatesAutoresizingMaskIntoConstraints = false
+        voicePreviewCapsuleView.isHidden = true
+        voicePreviewCapsuleView.isUserInteractionEnabled = true
+
+        voicePreviewStackView.translatesAutoresizingMaskIntoConstraints = false
+        voicePreviewStackView.axis = .horizontal
+        voicePreviewStackView.alignment = .center
+        voicePreviewStackView.spacing = 8
+
+        configureCircleButton(
+            voicePreviewCancelButton,
+            imageName: "xmark",
+            foregroundColor: .label,
+            backgroundColor: UIColor.systemGray5,
+            accessibilityLabel: "Cancel Voice Preview",
+            accessibilityIdentifier: "chat.voicePreviewCancelButton"
+        )
+        voicePreviewCancelButton.addTarget(self, action: #selector(voicePreviewCancelButtonTapped), for: .touchUpInside)
+
+        configureCircleButton(
+            voicePreviewPlayButton,
+            imageName: "play.fill",
+            foregroundColor: .label,
+            backgroundColor: UIColor.systemGray5,
+            accessibilityLabel: "Play Voice Preview",
+            accessibilityIdentifier: "chat.voicePreviewPlayButton"
+        )
+        voicePreviewPlayButton.addTarget(self, action: #selector(voicePreviewPlayButtonTapped), for: .touchUpInside)
+
+        voicePreviewWaveformView.translatesAutoresizingMaskIntoConstraints = false
+        voicePreviewWaveformView.accessibilityIdentifier = "chat.voicePreviewWaveform"
+        voicePreviewWaveformView.tintColor = .systemGray
+        voicePreviewWaveformView.seedPreviewSamples()
+        voicePreviewWaveformView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        voicePreviewDurationLabel.translatesAutoresizingMaskIntoConstraints = false
+        voicePreviewDurationLabel.font = .monospacedDigitSystemFont(ofSize: 16, weight: .semibold)
+        voicePreviewDurationLabel.adjustsFontForContentSizeCategory = true
+        voicePreviewDurationLabel.textColor = .label
+        voicePreviewDurationLabel.setContentHuggingPriority(.required, for: .horizontal)
+
+        configureCircleButton(
+            voicePreviewSendButton,
+            imageName: "arrow.up",
+            foregroundColor: .white,
+            backgroundColor: .systemGreen,
+            accessibilityLabel: "Send Voice Preview",
+            accessibilityIdentifier: "chat.voicePreviewSendButton"
+        )
+        voicePreviewSendButton.addTarget(self, action: #selector(voicePreviewSendButtonTapped), for: .touchUpInside)
+
+        textInputContainerView.addSubview(voicePreviewCapsuleView)
+        voicePreviewCapsuleView.addSubview(voicePreviewStackView)
+        voicePreviewStackView.addArrangedSubview(voicePreviewCancelButton)
+        voicePreviewStackView.addArrangedSubview(voicePreviewPlayButton)
+        voicePreviewStackView.addArrangedSubview(voicePreviewWaveformView)
+        voicePreviewStackView.addArrangedSubview(voicePreviewDurationLabel)
+        voicePreviewStackView.addArrangedSubview(voicePreviewSendButton)
+    }
+
+    /// 配置圆形图标按钮
+    private func configureCircleButton(
+        _ button: UIButton,
+        imageName: String,
+        foregroundColor: UIColor,
+        backgroundColor: UIColor,
+        accessibilityLabel: String,
+        accessibilityIdentifier: String
+    ) {
+        button.translatesAutoresizingMaskIntoConstraints = false
+        var configuration = UIButton.Configuration.filled()
+        configuration.image = UIImage(systemName: imageName)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
+        configuration.baseForegroundColor = foregroundColor
+        configuration.baseBackgroundColor = backgroundColor
+        button.configuration = configuration
+        button.accessibilityLabel = accessibilityLabel
+        button.accessibilityIdentifier = accessibilityIdentifier
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
     }
 
     /// 配置录音状态标签
@@ -646,6 +814,30 @@ final class ChatInputBarView: UIView {
         sendCurrentComposition()
     }
 
+    /// 录音停止按钮点击事件
+    @objc private func recordingStopButtonTapped() {
+        guard isRecording else { return }
+        onVoiceTouchUpInside?()
+    }
+
+    /// 待发送语音取消按钮点击事件
+    @objc private func voicePreviewCancelButtonTapped() {
+        guard hasPendingVoicePreview else { return }
+        onVoicePreviewCancel?()
+    }
+
+    /// 待发送语音播放按钮点击事件
+    @objc private func voicePreviewPlayButtonTapped() {
+        guard hasPendingVoicePreview else { return }
+        onVoicePreviewPlayToggle?()
+    }
+
+    /// 待发送语音发送按钮点击事件
+    @objc private func voicePreviewSendButtonTapped() {
+        guard hasPendingVoicePreview else { return }
+        onVoicePreviewSend?()
+    }
+
     /// 发送当前输入组合
     private func sendCurrentComposition() {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -663,9 +855,10 @@ final class ChatInputBarView: UIView {
     private func renderTrailingActionState() {
         let showsSend = canSendComposition && textView.isEditable
 
-        trailingActionButton.alpha = isRecording ? 0 : 1
-        trailingActionButton.isAccessibilityElement = !isRecording
-        trailingActionButton.accessibilityElementsHidden = isRecording
+        let hidesTrailingAction = isRecording || hasPendingVoicePreview
+        trailingActionButton.alpha = hidesTrailingAction ? 0 : 1
+        trailingActionButton.isAccessibilityElement = !hidesTrailingAction
+        trailingActionButton.accessibilityElementsHidden = hidesTrailingAction
         trailingActionButton.isEnabled = isRecording || showsSend || canRecordVoice
         trailingActionButton.accessibilityLabel = showsSend ? "Send" : "Hold to Record Voice"
         trailingActionButton.accessibilityIdentifier = showsSend ? "chat.sendButton" : "chat.voiceButton"
@@ -711,8 +904,9 @@ final class ChatInputBarView: UIView {
 
     /// 渲染文本输入占位状态
     private func renderTextViewPlaceholder() {
-        textView.isHidden = isRecording
-        textViewPlaceholderLabel.isHidden = isRecording || !text.isEmpty
+        let hidesTextInput = isRecording || hasPendingVoicePreview
+        textView.isHidden = hidesTextInput
+        textViewPlaceholderLabel.isHidden = hidesTextInput || !text.isEmpty
     }
 
     /// 渲染录音胶囊状态
@@ -725,19 +919,66 @@ final class ChatInputBarView: UIView {
             return
         }
 
-        let accentColor: UIColor = state.isCanceling ? .systemRed : .systemBlue
-        textInputTintView.backgroundColor = UIColor { traits in
-            let alpha: CGFloat = traits.userInterfaceStyle == .dark ? 0.24 : 0.12
-            return accentColor.withAlphaComponent(alpha)
-        }
+        let accentColor: UIColor = .systemRed
+        textInputTintView.backgroundColor = Self.defaultTextInputTintColor
         recordingIconView.image = UIImage(systemName: state.isCanceling ? "xmark.circle.fill" : "mic.fill")
         recordingIconView.tintColor = accentColor
         recordingDurationLabel.text = Self.voiceDurationText(milliseconds: state.elapsedMilliseconds)
-        recordingDurationLabel.textColor = state.isCanceling ? .systemRed : .label
+        recordingDurationLabel.textColor = accentColor
         recordingLevelMeterView.tintColor = accentColor
-        recordingLevelMeterView.powerLevel = state.averagePowerLevel
-        recordingHintLabel.text = state.hintText
+        recordingLevelMeterView.appendPowerLevel(state.averagePowerLevel)
+        recordingHintLabel.text = state.isCanceling ? state.hintText : nil
         recordingHintLabel.textColor = state.isCanceling ? .systemRed : .secondaryLabel
+        recordingHintLabel.isHidden = !state.isCanceling
+        configureCircleButton(
+            recordingStopButton,
+            imageName: "stop.fill",
+            foregroundColor: .systemRed,
+            backgroundColor: UIColor.systemRed.withAlphaComponent(0.16),
+            accessibilityLabel: "Stop Voice Recording",
+            accessibilityIdentifier: "chat.voiceStopButton"
+        )
+    }
+
+    /// 渲染待发送语音预览
+    private func renderVoicePreviewCapsule() {
+        voicePreviewDurationLabel.text = Self.voiceDurationText(milliseconds: pendingVoicePreviewDurationMilliseconds)
+        let playImageName = isPendingVoicePreviewPlaying ? "pause.fill" : "play.fill"
+        let playLabel = isPendingVoicePreviewPlaying ? "Pause Voice Preview" : "Play Voice Preview"
+        configureCircleButton(
+            voicePreviewPlayButton,
+            imageName: playImageName,
+            foregroundColor: .label,
+            backgroundColor: UIColor.systemGray5,
+            accessibilityLabel: playLabel,
+            accessibilityIdentifier: "chat.voicePreviewPlayButton"
+        )
+    }
+
+    /// 显示或隐藏待发送语音预览
+    private func setVoicePreviewHidden(_ isHidden: Bool, animated: Bool) {
+        guard voicePreviewCapsuleView.isHidden != isHidden else { return }
+        voicePreviewCapsuleView.accessibilityElementsHidden = isHidden
+        voicePreviewCancelButton.accessibilityIdentifier = isHidden ? nil : "chat.voicePreviewCancelButton"
+        voicePreviewPlayButton.accessibilityIdentifier = isHidden ? nil : "chat.voicePreviewPlayButton"
+        voicePreviewWaveformView.accessibilityIdentifier = isHidden ? nil : "chat.voicePreviewWaveform"
+        voicePreviewSendButton.accessibilityIdentifier = isHidden ? nil : "chat.voicePreviewSendButton"
+
+        let animations = { [weak self] in
+            self?.voicePreviewCapsuleView.isHidden = isHidden
+            self?.superview?.layoutIfNeeded()
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.18,
+                delay: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: animations
+            )
+        } else {
+            animations()
+        }
     }
 
     /// 根据内容更新文本输入高度
@@ -787,8 +1028,7 @@ final class ChatInputBarView: UIView {
     /// 格式化录音时长文本
     private static func voiceDurationText(milliseconds: Int) -> String {
         let seconds = max(0, milliseconds / 1_000)
-        let tenths = max(0, (milliseconds % 1_000) / 100)
-        return "\(seconds).\(tenths)s"
+        return "0:\(String(format: "%02d", seconds))"
     }
 
     /// 创建更多操作菜单
@@ -981,10 +1221,16 @@ private final class PendingAttachmentPreviewItemView: UIView {
 /// 语音录制音量电平视图
 @MainActor
 private final class VoiceLevelMeterView: UIView {
+    /// 最多保留的波形样本数量
+    private static let maximumSampleCount = 42
+    /// 波形高度样本，数组尾部是最新样本
+    private var samples: [Double] = []
+
     /// 归一化音量值，范围 0...1
     var powerLevel: Double = 0 {
         didSet {
             powerLevel = max(0, min(1, powerLevel))
+            samples = [powerLevel]
             setNeedsDisplay()
         }
     }
@@ -1003,28 +1249,49 @@ private final class VoiceLevelMeterView: UIView {
         isOpaque = false
     }
 
+    /// 追加新的实时音量样本，视觉上从右侧进入、旧样本向左移动。
+    func appendPowerLevel(_ level: Double) {
+        let clampedLevel = max(0, min(1, level))
+        samples.append(clampedLevel)
+        if samples.count > Self.maximumSampleCount {
+            samples.removeFirst(samples.count - Self.maximumSampleCount)
+        }
+        setNeedsDisplay()
+    }
+
+    /// 为待发送预览生成稳定波形。
+    func seedPreviewSamples() {
+        samples = (0..<Self.maximumSampleCount).map { index in
+            let phase = Double(index) / Double(max(Self.maximumSampleCount - 1, 1))
+            return 0.18 + 0.66 * abs(sin(phase * .pi * 2.4))
+        }
+        setNeedsDisplay()
+    }
+
     /// 绘制音量柱形图
     override func draw(_ rect: CGRect) {
         guard rect.width > 0, rect.height > 0 else { return }
 
-        let barCount = 9
+        let visibleSamples = samples.isEmpty ? Array(repeating: powerLevel, count: 9) : samples
+        let barCount = visibleSamples.count
         let spacing: CGFloat = 3
-        let barWidth = max(2, (rect.width - CGFloat(barCount - 1) * spacing) / CGFloat(barCount))
-        let activeIndex = Int(ceil(powerLevel * Double(barCount)))
+        let barWidth = max(2, min(4, (rect.width - CGFloat(barCount - 1) * spacing) / CGFloat(barCount)))
+        let contentWidth = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
+        let startX = max(0, rect.width - contentWidth)
 
-        for index in 0..<barCount {
+        for (index, sample) in visibleSamples.enumerated() {
             let progress = CGFloat(index) / CGFloat(max(barCount - 1, 1))
-            let heightScale = 0.32 + 0.68 * sin(progress * .pi)
+            let centerWeight = 0.38 + 0.62 * sin(progress * .pi)
+            let heightScale = 0.22 + 0.78 * CGFloat(sample) * centerWeight
             let barHeight = max(4, rect.height * heightScale)
-            let x = CGFloat(index) * (barWidth + spacing)
+            let x = startX + CGFloat(index) * (barWidth + spacing)
             let y = (rect.height - barHeight) / 2
             let path = UIBezierPath(
                 roundedRect: CGRect(x: x, y: y, width: barWidth, height: barHeight),
                 cornerRadius: barWidth / 2
             )
-            let color = index < activeIndex
-                ? tintColor.withAlphaComponent(0.92)
-                : UIColor.systemGray3.withAlphaComponent(0.72)
+            let ageAlpha = 0.3 + 0.62 * CGFloat(index + 1) / CGFloat(barCount)
+            let color = tintColor.withAlphaComponent(ageAlpha)
             color.setFill()
             path.fill()
         }
