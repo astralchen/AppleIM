@@ -25,7 +25,7 @@
 
 状态说明：`已完成` 表示当前仓库已有实现和基础验证；`部分完成` 表示主链路已落地但仍有明确缺口；`待联调` 表示本地/Mock 链路已通但依赖服务端或系统能力验证；`下一步` 表示当前应优先推进；`待开始` 表示尚未进入实现。
 
-> 当前做到：聊天消息撤回/删除本地 UI 与存储闭环完成，下一步继续收敛 UI 回归稳定性，并推进 MVP 验收报告。
+> 当前做到：MVP 验收报告已输出，进入服务端联调与 iOS 15+ 设备矩阵补测阶段。
 
 ### Sprint 0：工程基线与开发规范
 
@@ -115,10 +115,11 @@
 | 已完成 | 第 14 周 | 单元测试补齐 | ViewModel、Repository、Sync、PendingJob | 核心链路覆盖完成 | iOS/QA |
 | 已完成 | 第 14 周 | UI 测试补齐 | 登录、会话、发送、重发、搜索 | 关键路径自动化通过 | iOS/QA |
 | 已完成 | 第 14 周 | 回归测试 | iOS 15+ 机型和模拟器覆盖 | 无 P0/P1 阻塞问题 | QA |
-| 待开始 | 第 14 周 | MVP 验收报告 | 功能、性能、稳定性、安全项 | 输出可发布结论 | PM/iOS/QA |
+| 已完成 | 第 14 周 | MVP 验收报告 | 功能、性能、稳定性、安全项 | 已输出 `ChatBridge_MVP_Acceptance_Report.md`；本地 Mock/MVP 可进入内测，真实生产发布仍依赖服务端联调与 iOS 15+ 设备矩阵补测 | PM/iOS/QA |
 
 > 回归记录：当前环境已完成 iOS 26.4.1 Simulator 回归；iOS 15 真机/旧系统矩阵待 QA 设备补跑。  
-> 本轮验证（2026-05-09）：撤回/删除 UI 已接入长按菜单后的二次确认，并补充 ViewModel 单元测试与 UI 回归用例；`AppleIMTests/AppleIMTests/chatViewModelDeleteRemovesMessageRow`、`chatViewModelRevokeReloadsRevokedMessageRow`、`chatViewModelDeleteFailureKeepsRowsAndReportsFailure`、`chatViewModelRevokeFailureKeepsRowsAndReportsFailure` 在 iPhone 17 Simulator 通过；`AppleIMUITests/AppleIMUITests/testMessageCanBeRevokedAfterConfirmation`、`testMessageCanBeDeletedAfterConfirmation`、`testCancellingMessageActionKeepsMessageVisible` 在 iPhone 17 Simulator 通过。下一步继续输出 MVP 验收报告。
+> 本轮验证（2026-05-09）：撤回/删除 UI 已接入长按菜单后的二次确认，并补充 ViewModel 单元测试与 UI 回归用例；`AppleIMTests/AppleIMTests/chatViewModelDeleteRemovesMessageRow`、`chatViewModelRevokeReloadsRevokedMessageRow`、`chatViewModelDeleteFailureKeepsRowsAndReportsFailure`、`chatViewModelRevokeFailureKeepsRowsAndReportsFailure` 在 iPhone 17 Simulator 通过；`AppleIMUITests/AppleIMUITests/testMessageCanBeRevokedAfterConfirmation`、`testMessageCanBeDeletedAfterConfirmation`、`testCancellingMessageActionKeepsMessageVisible` 在 iPhone 17 Simulator 通过。  
+> 进度更新（2026-05-09）：已输出 `ChatBridge_MVP_Acceptance_Report.md`，完成第一阶段 MVP 功能、性能、稳定性、安全项验收归档；`xcodebuild -list -project AppleIM.xcodeproj` 已确认存在共享 scheme `AppleIM`，`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing` 通过并输出 `TEST BUILD SUCCEEDED`。完整 `xcodebuild ... -destination 'platform=iOS Simulator,name=iPhone 17' test` 在启动 `AppleIMUITests.xctrunner` 阶段遇到 Simulator/LLDB 环境异常，最终 `BUILD INTERRUPTED`，需重启 CoreSimulator/Xcode 后补跑。后续剩余风险集中在服务端文本 ack、重发、图片/视频上传、撤回/删除多端一致性联调，以及 iOS 15 真机/旧系统矩阵补测。
 
 ---
 
