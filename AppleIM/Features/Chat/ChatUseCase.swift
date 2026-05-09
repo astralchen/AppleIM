@@ -56,6 +56,13 @@ nonisolated struct PendingMessageRetryRunResult: Equatable, Sendable {
     let exhaustedCount: Int
 }
 
+/// 群聊上下文
+nonisolated struct GroupChatContext: Equatable, Sendable {
+    let members: [GroupMember]
+    let currentUserRole: GroupMemberRole
+    let announcement: GroupAnnouncement?
+}
+
 /// 聊天用例协议
 protocol ChatUseCase: Sendable {
     /// 加载首屏消息
@@ -68,6 +75,12 @@ protocol ChatUseCase: Sendable {
     func saveDraft(_ text: String) async throws
     /// 发送文本消息
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 发送带 @ 元数据的文本消息
+    func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 加载群聊上下文；单聊返回 nil
+    func loadGroupContext() async throws -> GroupChatContext?
+    /// 更新群公告
+    func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement?
     /// 发送图片消息
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 发送语音消息
@@ -84,6 +97,20 @@ protocol ChatUseCase: Sendable {
     func delete(messageID: MessageID) async throws
     /// 撤回消息
     func revoke(messageID: MessageID) async throws
+}
+
+extension ChatUseCase {
+    func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sendText(text)
+    }
+
+    func loadGroupContext() async throws -> GroupChatContext? {
+        nil
+    }
+
+    func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement? {
+        nil
+    }
 }
 
 /// 本地聊天用例实现
@@ -190,8 +217,45 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         try await repository.saveDraft(conversationID: conversationID, userID: userID, text: text)
     }
 
+    /// 加载群聊上下文
+    func loadGroupContext() async throws -> GroupChatContext? {
+        guard let conversationRepository else {
+            return nil
+        }
+
+        let members = try await conversationRepository.groupMembers(conversationID: conversationID)
+        guard !members.isEmpty else {
+            return nil
+        }
+
+        return GroupChatContext(
+            members: members,
+            currentUserRole: try await conversationRepository.currentMemberRole(conversationID: conversationID, userID: userID) ?? .member,
+            announcement: try await conversationRepository.groupAnnouncement(conversationID: conversationID)
+        )
+    }
+
+    /// 更新群公告
+    func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement? {
+        guard let conversationRepository else {
+            return nil
+        }
+
+        try await conversationRepository.updateGroupAnnouncement(
+            conversationID: conversationID,
+            userID: userID,
+            text: text.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        return try await conversationRepository.groupAnnouncement(conversationID: conversationID)
+    }
+
     /// 发送文本消息并流式返回发送状态
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sendText(text, mentionedUserIDs: [], mentionsAll: false)
+    }
+
+    /// 发送文本消息并携带群聊 @ 元数据
+    func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return AsyncThrowingStream { continuation in
@@ -202,6 +266,13 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
             let task = Task {
                 do {
+                    if mentionsAll {
+                        let role = try await conversationRepository?.currentMemberRole(conversationID: conversationID, userID: userID)
+                        guard role?.canManageAnnouncement == true else {
+                            throw GroupChatError.permissionDenied
+                        }
+                    }
+
                     let now = Int64(Date().timeIntervalSince1970)
                     try await repository.clearDraft(conversationID: conversationID, userID: userID)
                     let insertedMessage = try await repository.insertOutgoingTextMessage(
@@ -211,6 +282,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                             senderID: userID,
                             text: trimmedText,
                             localTime: now,
+                            mentionedUserIDs: mentionedUserIDs,
+                            mentionsAll: mentionsAll,
                             sortSequence: now
                         )
                     )
@@ -1499,13 +1572,18 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 发送文本消息并透传本地用例的状态流
     func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sendText(text, mentionedUserIDs: [], mentionsAll: false)
+    }
+
+    /// 发送带 @ 元数据的文本消息并透传本地用例的状态流
+    func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
                     let useCase = makeLocalUseCase(repository: repository)
 
-                    for try await row in useCase.sendText(text) {
+                    for try await row in useCase.sendText(text, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                         continuation.yield(row)
                     }
 
@@ -1519,6 +1597,20 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                 task.cancel()
             }
         }
+    }
+
+    /// 加载群聊上下文
+    func loadGroupContext() async throws -> GroupChatContext? {
+        let repository = try await storeProvider.repository()
+        let useCase = makeLocalUseCase(repository: repository)
+        return try await useCase.loadGroupContext()
+    }
+
+    /// 更新群公告
+    func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement? {
+        let repository = try await storeProvider.repository()
+        let useCase = makeLocalUseCase(repository: repository)
+        return try await useCase.updateGroupAnnouncement(text)
     }
 
     /// 发送图片消息并透传本地用例的状态流

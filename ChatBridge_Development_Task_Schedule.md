@@ -64,6 +64,7 @@
 | 部分完成 | 第 6 周 | 消息重发 | 基于 `client_msg_id` 幂等；服务端适配层失败映射可进入 pending_job 并复用原 client message ID 重发 | 本地/适配层重发不重复插入；真实接口联调后验证服务端幂等 | iOS/Server |
 | 待联调 | 第 6 周 | 撤回与删除 | 本地长按菜单、二次确认、逻辑删除和撤回替代文案已闭环；真实服务端撤回/删除接口待联调 | 本地 UI 可展示撤回/删除状态；服务端联调后补齐多端一致性验证 | iOS/Server |
 | 已完成 | 第 6 周 | 草稿 | 离开保存，回来恢复 | 重启后草稿仍存在 | iOS |
+| 已完成 | 第 6 周 | 群聊 P1 本地体验闭环 | 群成员角色、群公告、本地 @ 成员/@所有人、会话列表 @ 提示；基于 `conversation_member` 与 `conversation.extra_json`，真实群管理服务端接口不在本轮范围 | `group_core` demo 群可查看/编辑公告、选择 @ 成员并写入 mention 元数据；incoming @ 与 @所有人 可触发列表提示，进入会话标记已读后清除 | iOS |
 
 ### Sprint 3：同步、弱网与任务队列
 
@@ -125,6 +126,7 @@
 > 进度更新（2026-05-09）：新增独立 `TokenRefreshActor` 与 async token provider 注入，支持当前 token 读取、刷新成功后更新 `AccountSessionStore`、并发刷新合并为单次请求；`SceneDelegate` 在真实服务端配置存在时为 `ServerMessageSendService` 注入 actor provider，UI 测试路径仍优先使用 Mock/fail-first。新增 `tokenRefreshActorReturnsCachedTokenAndPersistsRefresh`、`tokenRefreshActorCoalescesConcurrentRefreshes`、`serverMessageSendConfigurationUsesTokenProviderActor` 覆盖缓存、持久化、并发合并与 provider 注入。真实 token refresh endpoint 字段仍待接口确认后联调。
 > 进度更新（2026-05-09）：401 自动刷新与一次请求重放已接入文本发送网络边界，新增 `TokenRefreshingHTTPClient` 包装 `ChatBridgeHTTPPosting`，仅在 `unacceptableStatus(401)` 时调用 `authTokenRefresher`，刷新成功后重放原请求一次；刷新失败、非 401、二次失败继续沿用现有失败入队与重试链路。新增 `tokenRefreshingHTTPClientRefreshesAfterUnauthorizedAndRetriesWithUpdatedToken`、`tokenRefreshingHTTPClientDoesNotRefreshNonUnauthorizedFailures`、`chatUseCaseQueuesPendingJobWhenUnauthorizedRefreshFails` 覆盖 401 刷新重放、非 401 不刷新、刷新失败入队。
 > 进度更新（2026-05-09）：媒体消息服务端发送适配层已按分类型接口接入，新增 `/v1/messages/image`、`/v1/messages/voice`、`/v1/messages/video`、`/v1/messages/file` 请求 DTO，上传完成后携带 `media_id`、`cdn_url`、`md5` 与图片/语音/视频/文件元数据换取统一 ack，并复用现有 401 token refresh 一次重放、失败分类和 pending job 重试链路。新增 `serverMessageSendServiceMapsImageAckToSendResult`、`serverMessageSendServiceMapsVoiceVideoAndFileRequests`、`serverMessageSendServiceMapsMediaTransportFailuresToSendFailures`、`tokenRefreshingHTTPClientRefreshesMediaSendAfterUnauthorized`、`chatUseCasePersistsServerAckForImageAndVideoSends`、`chatUseCaseQueuesMediaUploadJobWhenServerMediaSendFailsAfterUpload` 覆盖媒体请求映射、ack 持久化、刷新重放、发送失败后保留 upload ack 并入队。真实媒体上传 endpoint、上传进度与端到端联调仍待 Server 接口确认。
+> 进度更新（2026-05-09）：群聊 P1 本地体验闭环已接入，新增 `GroupMember`、`GroupMemberRole`、`GroupAnnouncement`，复用 `conversation_member` 存储角色并用 `conversation.extra_json` 保存群公告与未读 @ 提示；聊天页支持群公告入口、管理员公告编辑、输入 `@` 展示成员选择、管理员/群主 `@所有人`，文本发送会写入 `mentions_json` 与 `at_all`；incoming @ 当前用户或 @所有人 会让会话列表 subtitle 前展示 `[有人@我]`，进入会话标记已读后清除。`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing`、`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests`、`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMUITests/AppleIMUITests/testGroupChatAnnouncementAndMentionPicker` 均已通过。真实创建群、邀请、移除、退出、解散、群主转让和服务端群管理接口仍在范围外。
 
 ---
 

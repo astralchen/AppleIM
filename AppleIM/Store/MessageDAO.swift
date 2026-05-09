@@ -282,6 +282,7 @@ nonisolated struct MessageDAO: Sendable {
         let clientMessageID = input.clientMessageID ?? messageID.rawValue
         let contentID = "text_\(messageID.rawValue)"
         let sortSequence = input.sortSequence ?? input.localTime
+        let mentionsJSON = Self.mentionsJSON(for: input.mentionedUserIDs)
 
         let message = StoredMessage(
             id: messageID,
@@ -318,11 +319,13 @@ nonisolated struct MessageDAO: Sendable {
                         mentions_json,
                         at_all,
                         rich_text_json
-                    ) VALUES (?, ?, NULL, 0, NULL);
+                    ) VALUES (?, ?, ?, ?, NULL);
                     """,
                     parameters: [
                         .text(contentID),
-                        .text(input.text)
+                        .text(input.text),
+                        .optionalText(mentionsJSON),
+                        .integer(input.mentionsAll ? 1 : 0)
                     ]
                 ),
                 SQLiteStatement(
@@ -382,6 +385,17 @@ nonisolated struct MessageDAO: Sendable {
                 )
             ]
         )
+    }
+
+    private static func mentionsJSON(for userIDs: [UserID]) -> String? {
+        let values = userIDs.map(\.rawValue)
+        guard !values.isEmpty else {
+            return nil
+        }
+        guard let data = try? JSONEncoder().encode(values) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// 生成插入发出图片消息的 SQL 语句

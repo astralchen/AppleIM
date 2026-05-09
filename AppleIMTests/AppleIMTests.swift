@@ -2427,6 +2427,119 @@ struct AppleIMTests {
         #expect(rows.first(where: { $0.id == "single_sondra" })?.isMuted == true)
     }
 
+    @Test func localChatRepositoryStoresGroupMembersAndAnnouncementPermissions() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "group_repo_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "group_repo_conversation", userID: "group_repo_user", type: .group, targetID: "group_repo")
+        )
+        try await repository.upsertGroupMembers(
+            [
+                GroupMember(conversationID: "group_repo_conversation", memberID: "group_repo_user", displayName: "Me", role: .owner, joinTime: 100),
+                GroupMember(conversationID: "group_repo_conversation", memberID: "admin_user", displayName: "Admin", role: .admin, joinTime: 101),
+                GroupMember(conversationID: "group_repo_conversation", memberID: "member_user", displayName: "Member", role: .member, joinTime: 102)
+            ]
+        )
+
+        let members = try await repository.groupMembers(conversationID: "group_repo_conversation")
+        try await repository.updateGroupAnnouncement(
+            conversationID: "group_repo_conversation",
+            userID: "admin_user",
+            text: "本周联调重点：群聊 P1。"
+        )
+        let announcement = try await repository.groupAnnouncement(conversationID: "group_repo_conversation")
+
+        #expect(members.map(\.memberID) == ["group_repo_user", "admin_user", "member_user"])
+        #expect(try await repository.currentMemberRole(conversationID: "group_repo_conversation", userID: "admin_user") == .admin)
+        #expect(announcement?.text == "本周联调重点：群聊 P1。")
+        await #expect(throws: GroupChatError.permissionDenied) {
+            try await repository.updateGroupAnnouncement(
+                conversationID: "group_repo_conversation",
+                userID: "member_user",
+                text: "普通成员不能改公告"
+            )
+        }
+    }
+
+    @Test func outgoingTextMessagePersistsMentionMetadata() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "mention_send_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "mention_send_conversation", userID: "mention_send_user", type: .group, targetID: "mention_group")
+        )
+
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "mention_send_user",
+                conversationID: "mention_send_conversation",
+                senderID: "mention_send_user",
+                text: "@Sondra 请看这里",
+                localTime: 200,
+                messageID: "mention_send_message",
+                mentionedUserIDs: ["sondra"],
+                mentionsAll: false,
+                sortSequence: 200
+            )
+        )
+
+        let rows = try await databaseContext.databaseActor.query(
+            "SELECT mentions_json, at_all FROM message_text WHERE content_id = ?;",
+            parameters: [.text("text_\(message.id.rawValue)")],
+            paths: databaseContext.paths
+        )
+
+        #expect(rows.first?.string("mentions_json") == "[\"sondra\"]")
+        #expect(rows.first?.int("at_all") == 0)
+    }
+
+    @Test func incomingMentionMarksConversationUntilRead() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "mention_incoming_user")
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: "incoming_mention_message",
+                    conversationID: "incoming_mention_conversation",
+                    senderID: "teammate",
+                    serverMessageID: "server_incoming_mention",
+                    sequence: 10,
+                    text: "@我 看下公告",
+                    serverTime: 10,
+                    conversationTitle: "Mention Group",
+                    conversationType: .group,
+                    mentionedUserIDs: ["mention_incoming_user"]
+                )
+            ],
+            nextCursor: "cursor",
+            nextSequence: 10
+        )
+
+        _ = try await repository.applyIncomingSyncBatch(batch, userID: "mention_incoming_user")
+        let rowsBeforeRead = LocalConversationListUseCase.rowStates(
+            from: try await repository.listConversations(for: "mention_incoming_user")
+        )
+        try await repository.markConversationRead(conversationID: "incoming_mention_conversation", userID: "mention_incoming_user")
+        let rowsAfterRead = LocalConversationListUseCase.rowStates(
+            from: try await repository.listConversations(for: "mention_incoming_user")
+        )
+
+        #expect(rowsBeforeRead.first?.mentionIndicatorText == "[有人@我]")
+        #expect(rowsBeforeRead.first?.subtitle.hasPrefix("[有人@我] ") == true)
+        #expect(rowsAfterRead.first?.mentionIndicatorText == nil)
+    }
+
     @Test func messageRepositoryUpdatesSendStatusAndFindsMessageByID() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -4233,6 +4346,69 @@ struct AppleIMTests {
 
         #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["only_message"])
         #expect(useCase.loadOlderCallCount == 0)
+    }
+
+    @MainActor
+    @Test func chatViewModelLoadsGroupAnnouncementAndMentionOptions() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: GroupAnnouncement(
+                    conversationID: "group_vm",
+                    text: "今天完成群聊 P1",
+                    updatedBy: "current_user",
+                    updatedAt: 10
+                )
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@")
+
+        #expect(viewModel.currentState.groupAnnouncement?.text == "今天完成群聊 P1")
+        #expect(viewModel.currentState.groupAnnouncement?.canEdit == true)
+        #expect(viewModel.currentState.mentionPicker?.options.map(\.displayName) == ["所有人", "Sondra"])
+    }
+
+    @MainActor
+    @Test func chatViewModelSendsSelectedMentionMetadata() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@")
+        viewModel.selectMention(userID: "sondra")
+        viewModel.sendText("@Sondra 请看这里")
+        try await waitForCondition {
+            useCase.sentMentionedUserIDs == ["sondra"]
+        }
+
+        #expect(useCase.sentText == "@Sondra 请看这里")
+        #expect(useCase.sentMentionsAll == false)
     }
 
     @MainActor
@@ -6759,6 +6935,88 @@ private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     func revoke(messageID: MessageID) async throws {}
 }
 
+@MainActor
+private final class GroupContextStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let context: GroupChatContext
+    private(set) var sentText: String?
+    private(set) var sentMentionedUserIDs: [UserID] = []
+    private(set) var sentMentionsAll = false
+
+    init(context: GroupChatContext) {
+        self.context = context
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func loadGroupContext() async throws -> GroupChatContext? {
+        context
+    }
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sendText(text, mentionedUserIDs: [], mentionsAll: false)
+    }
+
+    func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sentText = text
+        sentMentionedUserIDs = mentionedUserIDs
+        sentMentionsAll = mentionsAll
+        return AsyncThrowingStream { continuation in
+            continuation.yield(makeChatRow(id: "group_context_sent", text: text, sortSequence: 1))
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
 private final class RecoveringPagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private let initialPage: ChatMessagePage
     private let recoveredPage: ChatMessagePage
@@ -7742,19 +8000,21 @@ private func waitForCondition(
 private func makeConversationRecord(
     id: ConversationID,
     userID: UserID,
-    title: String,
+    title: String = "Conversation",
+    type: ConversationType = .single,
+    targetID: String? = nil,
     isPinned: Bool = false,
     isMuted: Bool = false,
     unreadCount: Int = 0,
     draftText: String? = nil,
     avatarURL: String? = nil,
-    sortTimestamp: Int64
+    sortTimestamp: Int64 = 1
 ) -> ConversationRecord {
     ConversationRecord(
         id: id,
         userID: userID,
-        type: .single,
-        targetID: "\(id.rawValue)_target",
+        type: type,
+        targetID: targetID ?? "\(id.rawValue)_target",
         title: title,
         avatarURL: avatarURL,
         lastMessageID: nil,

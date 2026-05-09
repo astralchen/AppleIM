@@ -202,6 +202,36 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testGroupChatAnnouncementAndMentionPicker() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openGroupCoreConversation(in: app)
+
+        XCTAssertTrue(
+            app.descendants(matching: .any)["chat.groupAnnouncementButton"].waitForExistence(timeout: 5),
+            "Expected group announcement entry"
+        )
+
+        let input = app.textViews["chat.messageInput"]
+        input.tap()
+        input.typeText("@")
+        XCTAssertTrue(
+            app.buttons["chat.mentionOption.sondra"].waitForExistence(timeout: 5),
+            "Expected Sondra mention option"
+        )
+        app.buttons["chat.mentionOption.sondra"].tap()
+        input.typeText("Sondra UI group mention \(UUID().uuidString)")
+        app.buttons["chat.sendButton"].tap()
+
+        XCTAssertTrue(
+            messageCell(containing: "Sondra UI group mention", in: app).waitForExistence(timeout: 5),
+            "Expected group mention message to appear"
+        )
+        XCTAssertFalse(app.buttons["chat.mentionOption.sondra"].exists)
+    }
+
+    @MainActor
     func testSearchFindsSeededConversation() throws {
         let app = makeUITestApplication()
         app.launch()

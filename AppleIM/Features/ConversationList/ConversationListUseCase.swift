@@ -153,15 +153,18 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     ///
     /// - Parameter conversations: 会话列表
     /// - Returns: 会话列表行状态数组
-    private static func rowStates(from conversations: [Conversation]) -> [ConversationListRowState] {
+    static func rowStates(from conversations: [Conversation]) -> [ConversationListRowState] {
         return conversations.map { conversation in
-            let subtitle = conversation.draftText.map { "Draft: \($0)" } ?? conversation.lastMessageDigest
+            let mentionIndicatorText = conversation.hasUnreadMention ? "[有人@我]" : nil
+            let baseSubtitle = conversation.draftText.map { "Draft: \($0)" } ?? conversation.lastMessageDigest
+            let subtitle = mentionIndicatorText.map { "\($0) \(baseSubtitle)" } ?? baseSubtitle
 
             return ConversationListRowState(
                 id: conversation.id,
                 title: conversation.title,
                 avatarURL: conversation.avatarURL,
                 subtitle: subtitle,
+                mentionIndicatorText: mentionIndicatorText,
                 timeText: conversation.lastMessageTimeText,
                 unreadText: conversation.unreadCount > 0 ? "\(conversation.unreadCount)" : nil,
                 isPinned: conversation.isPinned,

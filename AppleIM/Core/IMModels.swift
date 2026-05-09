@@ -106,6 +106,34 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
     let isMuted: Bool
     /// 草稿文本
     let draftText: String?
+    /// 是否有未读 @ 当前用户提示
+    let hasUnreadMention: Bool
+
+    init(
+        id: ConversationID,
+        type: ConversationType,
+        title: String,
+        avatarURL: String?,
+        lastMessageDigest: String,
+        lastMessageTimeText: String,
+        unreadCount: Int,
+        isPinned: Bool,
+        isMuted: Bool,
+        draftText: String?,
+        hasUnreadMention: Bool = false
+    ) {
+        self.id = id
+        self.type = type
+        self.title = title
+        self.avatarURL = avatarURL
+        self.lastMessageDigest = lastMessageDigest
+        self.lastMessageTimeText = lastMessageTimeText
+        self.unreadCount = unreadCount
+        self.isPinned = isPinned
+        self.isMuted = isMuted
+        self.draftText = draftText
+        self.hasUnreadMention = hasUnreadMention
+    }
 }
 
 /// 存储的消息模型

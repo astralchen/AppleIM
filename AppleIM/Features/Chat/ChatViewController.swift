@@ -43,6 +43,14 @@ final class ChatViewController: UIViewController {
     )
     /// 空消息提示
     private let emptyLabel = UILabel()
+    /// 群公告顶部入口
+    private let announcementButton = UIButton(type: .system)
+    /// 顶部信息栈
+    private let topBannerStackView = UIStackView()
+    /// @ 成员选择器
+    private let mentionPickerStackView = UIStackView()
+    /// 最近一次渲染的群公告状态
+    private var currentGroupAnnouncement: ChatGroupAnnouncementState?
     /// 聊天输入栏
     private let inputBarView = ChatInputBarView()
     /// 图片库输入面板
@@ -121,14 +129,39 @@ final class ChatViewController: UIViewController {
         emptyLabel.textAlignment = .center
         emptyLabel.isHidden = true
 
+        topBannerStackView.translatesAutoresizingMaskIntoConstraints = false
+        topBannerStackView.axis = .vertical
+        topBannerStackView.spacing = 8
+        topBannerStackView.layoutMargins = UIEdgeInsets(top: 8, left: 12, bottom: 0, right: 12)
+        topBannerStackView.isLayoutMarginsRelativeArrangement = true
+
+        announcementButton.configuration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .secondary)
+        announcementButton.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
+        announcementButton.contentHorizontalAlignment = .leading
+        announcementButton.accessibilityIdentifier = "chat.groupAnnouncementButton"
+        announcementButton.isHidden = true
+        announcementButton.addTarget(self, action: #selector(groupAnnouncementTapped), for: .touchUpInside)
+        topBannerStackView.addArrangedSubview(announcementButton)
+
+        mentionPickerStackView.translatesAutoresizingMaskIntoConstraints = false
+        mentionPickerStackView.axis = .horizontal
+        mentionPickerStackView.alignment = .center
+        mentionPickerStackView.spacing = 8
+        mentionPickerStackView.layoutMargins = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        mentionPickerStackView.isLayoutMarginsRelativeArrangement = true
+        mentionPickerStackView.isHidden = true
+        mentionPickerStackView.accessibilityIdentifier = "chat.mentionPicker"
+
         inputBarView.translatesAutoresizingMaskIntoConstraints = false
         photoLibraryInputView.translatesAutoresizingMaskIntoConstraints = false
         photoLibraryInputView.isHidden = true
         photoLibraryInputView.accessibilityIdentifier = "chat.photoLibraryInputPanel"
         configureInputBarCallbacks()
 
+        view.addSubview(topBannerStackView)
         view.addSubview(collectionView)
         view.addSubview(emptyLabel)
+        view.addSubview(mentionPickerStackView)
         view.addSubview(inputBarView)
         view.addSubview(photoLibraryInputView)
 
@@ -156,10 +189,14 @@ final class ChatViewController: UIViewController {
             backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            collectionView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            topBannerStackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            topBannerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBannerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+
+            collectionView.topAnchor.constraint(equalTo: topBannerStackView.bottomAnchor),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            collectionView.bottomAnchor.constraint(equalTo: inputBarView.topAnchor, constant: -8),
+            collectionView.bottomAnchor.constraint(equalTo: mentionPickerStackView.topAnchor, constant: -8),
 
             emptyLabel.centerXAnchor.constraint(equalTo: collectionView.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor),
@@ -169,6 +206,10 @@ final class ChatViewController: UIViewController {
             inputBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             inputBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
             inputBarKeyboardBottomConstraint,
+
+            mentionPickerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            mentionPickerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            mentionPickerStackView.bottomAnchor.constraint(equalTo: inputBarView.topAnchor, constant: -8),
 
             photoLibraryInputView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             photoLibraryInputView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -180,7 +221,7 @@ final class ChatViewController: UIViewController {
     /// 绑定输入栏按钮和文本变化回调
     private func configureInputBarCallbacks() {
         inputBarView.onTextChanged = { [weak self] text in
-            self?.viewModel.saveDraft(text)
+            self?.viewModel.composerTextChanged(text)
         }
         inputBarView.onSend = { [weak self] text in
             self?.sendComposer(text: text)
@@ -229,6 +270,34 @@ final class ChatViewController: UIViewController {
             guard shouldStickToBottom else { return }
             self?.scrollToBottom(animated: false)
         }
+    }
+
+    /// 展示群公告详情，并在有权限时允许编辑。
+    @objc private func groupAnnouncementTapped() {
+        guard let currentGroupAnnouncement else { return }
+
+        let alertController = UIAlertController(
+            title: "群公告",
+            message: currentGroupAnnouncement.text,
+            preferredStyle: .alert
+        )
+        alertController.addAction(UIAlertAction(title: "关闭", style: .cancel))
+
+        if currentGroupAnnouncement.canEdit {
+            alertController.addTextField { textField in
+                textField.text = currentGroupAnnouncement.text
+                textField.placeholder = "输入群公告"
+                textField.accessibilityIdentifier = "chat.groupAnnouncementEditor"
+            }
+            alertController.addAction(
+                UIAlertAction(title: "保存", style: .default) { [weak self, weak alertController] _ in
+                    let text = alertController?.textFields?.first?.text ?? ""
+                    self?.viewModel.updateGroupAnnouncement(text)
+                }
+            )
+        }
+
+        present(alertController, animated: true)
     }
 
     /// 监听系统键盘布局变化，保持底部消息不被输入区域遮挡。
@@ -600,6 +669,8 @@ final class ChatViewController: UIViewController {
         title = state.title
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
+        renderGroupAnnouncement(state.groupAnnouncement)
+        renderMentionPicker(state.mentionPicker)
 
         // 用户正在输入时不覆盖输入框内容，避免 Combine 状态回放打断编辑。
         if !inputBarView.isEditingText, inputBarView.text != state.draftText {
@@ -656,6 +727,52 @@ final class ChatViewController: UIViewController {
                 self.scrollToBottom(animated: !isInitialMessageRender)
             }
         }
+    }
+
+    /// 渲染群公告入口
+    private func renderGroupAnnouncement(_ announcement: ChatGroupAnnouncementState?) {
+        currentGroupAnnouncement = announcement
+        announcementButton.isHidden = announcement == nil
+        guard let announcement else { return }
+
+        var configuration = announcementButton.configuration
+        configuration?.title = "公告：\(announcement.text)"
+        configuration?.image = UIImage(systemName: announcement.canEdit ? "megaphone.fill" : "megaphone")
+        configuration?.imagePadding = 6
+        announcementButton.configuration = configuration
+    }
+
+    /// 渲染 @ 成员选择器
+    private func renderMentionPicker(_ picker: ChatMentionPickerState?) {
+        mentionPickerStackView.arrangedSubviews.forEach { view in
+            mentionPickerStackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        guard let picker, !picker.options.isEmpty else {
+            mentionPickerStackView.isHidden = true
+            return
+        }
+
+        for option in picker.options {
+            let button = UIButton(type: .system)
+            button.configuration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: option.mentionsAll ? .primary : .secondary)
+            var configuration = button.configuration
+            configuration?.title = "@\(option.displayName)"
+            configuration?.image = UIImage(systemName: option.mentionsAll ? "person.3.fill" : "person.fill")
+            configuration?.imagePadding = 4
+            button.configuration = configuration
+            button.accessibilityIdentifier = "chat.mentionOption.\(option.id)"
+            button.addAction(UIAction { [weak self] _ in
+                if option.mentionsAll {
+                    self?.viewModel.selectMentionsAll()
+                } else if let userID = option.userID {
+                    self?.viewModel.selectMention(userID: userID)
+                }
+            }, for: .touchUpInside)
+            mentionPickerStackView.addArrangedSubview(button)
+        }
+        mentionPickerStackView.isHidden = false
     }
 
     /// 根据新旧消息 ID 构造消息列表快照。

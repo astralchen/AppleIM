@@ -19,6 +19,8 @@ nonisolated struct ConversationListRowState: Identifiable, Equatable, Sendable {
     let avatarURL: String?
     /// 副标题（最后一条消息摘要或草稿）
     let subtitle: String
+    /// @ 当前用户提示文本
+    let mentionIndicatorText: String?
     /// 时间文本
     let timeText: String
     /// 未读数文本
@@ -33,6 +35,7 @@ nonisolated struct ConversationListRowState: Identifiable, Equatable, Sendable {
         title: String,
         avatarURL: String? = nil,
         subtitle: String,
+        mentionIndicatorText: String? = nil,
         timeText: String,
         unreadText: String?,
         isPinned: Bool,
@@ -42,6 +45,7 @@ nonisolated struct ConversationListRowState: Identifiable, Equatable, Sendable {
         self.title = title
         self.avatarURL = avatarURL
         self.subtitle = subtitle
+        self.mentionIndicatorText = mentionIndicatorText
         self.timeText = timeText
         self.unreadText = unreadText
         self.isPinned = isPinned

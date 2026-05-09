@@ -47,6 +47,12 @@ final class ChatViewModel {
     private var voicePlaybackTask: Task<Void, Never>?
     /// 分页加载任务
     private var paginationTask: Task<Void, Never>?
+    /// 群聊上下文缓存
+    private var groupContext: GroupChatContext?
+    /// 当前已选择的 @ 用户
+    private var selectedMentionUserIDs: [UserID] = []
+    /// 当前是否选择 @ 所有人
+    private var selectedMentionsAll = false
     /// 每页加载的消息数量
     private let pageSize = 50
 
@@ -90,14 +96,18 @@ final class ChatViewModel {
             do {
                 async let page = useCase.loadInitialMessages()
                 async let draft = useCase.loadDraft()
+                async let groupContext = useCase.loadGroupContext()
                 let loadedPage = try await page
                 let loadedDraft = try await draft ?? ""
+                let loadedGroupContext = try await groupContext
                 guard !Task.isCancelled else { return }
 
+                self.groupContext = loadedGroupContext
                 publish { state in
                     state.phase = .loaded
                     state.rows = loadedPage.rows
                     state.draftText = loadedDraft
+                    state.groupAnnouncement = Self.announcementState(from: loadedGroupContext)
                     state.hasMoreOlderMessages = loadedPage.hasMore
                     state.isLoadingOlderMessages = false
                     state.paginationErrorMessage = nil
@@ -178,6 +188,8 @@ final class ChatViewModel {
     func sendText(_ text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
+        let mentionedUserIDs = selectedMentionUserIDs
+        let mentionsAll = selectedMentionsAll
 
         sendTask?.cancel()
         sendTask = Task { [weak self] in
@@ -188,10 +200,12 @@ final class ChatViewModel {
                     state.draftText = ""
                 }
 
-                for try await row in useCase.sendText(trimmedText) {
+                for try await row in useCase.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                     guard !Task.isCancelled else { return }
                     upsert(row)
                 }
+                selectedMentionUserIDs = []
+                selectedMentionsAll = false
             } catch is CancellationError {
                 return
             } catch {
@@ -308,6 +322,8 @@ final class ChatViewModel {
     func sendComposer(media: [ChatComposerMedia], text: String) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !media.isEmpty || !trimmedText.isEmpty else { return }
+        let mentionedUserIDs = selectedMentionUserIDs
+        let mentionsAll = selectedMentionsAll
 
         sendTask?.cancel()
         sendTask = Task { [weak self] in
@@ -340,15 +356,86 @@ final class ChatViewModel {
                 }
 
                 guard !trimmedText.isEmpty else { return }
-                for try await row in useCase.sendText(trimmedText) {
+                for try await row in useCase.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                     guard !Task.isCancelled else { return }
                     upsert(row)
                 }
+                selectedMentionUserIDs = []
+                selectedMentionsAll = false
             } catch is CancellationError {
                 return
             } catch {
                 publish { state in
                     state.phase = .failed("Unable to send message")
+                }
+            }
+        }
+    }
+
+    /// 输入内容变化时同步草稿并按需展示 @ 成员选择器
+    func composerTextChanged(_ text: String) {
+        saveDraft(text)
+        publish { state in
+            guard text.contains("@"), let groupContext else {
+                state.mentionPicker = nil
+                return
+            }
+
+            state.mentionPicker = ChatMentionPickerState(options: Self.mentionOptions(from: groupContext))
+        }
+    }
+
+    /// 选择一个 @ 成员
+    func selectMention(userID: UserID) {
+        if !selectedMentionUserIDs.contains(userID) {
+            selectedMentionUserIDs.append(userID)
+        }
+        publish { state in
+            state.mentionPicker = nil
+        }
+    }
+
+    /// 选择 @ 所有人
+    func selectMentionsAll() {
+        guard groupContext?.currentUserRole.canManageAnnouncement == true else { return }
+        selectedMentionsAll = true
+        publish { state in
+            state.mentionPicker = nil
+        }
+    }
+
+    /// 更新群公告
+    func updateGroupAnnouncement(_ text: String) {
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return }
+
+        mutationTask?.cancel()
+        mutationTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let announcement = try await useCase.updateGroupAnnouncement(trimmedText)
+                guard let announcement else { return }
+                groupContext = groupContext.map {
+                    GroupChatContext(
+                        members: $0.members,
+                        currentUserRole: $0.currentUserRole,
+                        announcement: announcement
+                    )
+                }
+                publish { state in
+                    state.groupAnnouncement = Self.announcementState(from: groupContext)
+                    state.phase = .loaded
+                }
+            } catch GroupChatError.permissionDenied {
+                publish { state in
+                    state.phase = .failed("Only group admins can edit the announcement")
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to update announcement")
                 }
             }
         }
@@ -565,6 +652,39 @@ final class ChatViewModel {
 
             state.phase = .loaded
         }
+    }
+
+    private static func announcementState(from context: GroupChatContext?) -> ChatGroupAnnouncementState? {
+        guard let context, let announcement = context.announcement else {
+            return nil
+        }
+
+        return ChatGroupAnnouncementState(
+            text: announcement.text,
+            canEdit: context.currentUserRole.canManageAnnouncement
+        )
+    }
+
+    private static func mentionOptions(from context: GroupChatContext) -> [ChatMentionOptionState] {
+        var options: [ChatMentionOptionState] = []
+        if context.currentUserRole.canManageAnnouncement {
+            options.append(ChatMentionOptionState(id: "__all__", userID: nil, displayName: "所有人", mentionsAll: true))
+        }
+
+        options.append(
+            contentsOf: context.members
+                .filter { $0.role != .owner || $0.displayName != "Me" }
+                .filter { $0.displayName != "Me" }
+                .map {
+                    ChatMentionOptionState(
+                        id: $0.memberID.rawValue,
+                        userID: $0.memberID,
+                        displayName: $0.displayName,
+                        mentionsAll: false
+                    )
+                }
+        )
+        return options
     }
 
     /// 发布状态更新

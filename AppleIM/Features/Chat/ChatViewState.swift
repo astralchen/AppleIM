@@ -177,6 +177,25 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     }
 }
 
+/// 聊天页群公告状态
+nonisolated struct ChatGroupAnnouncementState: Equatable, Sendable {
+    let text: String
+    let canEdit: Bool
+}
+
+/// @ 成员选项
+nonisolated struct ChatMentionOptionState: Identifiable, Equatable, Sendable {
+    let id: String
+    let userID: UserID?
+    let displayName: String
+    let mentionsAll: Bool
+}
+
+/// @ 成员选择器状态
+nonisolated struct ChatMentionPickerState: Equatable, Sendable {
+    let options: [ChatMentionOptionState]
+}
+
 /// 聊天页视图状态
 ///
 /// 包含聊天页的所有 UI 状态，满足 Sendable 协议
@@ -209,6 +228,10 @@ nonisolated struct ChatViewState: Equatable, Sendable {
     var hasMoreOlderMessages = true
     /// 分页错误消息
     var paginationErrorMessage: String?
+    /// 群公告
+    var groupAnnouncement: ChatGroupAnnouncementState?
+    /// @ 成员选择器
+    var mentionPicker: ChatMentionPickerState?
 
     /// 是否为空
     var isEmpty: Bool {

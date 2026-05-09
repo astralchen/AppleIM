@@ -31,6 +31,35 @@ nonisolated private struct NotificationConversationContext: Equatable, Sendable 
     let isMuted: Bool
 }
 
+/// 会话扩展信息，存储在 conversation.extra_json 中
+nonisolated private struct ConversationExtraContext: Codable, Equatable, Sendable {
+    var hasUnreadMention: Bool?
+    var announcement: AnnouncementContext?
+
+    init(hasUnreadMention: Bool? = nil, announcement: AnnouncementContext? = nil) {
+        self.hasUnreadMention = hasUnreadMention
+        self.announcement = announcement
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case hasUnreadMention = "has_unread_mention"
+        case announcement = "group_announcement"
+    }
+}
+
+/// 群公告扩展信息
+nonisolated private struct AnnouncementContext: Codable, Equatable, Sendable {
+    let text: String
+    let updatedBy: String
+    let updatedAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case updatedBy = "updated_by"
+        case updatedAt = "updated_at"
+    }
+}
+
 /// 中断的出站消息
 ///
 /// 用于崩溃恢复，记录发送中状态的消息信息
@@ -88,7 +117,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     /// - Throws: 数据库查询错误
     func listConversations(for userID: UserID) async throws -> [Conversation] {
         let records = try await conversationDAO.listConversations(for: userID)
-        return records.map(Self.conversation(from:))
+        let extras = try await conversationExtras(conversationIDs: records.map(\.id))
+        return records.map { Self.conversation(from: $0, extra: extras[$0.id]) }
     }
 
     /// 分页查询用户的会话列表
@@ -101,7 +131,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     /// - Throws: 数据库查询错误
     func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [Conversation] {
         let records = try await conversationDAO.listConversations(for: userID, limit: limit, offset: offset)
-        return records.map(Self.conversation(from:))
+        let extras = try await conversationExtras(conversationIDs: records.map(\.id))
+        return records.map { Self.conversation(from: $0, extra: extras[$0.id]) }
     }
 
     /// 插入或更新会话
@@ -144,11 +175,22 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     /// - Throws: 数据库更新错误
     func markConversationRead(conversationID: ConversationID, userID: UserID) async throws {
         let now = Self.currentTimestamp()
+        let extra = try await conversationExtra(conversationID: conversationID).map {
+            var mutable = $0
+            mutable.hasUnreadMention = false
+            return mutable
+        }
+        let extraStatements: [SQLiteStatement]
+        if let extra {
+            extraStatements = [try Self.updateConversationExtraStatement(conversationID: conversationID, extra: extra, updatedAt: now)]
+        } else {
+            extraStatements = []
+        }
         try await database.performTransaction(
             [
                 ConversationDAO.markReadStatement(conversationID: conversationID, userID: userID, updatedAt: now),
                 MessageDAO.markIncomingMessagesReadStatement(conversationID: conversationID)
-            ],
+            ] + extraStatements,
             paths: paths
         )
         _ = try await refreshApplicationBadge(userID: userID)
@@ -177,6 +219,108 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     func updateConversationMute(conversationID: ConversationID, userID: UserID, isMuted: Bool) async throws {
         try await conversationDAO.updateMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
         _ = try await refreshApplicationBadge(userID: userID)
+    }
+
+    /// 批量写入群成员
+    func upsertGroupMembers(_ members: [GroupMember]) async throws {
+        guard !members.isEmpty else { return }
+
+        let statements = members.map { member in
+            SQLiteStatement(
+                """
+                INSERT INTO conversation_member (
+                    conversation_id,
+                    member_id,
+                    display_name,
+                    role,
+                    join_time,
+                    extra_json
+                ) VALUES (?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(conversation_id, member_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    join_time = excluded.join_time;
+                """,
+                parameters: [
+                    .text(member.conversationID.rawValue),
+                    .text(member.memberID.rawValue),
+                    .text(member.displayName),
+                    .integer(Int64(member.role.rawValue)),
+                    .optionalInteger(member.joinTime)
+                ]
+            )
+        }
+
+        try await database.performTransaction(statements, paths: paths)
+    }
+
+    /// 查询群成员
+    func groupMembers(conversationID: ConversationID) async throws -> [GroupMember] {
+        let rows = try await database.query(
+            """
+            SELECT conversation_id, member_id, display_name, role, join_time
+            FROM conversation_member
+            WHERE conversation_id = ?
+            ORDER BY role DESC, join_time ASC, id ASC;
+            """,
+            parameters: [.text(conversationID.rawValue)],
+            paths: paths
+        )
+
+        return try rows.map(Self.groupMember(from:))
+    }
+
+    /// 查询当前用户群角色
+    func currentMemberRole(conversationID: ConversationID, userID: UserID) async throws -> GroupMemberRole? {
+        let rows = try await database.query(
+            """
+            SELECT role
+            FROM conversation_member
+            WHERE conversation_id = ? AND member_id = ?
+            LIMIT 1;
+            """,
+            parameters: [
+                .text(conversationID.rawValue),
+                .text(userID.rawValue)
+            ],
+            paths: paths
+        )
+
+        guard let rawValue = rows.first?.int("role") else {
+            return nil
+        }
+        return GroupMemberRole(rawValue: rawValue)
+    }
+
+    /// 查询群公告
+    func groupAnnouncement(conversationID: ConversationID) async throws -> GroupAnnouncement? {
+        guard let extra = try await conversationExtra(conversationID: conversationID),
+              let announcement = extra.announcement else {
+            return nil
+        }
+
+        return GroupAnnouncement(
+            conversationID: conversationID,
+            text: announcement.text,
+            updatedBy: UserID(rawValue: announcement.updatedBy),
+            updatedAt: announcement.updatedAt
+        )
+    }
+
+    /// 更新群公告
+    func updateGroupAnnouncement(conversationID: ConversationID, userID: UserID, text: String) async throws {
+        guard try await currentMemberRole(conversationID: conversationID, userID: userID)?.canManageAnnouncement == true else {
+            throw GroupChatError.permissionDenied
+        }
+
+        var extra = try await conversationExtra(conversationID: conversationID) ?? ConversationExtraContext()
+        let now = Self.currentTimestamp()
+        extra.announcement = AnnouncementContext(
+            text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+            updatedBy: userID.rawValue,
+            updatedAt: now
+        )
+        try await updateConversationExtra(conversationID: conversationID, extra: extra, updatedAt: now)
     }
 
     // MARK: - NotificationSettingsRepository
@@ -1362,6 +1506,17 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             )
         }
 
+        let mentionedConversationIDs = Set(
+            messagesToInsert
+                .filter { $0.direction == .incoming && ($0.mentionsAll || $0.mentionedUserIDs.contains(userID)) }
+                .map(\.conversationID)
+        )
+        for conversationID in mentionedConversationIDs {
+            var extra = try await conversationExtra(conversationID: conversationID) ?? ConversationExtraContext()
+            extra.hasUnreadMention = true
+            statements.append(try Self.updateConversationExtraStatement(conversationID: conversationID, extra: extra, updatedAt: now))
+        }
+
         let nextSequence = batch.nextSequence ?? sortedMessages.last?.sequence
         statements.append(
             Self.upsertSyncCheckpointStatement(
@@ -1404,7 +1559,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
 
     // MARK: - Private Helpers
 
-    private static func conversation(from record: ConversationRecord) -> Conversation {
+    private static func conversation(from record: ConversationRecord, extra: ConversationExtraContext? = nil) -> Conversation {
         Conversation(
             id: record.id,
             type: record.type,
@@ -1415,8 +1570,103 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             unreadCount: record.unreadCount,
             isPinned: record.isPinned,
             isMuted: record.isMuted,
-            draftText: record.draftText
+            draftText: record.draftText,
+            hasUnreadMention: extra?.hasUnreadMention == true
         )
+    }
+
+    private func conversationExtras(conversationIDs: [ConversationID]) async throws -> [ConversationID: ConversationExtraContext] {
+        guard !conversationIDs.isEmpty else {
+            return [:]
+        }
+
+        var extras: [ConversationID: ConversationExtraContext] = [:]
+        for conversationID in conversationIDs {
+            extras[conversationID] = try await conversationExtra(conversationID: conversationID)
+        }
+        return extras
+    }
+
+    private func conversationExtra(conversationID: ConversationID) async throws -> ConversationExtraContext? {
+        let rows = try await database.query(
+            "SELECT extra_json FROM conversation WHERE conversation_id = ? LIMIT 1;",
+            parameters: [.text(conversationID.rawValue)],
+            paths: paths
+        )
+
+        guard let json = rows.first?.string("extra_json"), let data = json.data(using: .utf8) else {
+            return nil
+        }
+
+        return try JSONDecoder().decode(ConversationExtraContext.self, from: data)
+    }
+
+    private func updateConversationExtra(
+        conversationID: ConversationID,
+        extra: ConversationExtraContext,
+        updatedAt: Int64
+    ) async throws {
+        let statement = try Self.updateConversationExtraStatement(conversationID: conversationID, extra: extra, updatedAt: updatedAt)
+        try await database.execute(statement.sql, parameters: statement.parameters, paths: paths)
+    }
+
+    private static func updateConversationExtraStatement(
+        conversationID: ConversationID,
+        extra: ConversationExtraContext,
+        updatedAt: Int64
+    ) throws -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            UPDATE conversation
+            SET extra_json = ?, updated_at = ?
+            WHERE conversation_id = ?;
+            """,
+            parameters: try updateConversationExtraStatementParameters(
+                conversationID: conversationID,
+                extra: extra,
+                updatedAt: updatedAt
+            )
+        )
+    }
+
+    private static func updateConversationExtraStatementParameters(
+        conversationID: ConversationID,
+        extra: ConversationExtraContext,
+        updatedAt: Int64
+    ) throws -> [SQLiteValue] {
+        let data = try JSONEncoder().encode(extra)
+        let json = String(decoding: data, as: UTF8.self)
+        return [
+            .text(json),
+            .integer(updatedAt),
+            .text(conversationID.rawValue)
+        ]
+    }
+
+    private static func groupMember(from row: SQLiteRow) throws -> GroupMember {
+        let roleRawValue = try row.requiredInt("role")
+        guard let role = GroupMemberRole(rawValue: roleRawValue) else {
+            throw ChatStoreError.invalidConversationType(roleRawValue)
+        }
+
+        return GroupMember(
+            conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
+            memberID: UserID(rawValue: try row.requiredString("member_id")),
+            displayName: row.string("display_name") ?? "",
+            role: role,
+            joinTime: row.int64("join_time")
+        )
+    }
+
+    private static func mentionsJSON(for userIDs: [UserID]) -> String? {
+        let values = userIDs.map(\.rawValue)
+        guard !values.isEmpty else {
+            return nil
+        }
+        guard let data = try? JSONEncoder().encode(values) else {
+            return nil
+        }
+        return String(decoding: data, as: UTF8.self)
     }
 
     private static func timeText(from timestamp: Int64?) -> String {
@@ -2413,15 +2663,16 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                     is_pinned,
                     is_muted,
                     is_hidden,
+                    extra_json,
                     sort_ts,
                     updated_at,
                     created_at
-                ) VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, 0, ?, ?, ?);
+                ) VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, 0, NULL, ?, ?, ?);
                 """,
                 parameters: [
                     .text(message.conversationID.rawValue),
                     .text(userID.rawValue),
-                    .integer(Int64(ConversationType.single.rawValue)),
+                    .integer(Int64(message.conversationType.rawValue)),
                     .text(message.senderID.rawValue),
                     .text(message.conversationTitle ?? message.senderID.rawValue),
                     .integer(message.sequence),
@@ -2437,11 +2688,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
                     mentions_json,
                     at_all,
                     rich_text_json
-                ) VALUES (?, ?, NULL, 0, NULL);
+                ) VALUES (?, ?, ?, ?, NULL);
                 """,
                 parameters: [
                     .text(contentID),
-                    .text(message.text)
+                    .text(message.text),
+                    .optionalText(Self.mentionsJSON(for: message.mentionedUserIDs)),
+                    .integer(message.mentionsAll ? 1 : 0)
                 ]
             ),
             SQLiteStatement(

@@ -118,6 +118,10 @@ nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
     let messageID: MessageID?
     /// 客户端消息 ID（可选，不传则使用 messageID）
     let clientMessageID: String?
+    /// 被 @ 的用户 ID 列表
+    let mentionedUserIDs: [UserID]
+    /// 是否 @ 所有人
+    let mentionsAll: Bool
     /// 排序序号（可选，不传则使用 localTime）
     let sortSequence: Int64?
 
@@ -129,6 +133,8 @@ nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
         localTime: Int64,
         messageID: MessageID? = nil,
         clientMessageID: String? = nil,
+        mentionedUserIDs: [UserID] = [],
+        mentionsAll: Bool = false,
         sortSequence: Int64? = nil
     ) {
         self.userID = userID
@@ -138,8 +144,46 @@ nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
         self.localTime = localTime
         self.messageID = messageID
         self.clientMessageID = clientMessageID
+        self.mentionedUserIDs = mentionedUserIDs
+        self.mentionsAll = mentionsAll
         self.sortSequence = sortSequence
     }
+}
+
+/// 群成员角色
+nonisolated enum GroupMemberRole: Int, Codable, Equatable, Sendable {
+    /// 普通成员
+    case member = 0
+    /// 管理员
+    case admin = 1
+    /// 群主
+    case owner = 2
+
+    var canManageAnnouncement: Bool {
+        self == .admin || self == .owner
+    }
+}
+
+/// 群成员记录
+nonisolated struct GroupMember: Equatable, Sendable {
+    let conversationID: ConversationID
+    let memberID: UserID
+    let displayName: String
+    let role: GroupMemberRole
+    let joinTime: Int64?
+}
+
+/// 群公告
+nonisolated struct GroupAnnouncement: Equatable, Sendable {
+    let conversationID: ConversationID
+    let text: String
+    let updatedBy: UserID
+    let updatedAt: Int64
+}
+
+/// 群聊本地错误
+nonisolated enum GroupChatError: Error, Equatable, Sendable {
+    case permissionDenied
 }
 
 /// 存储的图片内容
@@ -856,6 +900,32 @@ protocol ConversationRepository: Sendable {
     func updateConversationPin(conversationID: ConversationID, userID: UserID, isPinned: Bool) async throws
     /// 更新会话免打扰状态
     func updateConversationMute(conversationID: ConversationID, userID: UserID, isMuted: Bool) async throws
+    /// 查询群成员
+    func groupMembers(conversationID: ConversationID) async throws -> [GroupMember]
+    /// 查询当前用户群角色
+    func currentMemberRole(conversationID: ConversationID, userID: UserID) async throws -> GroupMemberRole?
+    /// 查询群公告
+    func groupAnnouncement(conversationID: ConversationID) async throws -> GroupAnnouncement?
+    /// 更新群公告
+    func updateGroupAnnouncement(conversationID: ConversationID, userID: UserID, text: String) async throws
+}
+
+extension ConversationRepository {
+    func groupMembers(conversationID: ConversationID) async throws -> [GroupMember] {
+        []
+    }
+
+    func currentMemberRole(conversationID: ConversationID, userID: UserID) async throws -> GroupMemberRole? {
+        nil
+    }
+
+    func groupAnnouncement(conversationID: ConversationID) async throws -> GroupAnnouncement? {
+        nil
+    }
+
+    func updateGroupAnnouncement(conversationID: ConversationID, userID: UserID, text: String) async throws {
+        throw GroupChatError.permissionDenied
+    }
 }
 
 /// 通知设置仓储协议

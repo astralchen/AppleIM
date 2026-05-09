@@ -47,6 +47,12 @@ nonisolated struct IncomingSyncMessage: Equatable, Sendable {
     let direction: MessageDirection
     /// 会话标题
     let conversationTitle: String?
+    /// 会话类型
+    let conversationType: ConversationType
+    /// 被 @ 的用户列表
+    let mentionedUserIDs: [UserID]
+    /// 是否 @ 所有人
+    let mentionsAll: Bool
 
     init(
         messageID: MessageID,
@@ -59,7 +65,10 @@ nonisolated struct IncomingSyncMessage: Equatable, Sendable {
         serverTime: Int64,
         localTime: Int64? = nil,
         direction: MessageDirection = .incoming,
-        conversationTitle: String? = nil
+        conversationTitle: String? = nil,
+        conversationType: ConversationType = .single,
+        mentionedUserIDs: [UserID] = [],
+        mentionsAll: Bool = false
     ) {
         self.messageID = messageID
         self.conversationID = conversationID
@@ -72,6 +81,9 @@ nonisolated struct IncomingSyncMessage: Equatable, Sendable {
         self.localTime = localTime ?? serverTime
         self.direction = direction
         self.conversationTitle = conversationTitle
+        self.conversationType = conversationType
+        self.mentionedUserIDs = mentionedUserIDs
+        self.mentionsAll = mentionsAll
     }
 }
 
