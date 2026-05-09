@@ -53,10 +53,126 @@ nonisolated struct ServerTextMessageSendResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// 服务端图片消息发送请求。
+nonisolated struct ServerImageMessageSendRequest: Codable, Equatable, Sendable {
+    let conversationID: String
+    let clientMessageID: String
+    let senderID: String
+    let mediaID: String
+    let cdnURL: String
+    let md5: String?
+    let width: Int
+    let height: Int
+    let sizeBytes: Int64
+    let format: String
+    let localTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+        case clientMessageID = "client_msg_id"
+        case senderID = "sender_id"
+        case mediaID = "media_id"
+        case cdnURL = "cdn_url"
+        case md5
+        case width
+        case height
+        case sizeBytes = "size_bytes"
+        case format
+        case localTime = "local_time"
+    }
+}
+
+/// 服务端语音消息发送请求。
+nonisolated struct ServerVoiceMessageSendRequest: Codable, Equatable, Sendable {
+    let conversationID: String
+    let clientMessageID: String
+    let senderID: String
+    let mediaID: String
+    let cdnURL: String
+    let md5: String?
+    let durationMilliseconds: Int
+    let sizeBytes: Int64
+    let format: String
+    let localTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+        case clientMessageID = "client_msg_id"
+        case senderID = "sender_id"
+        case mediaID = "media_id"
+        case cdnURL = "cdn_url"
+        case md5
+        case durationMilliseconds = "duration_ms"
+        case sizeBytes = "size_bytes"
+        case format
+        case localTime = "local_time"
+    }
+}
+
+/// 服务端视频消息发送请求。
+nonisolated struct ServerVideoMessageSendRequest: Codable, Equatable, Sendable {
+    let conversationID: String
+    let clientMessageID: String
+    let senderID: String
+    let mediaID: String
+    let cdnURL: String
+    let md5: String?
+    let durationMilliseconds: Int
+    let width: Int
+    let height: Int
+    let sizeBytes: Int64
+    let localTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+        case clientMessageID = "client_msg_id"
+        case senderID = "sender_id"
+        case mediaID = "media_id"
+        case cdnURL = "cdn_url"
+        case md5
+        case durationMilliseconds = "duration_ms"
+        case width
+        case height
+        case sizeBytes = "size_bytes"
+        case localTime = "local_time"
+    }
+}
+
+/// 服务端文件消息发送请求。
+nonisolated struct ServerFileMessageSendRequest: Codable, Equatable, Sendable {
+    let conversationID: String
+    let clientMessageID: String
+    let senderID: String
+    let mediaID: String
+    let cdnURL: String
+    let md5: String?
+    let fileName: String
+    let fileExtension: String?
+    let sizeBytes: Int64
+    let localTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+        case clientMessageID = "client_msg_id"
+        case senderID = "sender_id"
+        case mediaID = "media_id"
+        case cdnURL = "cdn_url"
+        case md5
+        case fileName = "file_name"
+        case fileExtension = "file_extension"
+        case sizeBytes = "size_bytes"
+        case localTime = "local_time"
+    }
+}
+
 /// 真实服务端消息发送服务。
 nonisolated struct ServerMessageSendService: MessageSendService {
     /// 默认文本消息发送路径；真实接口确认后只需要在此处调整映射。
     private static let sendTextPath = "/v1/messages/text"
+    private static let sendImagePath = "/v1/messages/image"
+    private static let sendVoicePath = "/v1/messages/voice"
+    private static let sendVideoPath = "/v1/messages/video"
+    private static let sendFilePath = "/v1/messages/file"
 
     /// 服务配置
     nonisolated struct Configuration: Sendable {
@@ -183,19 +299,127 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     }
 
     func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
-        .failure(.unknown)
+        guard
+            message.type == .image,
+            let image = message.image,
+            let clientMessageID = message.clientMessageID,
+            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+        else {
+            return .failure(.ackMissing)
+        }
+
+        let request = ServerImageMessageSendRequest(
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            senderID: message.senderID.rawValue,
+            mediaID: Self.nonEmptyValue(upload.mediaID) ?? image.mediaID,
+            cdnURL: cdnURL,
+            md5: upload.md5 ?? image.md5,
+            width: image.width,
+            height: image.height,
+            sizeBytes: image.sizeBytes,
+            format: image.format,
+            localTime: message.localTime
+        )
+
+        return await sendMedia(path: Self.sendImagePath, request: request)
     }
 
     func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
-        .failure(.unknown)
+        guard
+            message.type == .voice,
+            let voice = message.voice,
+            let clientMessageID = message.clientMessageID,
+            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+        else {
+            return .failure(.ackMissing)
+        }
+
+        let request = ServerVoiceMessageSendRequest(
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            senderID: message.senderID.rawValue,
+            mediaID: Self.nonEmptyValue(upload.mediaID) ?? voice.mediaID,
+            cdnURL: cdnURL,
+            md5: upload.md5,
+            durationMilliseconds: voice.durationMilliseconds,
+            sizeBytes: voice.sizeBytes,
+            format: voice.format,
+            localTime: message.localTime
+        )
+
+        return await sendMedia(path: Self.sendVoicePath, request: request)
     }
 
     func sendVideo(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
-        .failure(.unknown)
+        guard
+            message.type == .video,
+            let video = message.video,
+            let clientMessageID = message.clientMessageID,
+            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+        else {
+            return .failure(.ackMissing)
+        }
+
+        let request = ServerVideoMessageSendRequest(
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            senderID: message.senderID.rawValue,
+            mediaID: Self.nonEmptyValue(upload.mediaID) ?? video.mediaID,
+            cdnURL: cdnURL,
+            md5: upload.md5 ?? video.md5,
+            durationMilliseconds: video.durationMilliseconds,
+            width: video.width,
+            height: video.height,
+            sizeBytes: video.sizeBytes,
+            localTime: message.localTime
+        )
+
+        return await sendMedia(path: Self.sendVideoPath, request: request)
     }
 
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
-        .failure(.unknown)
+        guard
+            message.type == .file,
+            let file = message.file,
+            let clientMessageID = message.clientMessageID,
+            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+        else {
+            return .failure(.ackMissing)
+        }
+
+        let request = ServerFileMessageSendRequest(
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            senderID: message.senderID.rawValue,
+            mediaID: Self.nonEmptyValue(upload.mediaID) ?? file.mediaID,
+            cdnURL: cdnURL,
+            md5: upload.md5 ?? file.md5,
+            fileName: file.fileName,
+            fileExtension: file.fileExtension,
+            sizeBytes: file.sizeBytes,
+            localTime: message.localTime
+        )
+
+        return await sendMedia(path: Self.sendFilePath, request: request)
+    }
+
+    private func sendMedia<Request: Encodable & Sendable>(
+        path: String,
+        request: Request
+    ) async -> MessageSendResult {
+        do {
+            let response = try await httpClient.postJSON(
+                path: path,
+                body: request,
+                responseType: ServerTextMessageSendResponse.self
+            )
+            return .success(response.ack)
+        } catch let error as ChatBridgeHTTPError {
+            return .failure(Self.failureReason(from: error))
+        } catch {
+            return .failure(.unknown)
+        }
     }
 
     private static func failureReason(from error: ChatBridgeHTTPError) -> MessageSendFailureReason {
@@ -209,5 +433,10 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         case .unacceptableStatus, .unknown:
             return .unknown
         }
+    }
+
+    private static func nonEmptyValue(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

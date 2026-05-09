@@ -82,8 +82,8 @@
 |---|---|---|---|---|---|
 | 已完成 | 第 9 周 | 图片选择与落盘 | PhotosUI/相册权限，账号目录隔离 | 本地缩略图立即显示 | iOS |
 | 已完成 | 第 9 周 | 图片压缩与缩略图 | MediaFileActor 异步处理 | 大图不阻塞 UI | iOS |
-| 待联调 | 第 9 周 | 图片上传 | 上传进度 Combine 发布 | 失败可重试 | iOS/Server |
-| 待联调 | 第 9-10 周 | 视频消息发送与展示 | 视频选择、缩略图、上传、重试、播放入口 | 本地/Mock 视频消息可发送、失败可重试、聊天页可识别播放；真实上传与发送接口待服务端联调 | iOS/Server |
+| 部分完成 | 第 9 周 | 图片上传 | 上传进度 Combine 发布；上传完成后的图片消息发送服务端适配层已就绪 | 失败可重试；真实上传 endpoint 与端到端联调待验证 | iOS/Server |
+| 部分完成 | 第 9-10 周 | 视频消息发送与展示 | 视频选择、缩略图、上传、重试、播放入口；上传完成后的视频消息发送服务端适配层已就绪 | 本地/Mock 视频消息可发送、失败可重试、聊天页可识别播放；真实上传 endpoint 与端到端联调待验证 | iOS/Server |
 | 已完成 | 第 10 周 | 语音录制 | AVFoundation，权限降级 | 可录制、取消、发送 | iOS |
 | 已完成 | 第 10 周 | 语音播放 | 播放状态、未读红点 | 播放后状态更新 | iOS |
 | 已完成 | 第 10 周 | 媒体索引 | `media_resource/file_index.db` | 文件丢失可识别并触发下载 | iOS |
@@ -124,6 +124,7 @@
 > 进度更新（2026-05-09）：文本消息服务端适配层已就绪，新增 `ChatBridgeHTTPClient` 与 `ServerMessageSendService`，支持 baseURL、超时、Bearer token、文本发送 DTO、ack 映射、离线/超时/ack 缺失失败分类；`AppDependencyContainer` 默认仍使用 Mock，只有显式配置 `CHATBRIDGE_SERVER_BASE_URL` 且当前登录态存在 token 时启用服务端适配层，UI 测试继续强制使用 Mock/fail-first。新增 `serverMessageSendServiceMapsTextAckToSendResult`、`serverMessageSendServiceMapsTransportFailuresToSendFailures`、`chatUseCasePersistsServerAckFromServerMessageSendService`、`chatUseCaseQueuesPendingJobForServerAckFailureAndResendsWithSameClientMessageID`、`serverMessageSendConfigurationRequiresExplicitBaseURL`、`uiTestMessageSendConfigurationKeepsUsingMockService` 覆盖发送 ack、失败入队、重发幂等和测试配置隔离；`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing`、`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests`、`xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMUITests/AppleIMUITests/testFailedSendCanBeRetried` 均已通过。真实服务端 endpoint 字段与联调验收仍待 Server 接口确认。
 > 进度更新（2026-05-09）：新增独立 `TokenRefreshActor` 与 async token provider 注入，支持当前 token 读取、刷新成功后更新 `AccountSessionStore`、并发刷新合并为单次请求；`SceneDelegate` 在真实服务端配置存在时为 `ServerMessageSendService` 注入 actor provider，UI 测试路径仍优先使用 Mock/fail-first。新增 `tokenRefreshActorReturnsCachedTokenAndPersistsRefresh`、`tokenRefreshActorCoalescesConcurrentRefreshes`、`serverMessageSendConfigurationUsesTokenProviderActor` 覆盖缓存、持久化、并发合并与 provider 注入。真实 token refresh endpoint 字段仍待接口确认后联调。
 > 进度更新（2026-05-09）：401 自动刷新与一次请求重放已接入文本发送网络边界，新增 `TokenRefreshingHTTPClient` 包装 `ChatBridgeHTTPPosting`，仅在 `unacceptableStatus(401)` 时调用 `authTokenRefresher`，刷新成功后重放原请求一次；刷新失败、非 401、二次失败继续沿用现有失败入队与重试链路。新增 `tokenRefreshingHTTPClientRefreshesAfterUnauthorizedAndRetriesWithUpdatedToken`、`tokenRefreshingHTTPClientDoesNotRefreshNonUnauthorizedFailures`、`chatUseCaseQueuesPendingJobWhenUnauthorizedRefreshFails` 覆盖 401 刷新重放、非 401 不刷新、刷新失败入队。
+> 进度更新（2026-05-09）：媒体消息服务端发送适配层已按分类型接口接入，新增 `/v1/messages/image`、`/v1/messages/voice`、`/v1/messages/video`、`/v1/messages/file` 请求 DTO，上传完成后携带 `media_id`、`cdn_url`、`md5` 与图片/语音/视频/文件元数据换取统一 ack，并复用现有 401 token refresh 一次重放、失败分类和 pending job 重试链路。新增 `serverMessageSendServiceMapsImageAckToSendResult`、`serverMessageSendServiceMapsVoiceVideoAndFileRequests`、`serverMessageSendServiceMapsMediaTransportFailuresToSendFailures`、`tokenRefreshingHTTPClientRefreshesMediaSendAfterUnauthorized`、`chatUseCasePersistsServerAckForImageAndVideoSends`、`chatUseCaseQueuesMediaUploadJobWhenServerMediaSendFailsAfterUpload` 覆盖媒体请求映射、ack 持久化、刷新重放、发送失败后保留 upload ack 并入队。真实媒体上传 endpoint、上传进度与端到端联调仍待 Server 接口确认。
 
 ---
 

@@ -2175,6 +2175,106 @@ struct AppleIMTests {
         #expect(retryJob?.status == .success)
     }
 
+    @Test func chatUseCasePersistsServerAckForImageAndVideoSends() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "media_server_ack_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "media_server_ack_conversation", userID: "media_server_ack_user", title: "Media Ack", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let service = ServerMessageSendService(
+            httpClient: RecordingHTTPClient(
+                response: ServerTextMessageSendResponse(
+                    serverMessageID: "server_media_message",
+                    sequence: 919,
+                    serverTime: 1_777_777_919
+                )
+            )
+        )
+        let useCase = LocalChatUseCase(
+            userID: "media_server_ack_user",
+            conversationID: "media_server_ack_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: service,
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+
+        let imageRows = try await collectRows(from: useCase.sendImage(data: samplePNGData(), preferredFileExtension: "png"))
+        let videoRows = try await collectRows(
+            from: useCase.sendVideo(
+                fileURL: try await makeSampleVideoFile(in: rootDirectory),
+                preferredFileExtension: "mov"
+            )
+        )
+        let imageMessage = try await repository.message(messageID: try #require(imageRows.first?.id))
+        let videoMessage = try await repository.message(messageID: try #require(videoRows.first?.id))
+
+        #expect(imageRows.last?.statusText == nil)
+        #expect(videoRows.last?.statusText == nil)
+        #expect(imageMessage?.sendStatus == .success)
+        #expect(videoMessage?.sendStatus == .success)
+        #expect(imageMessage?.serverMessageID == "server_media_message")
+        #expect(videoMessage?.serverMessageID == "server_media_message")
+        #expect(imageMessage?.sequence == 919)
+        #expect(videoMessage?.sequence == 919)
+        #expect(imageMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local/image") == true)
+        #expect(videoMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+    }
+
+    @Test func chatUseCaseQueuesMediaUploadJobWhenServerMediaSendFailsAfterUpload() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "media_server_fail_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "media_server_fail_conversation", userID: "media_server_fail_user", title: "Media Fail", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let useCase = LocalChatUseCase(
+            userID: "media_server_fail_user",
+            conversationID: "media_server_fail_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: ServerMessageSendService(httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.timeout)),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0),
+            retryPolicy: MessageRetryPolicy(initialDelaySeconds: 2, maxDelaySeconds: 10, maxRetryCount: 3)
+        )
+
+        let imageRows = try await collectRows(from: useCase.sendImage(data: samplePNGData(), preferredFileExtension: "png"))
+        let videoRows = try await collectRows(
+            from: useCase.sendVideo(
+                fileURL: try await makeSampleVideoFile(in: rootDirectory),
+                preferredFileExtension: "mov"
+            )
+        )
+        let imageMessage = try await repository.message(messageID: try #require(imageRows.first?.id))
+        let videoMessage = try await repository.message(messageID: try #require(videoRows.first?.id))
+        let imageJob = try await repository.pendingJob(id: "image_upload_\(imageMessage?.clientMessageID ?? "")")
+        let videoJob = try await repository.pendingJob(id: "video_upload_\(videoMessage?.clientMessageID ?? "")")
+
+        #expect(imageRows.last?.statusText == "Failed")
+        #expect(videoRows.last?.statusText == "Failed")
+        #expect(imageMessage?.sendStatus == .failed)
+        #expect(videoMessage?.sendStatus == .failed)
+        #expect(imageMessage?.image?.uploadStatus == .failed)
+        #expect(videoMessage?.video?.uploadStatus == .failed)
+        #expect(imageMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local/image") == true)
+        #expect(videoMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+        #expect(imageJob?.type == .imageUpload)
+        #expect(videoJob?.type == .videoUpload)
+        #expect(imageJob?.payloadJSON.contains("timeout") == true)
+        #expect(videoJob?.payloadJSON.contains("timeout") == true)
+    }
+
     @Test func localChatRepositoryRollsBackWhenMessageInsertFails() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -2698,6 +2798,96 @@ struct AppleIMTests {
         #expect(ackMissingResult == .failure(.ackMissing))
     }
 
+    @Test func serverMessageSendServiceMapsImageAckToSendResult() async throws {
+        let httpClient = RecordingHTTPClient(
+            response: ServerTextMessageSendResponse(
+                serverMessageID: "server_image_ack",
+                sequence: 43,
+                serverTime: 1_777_777_743
+            )
+        )
+        let service = ServerMessageSendService(httpClient: httpClient)
+        let message = makeStoredImageMessage(
+            messageID: "local_image_message",
+            conversationID: "image_conversation",
+            senderID: "image_user",
+            clientMessageID: "client_image_message"
+        )
+        let upload = MediaUploadAck(mediaID: "image_media_uploaded", cdnURL: "https://cdn.example/image.png", md5: "image-md5")
+
+        let result = await service.sendImage(message: message, upload: upload)
+        let request = await httpClient.lastImageRequest
+
+        #expect(result == .success(MessageSendAck(serverMessageID: "server_image_ack", sequence: 43, serverTime: 1_777_777_743)))
+        #expect(request?.conversationID == "image_conversation")
+        #expect(request?.clientMessageID == "client_image_message")
+        #expect(request?.senderID == "image_user")
+        #expect(request?.mediaID == "image_media_uploaded")
+        #expect(request?.cdnURL == "https://cdn.example/image.png")
+        #expect(request?.md5 == "image-md5")
+        #expect(request?.width == 320)
+        #expect(request?.height == 240)
+        #expect(request?.sizeBytes == 4_096)
+        #expect(request?.format == "png")
+        #expect(request?.localTime == 100)
+    }
+
+    @Test func serverMessageSendServiceMapsVoiceVideoAndFileRequests() async throws {
+        let httpClient = RecordingHTTPClient(
+            response: ServerTextMessageSendResponse(
+                serverMessageID: "server_media_ack",
+                sequence: 44,
+                serverTime: 1_777_777_744
+            )
+        )
+        let service = ServerMessageSendService(httpClient: httpClient)
+        let upload = MediaUploadAck(mediaID: "uploaded_media", cdnURL: "https://cdn.example/media", md5: "media-md5")
+
+        let voiceResult = await service.sendVoice(message: makeStoredVoiceMessage(), upload: upload)
+        let videoResult = await service.sendVideo(message: makeStoredVideoMessage(), upload: upload)
+        let fileResult = await service.sendFile(message: makeStoredFileMessage(), upload: upload)
+        let voiceRequest = await httpClient.lastVoiceRequest
+        let videoRequest = await httpClient.lastVideoRequest
+        let fileRequest = await httpClient.lastFileRequest
+
+        #expect(voiceResult == .success(MessageSendAck(serverMessageID: "server_media_ack", sequence: 44, serverTime: 1_777_777_744)))
+        #expect(videoResult == .success(MessageSendAck(serverMessageID: "server_media_ack", sequence: 44, serverTime: 1_777_777_744)))
+        #expect(fileResult == .success(MessageSendAck(serverMessageID: "server_media_ack", sequence: 44, serverTime: 1_777_777_744)))
+        #expect(voiceRequest?.durationMilliseconds == 1_800)
+        #expect(voiceRequest?.sizeBytes == 2_048)
+        #expect(voiceRequest?.format == "m4a")
+        #expect(videoRequest?.durationMilliseconds == 3_600)
+        #expect(videoRequest?.width == 640)
+        #expect(videoRequest?.height == 360)
+        #expect(videoRequest?.sizeBytes == 8_192)
+        #expect(fileRequest?.fileName == "report.pdf")
+        #expect(fileRequest?.fileExtension == "pdf")
+        #expect(fileRequest?.sizeBytes == 16_384)
+    }
+
+    @Test func serverMessageSendServiceMapsMediaTransportFailuresToSendFailures() async throws {
+        let message = makeStoredImageMessage()
+        let upload = MediaUploadAck(mediaID: "image_media", cdnURL: "https://cdn.example/image.png", md5: nil)
+
+        let offlineResult = await ServerMessageSendService(
+            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.offline)
+        ).sendImage(message: message, upload: upload)
+        let timeoutResult = await ServerMessageSendService(
+            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.timeout)
+        ).sendImage(message: message, upload: upload)
+        let ackMissingResult = await ServerMessageSendService(
+            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.ackMissing)
+        ).sendImage(message: message, upload: upload)
+        let missingURLResult = await ServerMessageSendService(
+            httpClient: RecordingHTTPClient()
+        ).sendImage(message: message, upload: MediaUploadAck(mediaID: "image_media", cdnURL: "  ", md5: nil))
+
+        #expect(offlineResult == .failure(.offline))
+        #expect(timeoutResult == .failure(.timeout))
+        #expect(ackMissingResult == .failure(.ackMissing))
+        #expect(missingURLResult == .failure(.ackMissing))
+    }
+
     @Test func tokenRefreshingHTTPClientRefreshesAfterUnauthorizedAndRetriesWithUpdatedToken() async throws {
         let tokenBox = TokenBox(token: "expired_token")
         let httpClient = ExpiringTextHTTPClient(
@@ -2737,6 +2927,34 @@ struct AppleIMTests {
         #expect(result == .failure(.timeout))
         #expect(await refreshCallCount.value == 0)
         #expect(await httpClient.textSendCallCount == 1)
+    }
+
+    @Test func tokenRefreshingHTTPClientRefreshesMediaSendAfterUnauthorized() async throws {
+        let tokenBox = TokenBox(token: "expired_token")
+        let httpClient = ExpiringTextHTTPClient(
+            tokenProvider: {
+                await tokenBox.token
+            },
+            response: ServerTextMessageSendResponse(
+                serverMessageID: "refreshed_media_ack",
+                sequence: 78,
+                serverTime: 1_777_777_078
+            )
+        )
+        let refreshingClient = TokenRefreshingHTTPClient(httpClient: httpClient) {
+            await tokenBox.updateToken("fresh_token")
+            return "fresh_token"
+        }
+        let service = ServerMessageSendService(httpClient: refreshingClient)
+
+        let result = await service.sendImage(
+            message: makeStoredImageMessage(clientMessageID: "refresh_image_client"),
+            upload: MediaUploadAck(mediaID: "refresh_image_media", cdnURL: "https://cdn.example/refresh.png", md5: nil)
+        )
+
+        #expect(result == .success(MessageSendAck(serverMessageID: "refreshed_media_ack", sequence: 78, serverTime: 1_777_777_078)))
+        #expect(await httpClient.mediaSendCallCount == 2)
+        #expect(await httpClient.observedTokens == ["expired_token", "fresh_token"])
     }
 
     @Test func chatUseCaseQueuesPendingJobWhenUnauthorizedRefreshFails() async throws {
@@ -7717,12 +7935,175 @@ private func makeStoredTextMessage(
     )
 }
 
+private func makeStoredImageMessage(
+    messageID: MessageID = "local_image_message",
+    conversationID: ConversationID = "local_conversation",
+    senderID: UserID = "local_user",
+    clientMessageID: String? = "local_image_client_message",
+    localTime: Int64 = 100
+) -> StoredMessage {
+    StoredMessage(
+        id: messageID,
+        conversationID: conversationID,
+        senderID: senderID,
+        clientMessageID: clientMessageID,
+        serverMessageID: nil,
+        sequence: nil,
+        type: .image,
+        direction: .outgoing,
+        sendStatus: .sending,
+        readStatus: .read,
+        serverTime: nil,
+        isRevoked: false,
+        isDeleted: false,
+        revokeReplacementText: nil,
+        text: nil,
+        image: StoredImageContent(
+            mediaID: "image_media",
+            localPath: "media/image.png",
+            thumbnailPath: "media/image_thumb.jpg",
+            width: 320,
+            height: 240,
+            sizeBytes: 4_096,
+            md5: "local-image-md5",
+            format: "png"
+        ),
+        voice: nil,
+        video: nil,
+        file: nil,
+        sortSequence: localTime,
+        localTime: localTime
+    )
+}
+
+private func makeStoredVoiceMessage(
+    messageID: MessageID = "local_voice_message",
+    conversationID: ConversationID = "local_conversation",
+    senderID: UserID = "local_user",
+    clientMessageID: String? = "local_voice_client_message",
+    localTime: Int64 = 100
+) -> StoredMessage {
+    StoredMessage(
+        id: messageID,
+        conversationID: conversationID,
+        senderID: senderID,
+        clientMessageID: clientMessageID,
+        serverMessageID: nil,
+        sequence: nil,
+        type: .voice,
+        direction: .outgoing,
+        sendStatus: .sending,
+        readStatus: .read,
+        serverTime: nil,
+        isRevoked: false,
+        isDeleted: false,
+        revokeReplacementText: nil,
+        text: nil,
+        image: nil,
+        voice: StoredVoiceContent(
+            mediaID: "voice_media",
+            localPath: "media/voice.m4a",
+            durationMilliseconds: 1_800,
+            sizeBytes: 2_048,
+            format: "m4a"
+        ),
+        video: nil,
+        file: nil,
+        sortSequence: localTime,
+        localTime: localTime
+    )
+}
+
+private func makeStoredVideoMessage(
+    messageID: MessageID = "local_video_message",
+    conversationID: ConversationID = "local_conversation",
+    senderID: UserID = "local_user",
+    clientMessageID: String? = "local_video_client_message",
+    localTime: Int64 = 100
+) -> StoredMessage {
+    StoredMessage(
+        id: messageID,
+        conversationID: conversationID,
+        senderID: senderID,
+        clientMessageID: clientMessageID,
+        serverMessageID: nil,
+        sequence: nil,
+        type: .video,
+        direction: .outgoing,
+        sendStatus: .sending,
+        readStatus: .read,
+        serverTime: nil,
+        isRevoked: false,
+        isDeleted: false,
+        revokeReplacementText: nil,
+        text: nil,
+        image: nil,
+        voice: nil,
+        video: StoredVideoContent(
+            mediaID: "video_media",
+            localPath: "media/video.mov",
+            thumbnailPath: "media/video_thumb.jpg",
+            durationMilliseconds: 3_600,
+            width: 640,
+            height: 360,
+            sizeBytes: 8_192,
+            md5: "local-video-md5"
+        ),
+        file: nil,
+        sortSequence: localTime,
+        localTime: localTime
+    )
+}
+
+private func makeStoredFileMessage(
+    messageID: MessageID = "local_file_message",
+    conversationID: ConversationID = "local_conversation",
+    senderID: UserID = "local_user",
+    clientMessageID: String? = "local_file_client_message",
+    localTime: Int64 = 100
+) -> StoredMessage {
+    StoredMessage(
+        id: messageID,
+        conversationID: conversationID,
+        senderID: senderID,
+        clientMessageID: clientMessageID,
+        serverMessageID: nil,
+        sequence: nil,
+        type: .file,
+        direction: .outgoing,
+        sendStatus: .sending,
+        readStatus: .read,
+        serverTime: nil,
+        isRevoked: false,
+        isDeleted: false,
+        revokeReplacementText: nil,
+        text: nil,
+        image: nil,
+        voice: nil,
+        video: nil,
+        file: StoredFileContent(
+            mediaID: "file_media",
+            localPath: "media/report.pdf",
+            fileName: "report.pdf",
+            fileExtension: "pdf",
+            sizeBytes: 16_384,
+            md5: "local-file-md5"
+        ),
+        sortSequence: localTime,
+        localTime: localTime
+    )
+}
+
 private actor RecordingHTTPClient: ChatBridgeHTTPPosting {
     private let response: ServerTextMessageSendResponse?
     private let tokenRefreshResponse: ServerTokenRefreshResponse?
     private let error: ChatBridgeHTTPError?
     private let delayNanoseconds: UInt64
     private(set) var lastTextRequest: ServerTextMessageSendRequest?
+    private(set) var lastImageRequest: ServerImageMessageSendRequest?
+    private(set) var lastVoiceRequest: ServerVoiceMessageSendRequest?
+    private(set) var lastVideoRequest: ServerVideoMessageSendRequest?
+    private(set) var lastFileRequest: ServerFileMessageSendRequest?
     private(set) var lastTokenRefreshRequest: ServerTokenRefreshRequest?
     private(set) var tokenRefreshCallCount = 0
 
@@ -7749,6 +8130,22 @@ private actor RecordingHTTPClient: ChatBridgeHTTPPosting {
 
         if let textRequest = body as? ServerTextMessageSendRequest {
             lastTextRequest = textRequest
+        }
+
+        if let imageRequest = body as? ServerImageMessageSendRequest {
+            lastImageRequest = imageRequest
+        }
+
+        if let voiceRequest = body as? ServerVoiceMessageSendRequest {
+            lastVoiceRequest = voiceRequest
+        }
+
+        if let videoRequest = body as? ServerVideoMessageSendRequest {
+            lastVideoRequest = videoRequest
+        }
+
+        if let fileRequest = body as? ServerFileMessageSendRequest {
+            lastFileRequest = fileRequest
         }
 
         if let tokenRefreshRequest = body as? ServerTokenRefreshRequest {
@@ -7781,6 +8178,7 @@ private actor ExpiringTextHTTPClient: ChatBridgeHTTPPosting {
     private let response: ServerTextMessageSendResponse?
     private let error: ChatBridgeHTTPError?
     private(set) var textSendCallCount = 0
+    private(set) var mediaSendCallCount = 0
     private(set) var observedTokens: [String?] = []
 
     init(
@@ -7805,11 +8203,21 @@ private actor ExpiringTextHTTPClient: ChatBridgeHTTPPosting {
             }
         }
 
+        if body is ServerImageMessageSendRequest
+            || body is ServerVoiceMessageSendRequest
+            || body is ServerVideoMessageSendRequest
+            || body is ServerFileMessageSendRequest {
+            mediaSendCallCount += 1
+            if let tokenProvider {
+                observedTokens.append(await tokenProvider())
+            }
+        }
+
         if let error {
             throw error
         }
 
-        if textSendCallCount == 1 {
+        if textSendCallCount + mediaSendCallCount == 1 {
             throw ChatBridgeHTTPError.unacceptableStatus(401)
         }
 
