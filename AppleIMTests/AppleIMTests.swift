@@ -5010,8 +5010,8 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func roundedConversationCellShowsFallbackAvatarWhenURLIsMissing() throws {
-        let cell = RoundedConversationCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
+    @Test func conversationListCellShowsFallbackAvatarWhenURLIsMissing() throws {
+        let cell = ConversationListCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
 
         cell.configure(
             row: ConversationListRowState(
@@ -5026,6 +5026,7 @@ struct AppleIMTests {
             )
         )
 
+        #expect(cell.contentConfiguration is ConversationListCellContentConfiguration)
         let avatarImageView = try #require(findView(in: cell, identifier: "conversation.avatarImageView") as? UIImageView)
 
         #expect(avatarImageView.image == nil)
@@ -5034,7 +5035,7 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func roundedConversationCellLoadsLocalAvatarImage() throws {
+    @Test func conversationListCellLoadsLocalAvatarImage() throws {
         let directory = temporaryDirectory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer {
@@ -5042,7 +5043,7 @@ struct AppleIMTests {
         }
         let imageURL = directory.appendingPathComponent("conversation-avatar.jpg")
         try makeJPEGData(width: 4, height: 4, quality: 0.8).write(to: imageURL, options: [.atomic])
-        let cell = RoundedConversationCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
+        let cell = ConversationListCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
 
         cell.configure(
             row: ConversationListRowState(
@@ -5057,6 +5058,7 @@ struct AppleIMTests {
             )
         )
 
+        #expect(cell.contentConfiguration is ConversationListCellContentConfiguration)
         let avatarImageView = try #require(findView(in: cell, identifier: "conversation.avatarImageView") as? UIImageView)
 
         #expect(avatarImageView.image != nil)
@@ -5065,7 +5067,7 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func roundedConversationCellPrepareForReuseClearsAvatarImage() throws {
+    @Test func conversationListCellPrepareForReuseClearsAvatarImage() throws {
         let directory = temporaryDirectory()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer {
@@ -5073,7 +5075,7 @@ struct AppleIMTests {
         }
         let imageURL = directory.appendingPathComponent("reuse-avatar.jpg")
         try makeJPEGData(width: 4, height: 4, quality: 0.8).write(to: imageURL, options: [.atomic])
-        let cell = RoundedConversationCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
+        let cell = ConversationListCell(frame: CGRect(x: 0, y: 0, width: 390, height: 82))
         cell.configure(
             row: ConversationListRowState(
                 id: "reuse_avatar",
@@ -5509,6 +5511,7 @@ struct AppleIMTests {
 
         cell.configure(row: row, actions: .empty)
 
+        #expect(cell.contentConfiguration is ChatMessageCellContentConfiguration)
         #expect(cell.accessibilityIdentifier == "chat.messageCell.cell_voice")
         #expect(cell.accessibilityLabel == "Voice 2s, Failed")
         #expect(findView(in: cell, identifier: "chat.retryButton.cell_voice") != nil)
@@ -5547,6 +5550,55 @@ struct AppleIMTests {
 
         #expect(abs(timeCenterX - cell.contentView.bounds.midX) < 1)
         #expect(timeFrame.maxY < bubbleFrame.minY)
+    }
+
+    @MainActor
+    @Test func chatMessageCellContentConfigurationReusesCellAcrossContentKinds() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 160))
+
+        cell.configure(
+            row: ChatMessageRowState(
+                id: "reuse_text",
+                content: .text("First text"),
+                sortSequence: 1,
+                timeText: "18:08",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: true,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
+        #expect(findLabel(withText: "First text", in: cell) != nil)
+
+        cell.configure(
+            row: ChatMessageRowState(
+                id: "reuse_voice",
+                content: .voice(
+                    ChatMessageRowContent.VoiceContent(
+                        localPath: "/tmp/reuse_voice.m4a",
+                        durationMilliseconds: 3_000,
+                        isUnplayed: true,
+                        isPlaying: false
+                    )
+                ),
+                sortSequence: 2,
+                timeText: "18:09",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
+
+        #expect(findLabel(withText: "First text", in: cell) == nil)
+        #expect(findLabel(withText: "3s", in: cell) != nil)
+        #expect(button(in: cell, accessibilityLabel: "Play Voice") != nil)
     }
 
     @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {

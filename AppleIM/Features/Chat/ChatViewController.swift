@@ -594,10 +594,7 @@ final class ChatViewController: UIViewController {
                     self?.handleVideoPlayback(row)
                 }
             )
-            cell.configure(
-                row: row,
-                actions: actions
-            )
+            cell.configure(row: row, actions: actions)
         }
 
         dataSource = UICollectionViewDiffableDataSource<String, String>(

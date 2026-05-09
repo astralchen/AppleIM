@@ -509,8 +509,127 @@ final class ChatBubbleBackgroundView: UIView {
     }
 }
 
-/// 圆角会话列表单元格
-final class RoundedConversationCell: UICollectionViewCell {
+/// 会话列表单元格内容行
+@MainActor
+enum ConversationListCellContentRow: Equatable {
+    /// 普通会话行
+    case conversation(ConversationListRowState)
+    /// 搜索结果行
+    case search(SearchResultRowState)
+
+    /// 主标题
+    var title: String {
+        switch self {
+        case .conversation(let row):
+            return row.title
+        case .search(let row):
+            return row.title
+        }
+    }
+
+    /// 副标题
+    var subtitle: String {
+        switch self {
+        case .conversation(let row):
+            return row.subtitle
+        case .search(let row):
+            return row.subtitle
+        }
+    }
+
+    /// 右侧时间或类型文案
+    var trailingText: String {
+        switch self {
+        case .conversation(let row):
+            return row.timeText
+        case .search(let row):
+            return row.kind.displayText
+        }
+    }
+
+    /// 头像 URL
+    var avatarURL: String? {
+        switch self {
+        case .conversation(let row):
+            return row.avatarURL
+        case .search:
+            return nil
+        }
+    }
+
+    /// 未读文案
+    var unreadText: String? {
+        switch self {
+        case .conversation(let row):
+            return row.unreadText
+        case .search:
+            return nil
+        }
+    }
+
+    /// 是否置顶
+    var isPinned: Bool {
+        switch self {
+        case .conversation(let row):
+            return row.isPinned
+        case .search:
+            return true
+        }
+    }
+
+    /// 是否免打扰
+    var isMuted: Bool {
+        switch self {
+        case .conversation(let row):
+            return row.isMuted
+        case .search:
+            return false
+        }
+    }
+}
+
+/// 会话列表单元格内容配置
+@MainActor
+struct ConversationListCellContentConfiguration: UIContentConfiguration {
+    /// 行内容
+    let row: ConversationListCellContentRow
+    /// 高亮状态
+    var isHighlighted = false
+    /// 选中状态
+    var isSelected = false
+    fileprivate var updatesOnlyCellState = false
+
+    /// 初始化内容配置
+    init(
+        row: ConversationListCellContentRow,
+        isHighlighted: Bool = false,
+        isSelected: Bool = false
+    ) {
+        self.row = row
+        self.isHighlighted = isHighlighted
+        self.isSelected = isSelected
+    }
+
+    /// 创建内容视图
+    func makeContentView() -> UIView & UIContentView {
+        ConversationListCellContentView(configuration: self)
+    }
+
+    /// 根据 cell 状态派生配置
+    func updated(for state: UIConfigurationState) -> ConversationListCellContentConfiguration {
+        var updatedConfiguration = self
+        if let cellState = state as? UICellConfigurationState {
+            updatedConfiguration.isHighlighted = cellState.isHighlighted
+            updatedConfiguration.isSelected = cellState.isSelected
+            updatedConfiguration.updatesOnlyCellState = true
+        }
+        return updatedConfiguration
+    }
+}
+
+/// 会话列表单元格内容视图
+@MainActor
+final class ConversationListCellContentView: UIView, UIContentView {
     /// 头像图片缓存
     private static let avatarImageCache = NSCache<NSString, UIImage>()
 
@@ -544,35 +663,78 @@ final class RoundedConversationCell: UICollectionViewCell {
     private var avatarDataTask: URLSessionDataTask?
     /// 当前期望展示的头像 URL
     private var expectedAvatarURL: String?
+    private var currentConfiguration: ConversationListCellContentConfiguration
 
     /// 初始化会话单元格
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    init(configuration: ConversationListCellContentConfiguration) {
+        currentConfiguration = configuration
+        super.init(frame: .zero)
         configureView()
+        apply(configuration)
     }
 
     /// 从 storyboard/xib 初始化会话单元格
     required init?(coder: NSCoder) {
+        currentConfiguration = ConversationListCellContentConfiguration(
+            row: .conversation(
+                ConversationListRowState(
+                    id: "empty",
+                    title: "",
+                    subtitle: "",
+                    timeText: "",
+                    unreadText: nil,
+                    isPinned: false,
+                    isMuted: false
+                )
+            )
+        )
         super.init(coder: coder)
         configureView()
+        apply(currentConfiguration)
+    }
+
+    deinit {
+        avatarDataTask?.cancel()
+    }
+
+    /// 当前内容配置
+    var configuration: UIContentConfiguration {
+        get { currentConfiguration }
+        set {
+            guard let newConfiguration = newValue as? ConversationListCellContentConfiguration else {
+                return
+            }
+
+            let shouldOnlyUpdateCellState = newConfiguration.updatesOnlyCellState
+                && currentConfiguration.row == newConfiguration.row
+            currentConfiguration = newConfiguration
+
+            if shouldOnlyUpdateCellState {
+                applyCellState(newConfiguration)
+            } else {
+                apply(newConfiguration)
+            }
+        }
     }
 
     /// 重用前重置状态和头像加载
-    override func prepareForReuse() {
-        super.prepareForReuse()
+    func reset() {
         unreadLabel.isHidden = true
         pinnedImageView.isHidden = true
         mutedImageView.isHidden = true
         cardView.backgroundColor = .systemBackground
+        alpha = 1
         applyTextStyle(hasUnread: false)
         resetAvatarImage()
     }
 
-    /// 使用会话行状态配置单元格
-    func configure(row: ConversationListRowState) {
+    /// 应用内容配置
+    private func apply(_ configuration: ConversationListCellContentConfiguration) {
+        reset()
+        let row = configuration.row
         titleLabel.text = row.title
         subtitleLabel.text = row.subtitle
-        timeLabel.text = row.timeText
+        timeLabel.text = row.trailingText
         unreadLabel.text = row.unreadText
         unreadLabel.isHidden = row.unreadText == nil
         pinnedImageView.isHidden = !row.isPinned
@@ -582,27 +744,17 @@ final class RoundedConversationCell: UICollectionViewCell {
         configureAvatarImage(from: row.avatarURL)
         cardView.backgroundColor = .systemBackground
         applyTextStyle(hasUnread: row.unreadText != nil)
+        applyCellState(configuration)
     }
 
-    /// 使用搜索结果行状态配置单元格
-    func configure(searchRow: SearchResultRowState) {
-        titleLabel.text = searchRow.title
-        subtitleLabel.text = searchRow.subtitle
-        timeLabel.text = searchRow.kind.displayText
-        unreadLabel.isHidden = true
-        pinnedImageView.isHidden = true
-        mutedImageView.isHidden = true
-        avatarLabel.text = Self.initials(from: searchRow.title)
-        avatarView.setColors(Self.avatarColors(isPinned: true))
-        resetAvatarImage()
-        cardView.backgroundColor = .systemBackground
-        applyTextStyle(hasUnread: false)
+    /// 应用 cell 高亮/选中展示状态
+    private func applyCellState(_ configuration: ConversationListCellContentConfiguration) {
+        alpha = configuration.isHighlighted || configuration.isSelected ? 0.82 : 1
     }
 
     /// 配置单元格层级、样式和约束
     private func configureView() {
         backgroundColor = .clear
-        contentView.backgroundColor = .clear
 
         cardView.translatesAutoresizingMaskIntoConstraints = false
         cardView.backgroundColor = .systemBackground
@@ -672,7 +824,7 @@ final class RoundedConversationCell: UICollectionViewCell {
         separatorView.translatesAutoresizingMaskIntoConstraints = false
         separatorView.backgroundColor = .separator
 
-        contentView.addSubview(cardView)
+        addSubview(cardView)
         cardView.addSubview(avatarView)
         avatarView.addSubview(avatarLabel)
         avatarView.addSubview(avatarImageView)
@@ -682,10 +834,10 @@ final class RoundedConversationCell: UICollectionViewCell {
         cardView.addSubview(separatorView)
 
         NSLayoutConstraint.activate([
-            cardView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            cardView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            cardView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            cardView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            cardView.topAnchor.constraint(equalTo: topAnchor),
+            cardView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            cardView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            cardView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             avatarView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 20),
             avatarView.centerYAnchor.constraint(equalTo: cardView.centerYAnchor),
@@ -827,6 +979,58 @@ final class RoundedConversationCell: UICollectionViewCell {
 
         let color = UIColor.tertiarySystemFill
         return [color, color]
+    }
+}
+
+/// 会话列表单元格
+@MainActor
+final class ConversationListCell: UICollectionViewCell {
+    /// 初始化会话单元格
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    /// 从 storyboard/xib 初始化会话单元格
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    /// 重用前重置状态和头像加载
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        if let conversationContentView = contentView.subviews.compactMap({ $0 as? ConversationListCellContentView }).first {
+            conversationContentView.reset()
+        }
+        isAccessibilityElement = false
+        accessibilityIdentifier = nil
+        accessibilityLabel = nil
+    }
+
+    /// 使用会话行状态配置单元格
+    func configure(row: ConversationListRowState) {
+        contentConfiguration = ConversationListCellContentConfiguration(row: .conversation(row))
+    }
+
+    /// 使用搜索结果行状态配置单元格
+    func configure(searchRow: SearchResultRowState) {
+        contentConfiguration = ConversationListCellContentConfiguration(row: .search(searchRow))
+    }
+
+    /// 根据 cell 状态更新内容配置
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        super.updateConfiguration(using: state)
+        guard let configuration = contentConfiguration as? ConversationListCellContentConfiguration else {
+            return
+        }
+        contentConfiguration = configuration.updated(for: state)
+    }
+
+    /// 配置 cell 外层样式
+    private func configureView() {
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
     }
 }
 

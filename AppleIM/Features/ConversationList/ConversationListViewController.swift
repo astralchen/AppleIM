@@ -190,7 +190,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 配置 diffable data source 与 section header
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<RoundedConversationCell, String> { [weak self] cell, _, rowID in
+        let cellRegistration = UICollectionView.CellRegistration<ConversationListCell, String> { [weak self] cell, _, rowID in
             guard let self else { return }
 
             if let row = rowsByID[rowID] {

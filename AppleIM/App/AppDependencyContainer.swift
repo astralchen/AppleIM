@@ -63,10 +63,14 @@ final class AppDependencyContainer {
         let resolvedDatabaseKeyStore: any AccountDatabaseKeyStore = uiTestConfiguration == nil
             ? databaseKeyStore
             : InMemoryAccountDatabaseKeyStore()
-        let resolvedMessageSendService = uiTestConfiguration
-            .map(AppUITestConfiguration.makeMessageSendService)
-            ?? serverMessageSendConfiguration.map(ServerMessageSendService.init(configuration:))
-            ?? messageSendService
+        let resolvedMessageSendService: any MessageSendService
+        if let uiTestConfiguration {
+            resolvedMessageSendService = AppUITestConfiguration.makeMessageSendService(for: uiTestConfiguration)
+        } else if let serverMessageSendConfiguration {
+            resolvedMessageSendService = ServerMessageSendService(configuration: serverMessageSendConfiguration)
+        } else {
+            resolvedMessageSendService = messageSendService
+        }
 
         self.isUITesting = uiTestConfiguration != nil
         self.accountID = accountID

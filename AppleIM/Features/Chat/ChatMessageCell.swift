@@ -600,9 +600,59 @@ private final class MessageVoiceWaveformView: UIView {
     }
 }
 
-/// 聊天消息单元格
+/// 聊天消息单元格内容配置
 @MainActor
-final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDelegate {
+struct ChatMessageCellContentConfiguration: UIContentConfiguration {
+    let row: ChatMessageRowState
+    let actions: ChatMessageCellActions
+    var isHighlighted = false
+    var isSelected = false
+    fileprivate var updatesOnlyCellState = false
+
+    init(
+        row: ChatMessageRowState,
+        actions: ChatMessageCellActions,
+        isHighlighted: Bool = false,
+        isSelected: Bool = false
+    ) {
+        self.row = row
+        self.actions = actions
+        self.isHighlighted = isHighlighted
+        self.isSelected = isSelected
+    }
+
+    func makeContentView() -> UIView & UIContentView {
+        ChatMessageCellContentView(configuration: self)
+    }
+
+    func updated(for state: UIConfigurationState) -> ChatMessageCellContentConfiguration {
+        var updatedConfiguration = self
+        if let cellState = state as? UICellConfigurationState {
+            updatedConfiguration.isHighlighted = cellState.isHighlighted
+            updatedConfiguration.isSelected = cellState.isSelected
+            updatedConfiguration.updatesOnlyCellState = true
+        }
+        return updatedConfiguration
+    }
+
+    static func accessibilityLabel(for row: ChatMessageRowState) -> String {
+        var parts = [row.content.accessibilityText]
+
+        if let statusText = row.statusText {
+            parts.append(statusText)
+        }
+
+        if let uploadProgress = row.uploadProgress {
+            parts.append("Uploading \(Int(uploadProgress * 100))%")
+        }
+
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// 聊天消息单元格内容视图
+@MainActor
+final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInteractionDelegate {
     private static let avatarImageCache = NSCache<NSString, UIImage>()
 
     private let avatarView = GradientBackgroundView()
@@ -628,24 +678,69 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
     private var retryMessageID: MessageID?
     private var actions = ChatMessageCellActions.empty
     private var contentViewForMessage: (UIView & ChatMessageContentView)?
+    private var currentConfiguration: ChatMessageCellContentConfiguration
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    var configuration: UIContentConfiguration {
+        get { currentConfiguration }
+        set {
+            guard let newConfiguration = newValue as? ChatMessageCellContentConfiguration else {
+                return
+            }
+            let shouldOnlyUpdateCellState = newConfiguration.updatesOnlyCellState
+                && currentConfiguration.row == newConfiguration.row
+            currentConfiguration = newConfiguration
+            guard !shouldOnlyUpdateCellState else {
+                updateCellState(configuration: newConfiguration)
+                return
+            }
+            apply(configuration: newConfiguration)
+        }
+    }
+
+    init(configuration: ChatMessageCellContentConfiguration) {
+        currentConfiguration = configuration
+        super.init(frame: .zero)
         configureView()
+        apply(configuration: configuration)
     }
 
     required init?(coder: NSCoder) {
+        currentConfiguration = ChatMessageCellContentConfiguration(
+            row: ChatMessageRowState(
+                id: "",
+                content: .text(""),
+                sortSequence: 0,
+                timeText: "",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: false,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
         super.init(coder: coder)
         configureView()
     }
 
-    override func prepareForReuse() {
-        super.prepareForReuse()
+    deinit {
+        avatarDataTask?.cancel()
+    }
+
+    private func apply(configuration: ChatMessageCellContentConfiguration) {
+        configure(row: configuration.row, actions: configuration.actions)
+        updateCellState(configuration: configuration)
+    }
+
+    private func updateCellState(configuration: ChatMessageCellContentConfiguration) {
+        alpha = configuration.isHighlighted || configuration.isSelected ? 0.82 : 1
+    }
+
+    func reset() {
         row = nil
         retryMessageID = nil
         actions = .empty
-        accessibilityIdentifier = nil
-        accessibilityLabel = nil
         retryButton.accessibilityIdentifier = nil
         avatarDataTask?.cancel()
         avatarDataTask = nil
@@ -654,12 +749,10 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
         avatarImageView.isHidden = true
     }
 
-    func configure(row: ChatMessageRowState, actions: ChatMessageCellActions) {
+    private func configure(row: ChatMessageRowState, actions: ChatMessageCellActions) {
         self.row = row
         retryMessageID = row.id
         self.actions = actions
-        accessibilityIdentifier = "chat.messageCell.\(row.id.rawValue)"
-        accessibilityLabel = Self.accessibilityLabel(for: row)
         configureAvatar(for: row)
 
         let isRevoked = row.content.kind == .revoked
@@ -735,7 +828,6 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
 
     private func configureView() {
         backgroundColor = .clear
-        contentView.backgroundColor = .clear
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.setColors(ChatBridgeDesignSystem.GradientToken.playfulAvatar)
@@ -782,18 +874,18 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
         )
         retryButton.addTarget(self, action: #selector(retryButtonTapped), for: .touchUpInside)
 
-        contentView.addSubview(avatarView)
+        addSubview(avatarView)
         avatarView.addSubview(avatarInitialLabel)
         avatarView.addSubview(avatarImageView)
-        contentView.addSubview(bubbleView)
-        contentView.addSubview(metadataStackView)
+        addSubview(bubbleView)
+        addSubview(metadataStackView)
         bubbleView.addSubview(stackView)
         metadataStackView.addArrangedSubview(metadataLabel)
         metadataStackView.addArrangedSubview(retryButton)
 
-        incomingAvatarLeadingConstraint = avatarView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
+        incomingAvatarLeadingConstraint = avatarView.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor)
         incomingBubbleLeadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 8)
-        outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+        outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor)
 
         let stackTopConstraint = stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10)
         let stackLeadingConstraint = stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 13)
@@ -819,14 +911,14 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
             avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
             avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
 
-            metadataStackView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 4),
-            metadataStackView.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            metadataStackView.leadingAnchor.constraint(greaterThanOrEqualTo: contentView.layoutMarginsGuide.leadingAnchor),
-            metadataStackView.trailingAnchor.constraint(lessThanOrEqualTo: contentView.layoutMarginsGuide.trailingAnchor),
+            metadataStackView.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            metadataStackView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            metadataStackView.leadingAnchor.constraint(greaterThanOrEqualTo: layoutMarginsGuide.leadingAnchor),
+            metadataStackView.trailingAnchor.constraint(lessThanOrEqualTo: layoutMarginsGuide.trailingAnchor),
 
             bubbleView.topAnchor.constraint(equalTo: metadataStackView.bottomAnchor, constant: 4),
-            bubbleView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -4),
-            bubbleView.widthAnchor.constraint(lessThanOrEqualTo: contentView.widthAnchor, multiplier: 0.72),
+            bubbleView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            bubbleView.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.72),
 
             retryButton.widthAnchor.constraint(equalToConstant: 22),
             retryButton.heightAnchor.constraint(equalToConstant: 22),
@@ -935,18 +1027,54 @@ final class ChatMessageCell: UICollectionViewCell, UIContextMenuInteractionDeleg
             return UIMenu(children: menuActions)
         }
     }
+}
 
-    private static func accessibilityLabel(for row: ChatMessageRowState) -> String {
-        var parts = [row.content.accessibilityText]
+/// 聊天消息单元格
+@MainActor
+final class ChatMessageCell: UICollectionViewCell {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
 
-        if let statusText = row.statusText {
-            parts.append(statusText)
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        accessibilityIdentifier = nil
+        accessibilityLabel = nil
+        (contentView.subviews.first as? ChatMessageCellContentView)?.reset()
+    }
+
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        guard let configuration = contentConfiguration as? ChatMessageCellContentConfiguration else {
+            return
+        }
+        contentConfiguration = configuration.updated(for: state)
+    }
+
+    func configure(row: ChatMessageRowState, actions: ChatMessageCellActions) {
+        let configuration = ChatMessageCellContentConfiguration(row: row, actions: actions)
+        contentConfiguration = configuration
+        applyAccessibility(from: configuration)
+    }
+
+    private func configureView() {
+        backgroundColor = .clear
+        contentView.backgroundColor = .clear
+    }
+
+    private func applyAccessibility(from configuration: UIContentConfiguration?) {
+        guard let configuration = configuration as? ChatMessageCellContentConfiguration else {
+            accessibilityIdentifier = nil
+            accessibilityLabel = nil
+            return
         }
 
-        if let uploadProgress = row.uploadProgress {
-            parts.append("Uploading \(Int(uploadProgress * 100))%")
-        }
-
-        return parts.joined(separator: ", ")
+        accessibilityIdentifier = "chat.messageCell.\(configuration.row.id.rawValue)"
+        accessibilityLabel = ChatMessageCellContentConfiguration.accessibilityLabel(for: configuration.row)
     }
 }
