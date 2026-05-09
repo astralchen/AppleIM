@@ -25,7 +25,7 @@
 
 状态说明：`已完成` 表示当前仓库已有实现和基础验证；`部分完成` 表示主链路已落地但仍有明确缺口；`待联调` 表示本地/Mock 链路已通但依赖服务端或系统能力验证；`下一步` 表示当前应优先推进；`待开始` 表示尚未进入实现。
 
-> 当前做到：账号模块 - 退出登录、账号切换与账号数据删除入口完成，下一步推进 MVP 验收报告，并继续收敛全量回归中的非账号遗留失败。
+> 当前做到：聊天消息撤回/删除本地 UI 与存储闭环完成，下一步继续收敛 UI 回归稳定性，并推进 MVP 验收报告。
 
 ### Sprint 0：工程基线与开发规范
 
@@ -62,7 +62,7 @@
 | 已完成 | 第 5 周 | 文本消息入库 | message + message_text + conversation 同事务 | 发送后立即展示 sending | iOS |
 | 待联调 | 第 5 周 | 文本消息发送 | `async/await` 请求服务端，ack 回写 | success/failed 状态正确 | iOS/Server |
 | 待联调 | 第 6 周 | 消息重发 | 基于 `client_msg_id` 幂等 | 重发不重复插入 | iOS/Server |
-| 待联调 | 第 6 周 | 撤回与删除 | 状态化处理，不物理删除主记录 | UI 展示撤回/删除状态 | iOS/Server |
+| 待联调 | 第 6 周 | 撤回与删除 | 本地长按菜单、二次确认、逻辑删除和撤回替代文案已闭环；真实服务端撤回/删除接口待联调 | 本地 UI 可展示撤回/删除状态；服务端联调后补齐多端一致性验证 | iOS/Server |
 | 已完成 | 第 6 周 | 草稿 | 离开保存，回来恢复 | 重启后草稿仍存在 | iOS |
 
 ### Sprint 3：同步、弱网与任务队列
@@ -118,7 +118,7 @@
 | 待开始 | 第 14 周 | MVP 验收报告 | 功能、性能、稳定性、安全项 | 输出可发布结论 | PM/iOS/QA |
 
 > 回归记录：当前环境已完成 iOS 26.4.1 Simulator 回归；iOS 15 真机/旧系统矩阵待 QA 设备补跑。  
-> 本轮验证（2026-05-09）：账号本地数据删除入口已接入并补充单元/UI 测试；`AppleIMTests` 全量通过，`AppleIMUITests/AppleIMUITests/testDeleteLocalDataReturnsToLoginAndReinitializesAccount` 通过。下一步继续补跑账号相关 UI 回归（登录态恢复、退出登录、切换账号）并输出 MVP 验收报告。
+> 本轮验证（2026-05-09）：撤回/删除 UI 已接入长按菜单后的二次确认，并补充 ViewModel 单元测试与 UI 回归用例；`AppleIMTests/AppleIMTests/chatViewModelDeleteRemovesMessageRow`、`chatViewModelRevokeReloadsRevokedMessageRow`、`chatViewModelDeleteFailureKeepsRowsAndReportsFailure`、`chatViewModelRevokeFailureKeepsRowsAndReportsFailure` 在 iPhone 17 Simulator 通过；`AppleIMUITests/AppleIMUITests/testMessageCanBeRevokedAfterConfirmation`、`testMessageCanBeDeletedAfterConfirmation`、`testCancellingMessageActionKeepsMessageVisible` 在 iPhone 17 Simulator 通过。下一步继续输出 MVP 验收报告。
 
 ---
 

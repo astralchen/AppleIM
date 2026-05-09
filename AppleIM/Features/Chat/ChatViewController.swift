@@ -513,10 +513,10 @@ final class ChatViewController: UIViewController {
                     self?.viewModel.resend(messageID: messageID)
                 },
                 onDelete: { [weak self] messageID in
-                    self?.viewModel.delete(messageID: messageID)
+                    self?.confirmDelete(messageID: messageID)
                 },
                 onRevoke: { [weak self] messageID in
-                    self?.viewModel.revoke(messageID: messageID)
+                    self?.confirmRevoke(messageID: messageID)
                 },
                 onPlayVoice: { [weak self] row in
                     self?.handleVoicePlayback(row)
@@ -544,6 +544,42 @@ final class ChatViewController: UIViewController {
         var snapshot = NSDiffableDataSourceSnapshot<String, String>()
         snapshot.appendSections([chatSection])
         dataSource?.apply(snapshot, animatingDifferences: false)
+    }
+
+    private func confirmDelete(messageID: MessageID) {
+        let alertController = UIAlertController(
+            title: "Delete Message?",
+            message: "This message will be removed from this device.",
+            preferredStyle: .alert
+        )
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        cancelAction.setValue("chat.cancelMessageAction", forKey: "accessibilityIdentifier")
+        let deleteAction = UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            self?.viewModel.delete(messageID: messageID)
+        }
+        deleteAction.setValue("chat.confirmDeleteMessage", forKey: "accessibilityIdentifier")
+
+        alertController.addAction(cancelAction)
+        alertController.addAction(deleteAction)
+        present(alertController, animated: true)
+    }
+
+    private func confirmRevoke(messageID: MessageID) {
+        let alertController = UIAlertController(
+            title: "Revoke Message?",
+            message: "Everyone in this local conversation will see a revoke notice.",
+            preferredStyle: .alert
+        )
+        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        cancelAction.setValue("chat.cancelMessageAction", forKey: "accessibilityIdentifier")
+        let revokeAction = UIAlertAction(title: "Revoke", style: .destructive) { [weak self] _ in
+            self?.viewModel.revoke(messageID: messageID)
+        }
+        revokeAction.setValue("chat.confirmRevokeMessage", forKey: "accessibilityIdentifier")
+
+        alertController.addAction(cancelAction)
+        alertController.addAction(revokeAction)
+        present(alertController, animated: true)
     }
 
     /// 绑定聊天状态变化

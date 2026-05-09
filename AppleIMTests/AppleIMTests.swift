@@ -3693,6 +3693,114 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewModelDeleteRemovesMessageRow() async throws {
+        let useCase = MessageActionStubChatUseCase(
+            initialRows: [
+                makeChatRow(id: "delete_keep", text: "Keep", sortSequence: 1),
+                makeChatRow(id: "delete_remove", text: "Remove", sortSequence: 2)
+            ]
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Delete")
+
+        viewModel.load()
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+        viewModel.delete(messageID: "delete_remove")
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["delete_keep"]
+            }
+        }
+
+        #expect(useCase.deletedMessageIDs == ["delete_remove"])
+        #expect(viewModel.currentState.phase == .loaded)
+    }
+
+    @MainActor
+    @Test func chatViewModelRevokeReloadsRevokedMessageRow() async throws {
+        let useCase = MessageActionStubChatUseCase(
+            initialRows: [
+                makeChatRow(id: "revoke_message", text: "Secret", sortSequence: 1)
+            ],
+            revokedRows: [
+                makeRevokedChatRow(id: "revoke_message", text: "你撤回了一条消息", sortSequence: 1)
+            ]
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Revoke")
+
+        viewModel.load()
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.first?.content == .text("Secret")
+            }
+        }
+        viewModel.revoke(messageID: "revoke_message")
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.first?.content == .revoked("你撤回了一条消息")
+            }
+        }
+
+        #expect(useCase.revokedMessageIDs == ["revoke_message"])
+        #expect(viewModel.currentState.phase == .loaded)
+    }
+
+    @MainActor
+    @Test func chatViewModelDeleteFailureKeepsRowsAndReportsFailure() async throws {
+        let useCase = MessageActionStubChatUseCase(
+            initialRows: [
+                makeChatRow(id: "delete_failure_message", text: "Still here", sortSequence: 1)
+            ],
+            deleteError: TestChatError.messageActionFailed
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Delete Failure")
+
+        viewModel.load()
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["delete_failure_message"]
+            }
+        }
+        viewModel.delete(messageID: "delete_failure_message")
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.phase == .failed("Unable to delete message")
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["delete_failure_message"])
+    }
+
+    @MainActor
+    @Test func chatViewModelRevokeFailureKeepsRowsAndReportsFailure() async throws {
+        let useCase = MessageActionStubChatUseCase(
+            initialRows: [
+                makeChatRow(id: "revoke_failure_message", text: "Still secret", sortSequence: 1)
+            ],
+            revokeError: TestChatError.messageActionFailed
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Revoke Failure")
+
+        viewModel.load()
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.first?.content == .text("Still secret")
+            }
+        }
+        viewModel.revoke(messageID: "revoke_failure_message")
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.phase == .failed("Unable to revoke message")
+            }
+        }
+
+        #expect(viewModel.currentState.rows.first?.content == .text("Still secret"))
+    }
+
+    @MainActor
     @Test func chatViewModelAppendsImageRowAfterSendingImage() async throws {
         let useCase = ImageSendingStubChatUseCase()
         let viewModel = ChatViewModel(useCase: useCase, title: "Images")
@@ -6099,6 +6207,89 @@ private final class RecoveringPagingStubChatUseCase: @unchecked Sendable, ChatUs
     func revoke(messageID: MessageID) async throws {}
 }
 
+private final class MessageActionStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialRows: [ChatMessageRowState]
+    private let revokedRows: [ChatMessageRowState]
+    private let deleteError: TestChatError?
+    private let revokeError: TestChatError?
+    private var didRevoke = false
+    private(set) var deletedMessageIDs: [MessageID] = []
+    private(set) var revokedMessageIDs: [MessageID] = []
+
+    init(
+        initialRows: [ChatMessageRowState],
+        revokedRows: [ChatMessageRowState]? = nil,
+        deleteError: TestChatError? = nil,
+        revokeError: TestChatError? = nil
+    ) {
+        self.initialRows = initialRows
+        self.revokedRows = revokedRows ?? initialRows
+        self.deleteError = deleteError
+        self.revokeError = revokeError
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(
+            rows: didRevoke ? revokedRows : initialRows,
+            hasMore: false,
+            nextBeforeSortSequence: nil
+        )
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {
+        if let deleteError {
+            throw deleteError
+        }
+        deletedMessageIDs.append(messageID)
+    }
+
+    func revoke(messageID: MessageID) async throws {
+        if let revokeError {
+            throw revokeError
+        }
+        didRevoke = true
+        revokedMessageIDs.append(messageID)
+    }
+}
+
 private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private(set) var sentImageCount = 0
 
@@ -6342,6 +6533,7 @@ private final class VoicePlaybackStubChatUseCase: @unchecked Sendable, ChatUseCa
 
 private enum TestChatError: Error {
     case paginationFailed
+    case messageActionFailed
 }
 
 private extension ChatUseCase {
@@ -6362,6 +6554,21 @@ private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> Ch
     ChatMessageRowState(
         id: id,
         content: .text(text),
+        sortSequence: sortSequence,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: true,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false
+    )
+}
+
+private func makeRevokedChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        content: .revoked(text),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
