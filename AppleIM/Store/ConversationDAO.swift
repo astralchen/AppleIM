@@ -101,7 +101,7 @@ nonisolated struct ConversationDAO: Sendable {
                 created_at
             FROM conversation
             WHERE user_id = ? AND is_hidden = 0
-            ORDER BY is_pinned DESC, sort_ts DESC;
+            ORDER BY is_pinned DESC, sort_ts DESC, conversation_id DESC;
             """,
             parameters: [.text(userID.rawValue)],
             paths: paths
@@ -112,15 +112,40 @@ nonisolated struct ConversationDAO: Sendable {
 
     /// 分页查询会话列表
     ///
-    /// 按置顶和排序时间戳降序排列，不包含隐藏的会话。用于会话列表首屏和滚动分页，避免一次性加载大批量会话。
+    /// 按置顶、排序时间戳和会话 ID 降序排列，不包含隐藏的会话。使用游标分页避免新消息插入导致分页漂移。
     ///
     /// - Parameters:
     ///   - userID: 用户 ID
     ///   - limit: 查询数量
-    ///   - offset: 偏移数量
+    ///   - cursor: 上一页最后一条会话的排序游标
     /// - Returns: 会话记录数组
     /// - Throws: 数据库查询失败时抛出错误
-    func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [ConversationRecord] {
+    func listConversations(for userID: UserID, limit: Int, after cursor: ConversationPageCursor?) async throws -> [ConversationRecord] {
+        let cursorPredicate: String
+        var parameters: [SQLiteValue] = [.text(userID.rawValue)]
+        if let cursor {
+            cursorPredicate = """
+
+                AND (
+                    is_pinned < ?
+                    OR (is_pinned = ? AND sort_ts < ?)
+                    OR (is_pinned = ? AND sort_ts = ? AND conversation_id < ?)
+                )
+            """
+            let pinnedValue: Int64 = cursor.isPinned ? 1 : 0
+            parameters.append(contentsOf: [
+                .integer(pinnedValue),
+                .integer(pinnedValue),
+                .integer(cursor.sortTimestamp),
+                .integer(pinnedValue),
+                .integer(cursor.sortTimestamp),
+                .text(cursor.conversationID.rawValue)
+            ])
+        } else {
+            cursorPredicate = ""
+        }
+        parameters.append(.integer(Int64(max(limit, 0))))
+
         let rows = try await database.query(
             """
             SELECT
@@ -142,15 +167,11 @@ nonisolated struct ConversationDAO: Sendable {
                 updated_at,
                 created_at
             FROM conversation
-            WHERE user_id = ? AND is_hidden = 0
-            ORDER BY is_pinned DESC, sort_ts DESC
-            LIMIT ? OFFSET ?;
+            WHERE user_id = ? AND is_hidden = 0\(cursorPredicate)
+            ORDER BY is_pinned DESC, sort_ts DESC, conversation_id DESC
+            LIMIT ?;
             """,
-            parameters: [
-                .text(userID.rawValue),
-                .integer(Int64(max(limit, 0))),
-                .integer(Int64(max(offset, 0)))
-            ],
+            parameters: parameters,
             paths: paths
         )
 

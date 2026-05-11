@@ -31,8 +31,8 @@ final class ConversationListViewModel {
     private var settingTask: Task<Void, Never>?
     /// 模拟收消息任务集合
     private var simulationTasks: [UUID: Task<Void, Never>] = [:]
-    /// 下一页偏移量
-    private var nextOffset = 0
+    /// 下一页分页游标
+    private var nextCursor: ConversationPageCursor?
     /// 首屏加载代次，用于忽略已取消的旧任务回调
     private var loadGeneration = 0
 
@@ -95,7 +95,7 @@ final class ConversationListViewModel {
 
         loadTask?.cancel()
         loadMoreTask?.cancel()
-        nextOffset = 0
+        nextCursor = nil
         let startUptime = ProcessInfo.processInfo.systemUptime
         diagnostics.log(
             "ConversationList initial load started generation=\(currentGeneration) pageSize=\(pageSize) showLoading=\(showLoading)"
@@ -118,7 +118,7 @@ final class ConversationListViewModel {
             guard let self else { return }
 
             do {
-                let page = try await useCase.loadConversationPage(limit: pageSize, offset: 0)
+                let page = try await useCase.loadConversationPage(limit: pageSize, after: nil)
                 guard !Task.isCancelled, loadGeneration == currentGeneration else { return }
                 let elapsed = AppLogger.elapsedMilliseconds(since: startUptime)
 
@@ -128,7 +128,7 @@ final class ConversationListViewModel {
                     state.hasMoreRows = page.hasMore
                     state.isLoadingMore = false
                 }
-                nextOffset = page.rows.count
+                nextCursor = page.nextCursor
                 loadTask = nil
                 diagnostics.log(
                     "ConversationList initial load completed generation=\(currentGeneration) rows=\(page.rows.count) hasMore=\(page.hasMore) elapsed=\(elapsed)"
@@ -181,21 +181,22 @@ final class ConversationListViewModel {
             state.isLoadingMore = true
         }
 
-        let offset = nextOffset
+        let cursor = nextCursor
         loadMoreTask = Task { [weak self] in
             guard let self else { return }
 
             do {
-                let page = try await useCase.loadConversationPage(limit: pageSize, offset: offset)
+                let page = try await useCase.loadConversationPage(limit: pageSize, after: cursor)
                 guard !Task.isCancelled else { return }
 
                 publish { state in
                     state.phase = .loaded
-                    state.rows.append(contentsOf: page.rows)
+                    let existingIDs = Set(state.rows.map(\.id))
+                    state.rows.append(contentsOf: page.rows.filter { !existingIDs.contains($0.id) })
                     state.hasMoreRows = page.hasMore
                     state.isLoadingMore = false
                 }
-                nextOffset = offset + page.rows.count
+                nextCursor = page.nextCursor
                 loadMoreTask = nil
             } catch is CancellationError {
                 return

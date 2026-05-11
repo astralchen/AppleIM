@@ -106,6 +106,8 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
     let isMuted: Bool
     /// 草稿文本
     let draftText: String?
+    /// 排序时间戳
+    let sortTimestamp: Int64
     /// 是否有未读 @ 当前用户提示
     let hasUnreadMention: Bool
 
@@ -120,6 +122,7 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
         isPinned: Bool,
         isMuted: Bool,
         draftText: String?,
+        sortTimestamp: Int64 = 0,
         hasUnreadMention: Bool = false
     ) {
         self.id = id
@@ -132,6 +135,7 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
         self.isPinned = isPinned
         self.isMuted = isMuted
         self.draftText = draftText
+        self.sortTimestamp = sortTimestamp
         self.hasUnreadMention = hasUnreadMention
     }
 }

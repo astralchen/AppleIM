@@ -136,11 +136,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     /// - Parameters:
     ///   - userID: 用户 ID
     ///   - limit: 每页数量
-    ///   - offset: 偏移量
+    ///   - cursor: 上一页最后一条会话的排序游标
     /// - Returns: 会话列表
     /// - Throws: 数据库查询错误
-    func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [Conversation] {
-        let records = try await conversationDAO.listConversations(for: userID, limit: limit, offset: offset)
+    func listConversations(for userID: UserID, limit: Int, after cursor: ConversationPageCursor?) async throws -> [Conversation] {
+        let records = try await conversationDAO.listConversations(for: userID, limit: limit, after: cursor)
         let extras = try await conversationExtras(conversationIDs: records.map(\.id))
         return records.map { Self.conversation(from: $0, extra: extras[$0.id]) }
     }
@@ -1586,6 +1586,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             isPinned: record.isPinned,
             isMuted: record.isMuted,
             draftText: record.draftText,
+            sortTimestamp: record.sortTimestamp,
             hasUnreadMention: extra?.hasUnreadMention == true
         )
     }

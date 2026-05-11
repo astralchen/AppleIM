@@ -102,6 +102,40 @@ nonisolated struct ConversationRecord: Equatable, Sendable {
     let createdAt: Int64
 }
 
+/// 会话列表分页游标。
+///
+/// 使用与会话列表一致的排序键，避免新消息或置顶变更导致 offset 分页窗口漂移。
+nonisolated struct ConversationPageCursor: Equatable, Sendable {
+    /// 是否置顶
+    let isPinned: Bool
+    /// 排序时间戳
+    let sortTimestamp: Int64
+    /// 会话 ID，作为相同时间戳下的稳定排序兜底
+    let conversationID: ConversationID
+
+    init(isPinned: Bool, sortTimestamp: Int64, conversationID: ConversationID) {
+        self.isPinned = isPinned
+        self.sortTimestamp = sortTimestamp
+        self.conversationID = conversationID
+    }
+
+    init(record: ConversationRecord) {
+        self.init(
+            isPinned: record.isPinned,
+            sortTimestamp: record.sortTimestamp,
+            conversationID: record.id
+        )
+    }
+
+    init(conversation: Conversation) {
+        self.init(
+            isPinned: conversation.isPinned,
+            sortTimestamp: conversation.sortTimestamp,
+            conversationID: conversation.id
+        )
+    }
+}
+
 /// 发出的文本消息输入参数
 nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
     /// 用户 ID
@@ -891,7 +925,7 @@ protocol ConversationRepository: Sendable {
     /// 查询会话列表
     func listConversations(for userID: UserID) async throws -> [Conversation]
     /// 分页查询会话列表
-    func listConversations(for userID: UserID, limit: Int, offset: Int) async throws -> [Conversation]
+    func listConversations(for userID: UserID, limit: Int, after cursor: ConversationPageCursor?) async throws -> [Conversation]
     /// 插入或更新会话
     func upsertConversation(_ record: ConversationRecord) async throws
     /// 标记会话已读

@@ -48,6 +48,24 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func conversationListViewModelContinuesAfterCursorWhenNewConversationMovesAhead() async throws {
+        let viewModel = ConversationListViewModel(useCase: CursorShiftConversationListUseCase(), pageSize: 2)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.rows.map(\.id.rawValue) == ["shift_3", "shift_2"]
+        }
+
+        viewModel.loadNextPageIfNeeded(visibleRowID: "shift_2")
+        try await waitForCondition {
+            viewModel.currentState.rows.count == 3
+        }
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["shift_3", "shift_2", "shift_1"])
+        #expect(viewModel.currentState.hasMoreRows == false)
+    }
+
+    @MainActor
     @Test func conversationListViewModelRefreshesAfterPinAndMuteChanges() async throws {
         let useCase = MutableConversationListUseCase()
         let viewModel = ConversationListViewModel(useCase: useCase)
@@ -1352,7 +1370,7 @@ struct AppleIMTests {
         #expect(records.map(\.id.rawValue) == ["pinned_old", "normal_new", "normal_old"])
     }
 
-    @Test func conversationDAOPagesVisibleConversationsInSortOrder() async throws {
+    @Test func conversationDAOPagesVisibleConversationsAfterCursorWhenNewConversationMovesAhead() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -1361,15 +1379,39 @@ struct AppleIMTests {
         let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "paged_user")
         let dao = ConversationDAO(database: databaseActor, paths: paths)
 
+        try await dao.upsert(makeConversationRecord(id: "normal_older", userID: "paged_user", title: "Older", sortTimestamp: 10))
         try await dao.upsert(makeConversationRecord(id: "normal_old", userID: "paged_user", title: "Old", sortTimestamp: 10))
         try await dao.upsert(makeConversationRecord(id: "normal_new", userID: "paged_user", title: "New", sortTimestamp: 30))
         try await dao.upsert(makeConversationRecord(id: "pinned_old", userID: "paged_user", title: "Pinned", isPinned: true, sortTimestamp: 20))
 
-        let firstPage = try await dao.listConversations(for: "paged_user", limit: 2, offset: 0)
-        let secondPage = try await dao.listConversations(for: "paged_user", limit: 2, offset: 2)
+        let firstPage = try await dao.listConversations(for: "paged_user", limit: 2, after: nil)
+        try await dao.upsert(makeConversationRecord(id: "new_arrival", userID: "paged_user", title: "New Arrival", sortTimestamp: 100))
+        let cursor = ConversationPageCursor(record: try #require(firstPage.last))
+        let secondPage = try await dao.listConversations(for: "paged_user", limit: 2, after: cursor)
 
         #expect(firstPage.map(\.id.rawValue) == ["pinned_old", "normal_new"])
-        #expect(secondPage.map(\.id.rawValue) == ["normal_old"])
+        #expect(secondPage.map(\.id.rawValue) == ["normal_older", "normal_old"])
+    }
+
+    @Test func conversationDAOPagesEqualSortTimestampByConversationIDDescending() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "tie_user")
+        let dao = ConversationDAO(database: databaseActor, paths: paths)
+
+        try await dao.upsert(makeConversationRecord(id: "same_a", userID: "tie_user", title: "A", sortTimestamp: 10))
+        try await dao.upsert(makeConversationRecord(id: "same_c", userID: "tie_user", title: "C", sortTimestamp: 10))
+        try await dao.upsert(makeConversationRecord(id: "same_b", userID: "tie_user", title: "B", sortTimestamp: 10))
+
+        let firstPage = try await dao.listConversations(for: "tie_user", limit: 2, after: nil)
+        let cursor = ConversationPageCursor(record: try #require(firstPage.last))
+        let secondPage = try await dao.listConversations(for: "tie_user", limit: 2, after: cursor)
+
+        #expect(firstPage.map(\.id.rawValue) == ["same_c", "same_b"])
+        #expect(secondPage.map(\.id.rawValue) == ["same_a"])
     }
 
     @Test func conversationDAOFirstPageLoadsOneThousandConversationsUnderBudget() async throws {
@@ -1395,7 +1437,7 @@ struct AppleIMTests {
         }
 
         let startedAt = Date()
-        let firstPage = try await dao.listConversations(for: "scale_user", limit: 50, offset: 0)
+        let firstPage = try await dao.listConversations(for: "scale_user", limit: 50, after: nil)
         let elapsed = Date().timeIntervalSince(startedAt)
 
         #expect(firstPage.count == 50)
@@ -2656,8 +2698,8 @@ struct AppleIMTests {
         )
         let useCase = LocalConversationListUseCase(userID: "paged_usecase_user", storeProvider: storeProvider)
 
-        let firstPage = try await useCase.loadConversationPage(limit: 2, offset: 0)
-        let secondPage = try await useCase.loadConversationPage(limit: 2, offset: 2)
+        let firstPage = try await useCase.loadConversationPage(limit: 2, after: nil)
+        let secondPage = try await useCase.loadConversationPage(limit: 2, after: firstPage.nextCursor)
 
         #expect(firstPage.rows.count == 2)
         #expect(firstPage.hasMore)
@@ -7217,14 +7259,18 @@ private struct StubConversationListUseCase: ConversationListUseCase {
         ]
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         let rows = try await loadConversations()
         let requestedLimit = max(limit, 0)
-        let pageRows = Array(rows.dropFirst(offset).prefix(requestedLimit))
+        let startIndex = cursor
+            .flatMap { cursor in rows.firstIndex { $0.id == cursor.conversationID } }
+            .map { rows.index(after: $0) } ?? rows.startIndex
+        let pageRows = Array(rows[startIndex...].prefix(requestedLimit))
 
         return ConversationListPage(
             rows: pageRows,
-            hasMore: offset + pageRows.count < rows.count
+            hasMore: startIndex + pageRows.count < rows.count,
+            nextCursor: pageRows.last.map { ConversationPageCursor(isPinned: $0.isPinned, sortTimestamp: 0, conversationID: $0.id) }
         )
     }
 
@@ -7250,13 +7296,94 @@ private struct PagedConversationListUseCase: ConversationListUseCase {
         rows
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         let requestedLimit = max(limit, 0)
-        let pageRows = Array(rows.dropFirst(offset).prefix(requestedLimit))
+        let startIndex = cursor
+            .flatMap { cursor in rows.firstIndex { $0.id == cursor.conversationID } }
+            .map { rows.index(after: $0) } ?? rows.startIndex
+        let pageRows = Array(rows[startIndex...].prefix(requestedLimit))
 
         return ConversationListPage(
             rows: pageRows,
-            hasMore: offset + pageRows.count < rows.count
+            hasMore: startIndex + pageRows.count < rows.count,
+            nextCursor: pageRows.last.map { ConversationPageCursor(isPinned: $0.isPinned, sortTimestamp: 0, conversationID: $0.id) }
+        )
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+}
+
+private actor CursorShiftConversationListUseCase: ConversationListUseCase {
+    private var didLoadFirstPage = false
+    private let originalRows: [ConversationListRowState] = [
+        ConversationListRowState(
+            id: "shift_3",
+            title: "Shift 3",
+            subtitle: "Initial newest",
+            timeText: "Now",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        ),
+        ConversationListRowState(
+            id: "shift_2",
+            title: "Shift 2",
+            subtitle: "Initial cursor",
+            timeText: "Now",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        ),
+        ConversationListRowState(
+            id: "shift_1",
+            title: "Shift 1",
+            subtitle: "Older row",
+            timeText: "Now",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        )
+    ]
+
+    private var shiftedRows: [ConversationListRowState] {
+        [
+            ConversationListRowState(
+                id: "shift_new",
+                title: "Shift New",
+                subtitle: "Inserted ahead of the cursor",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        ] + originalRows
+    }
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        originalRows
+    }
+
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
+        let allRows: [ConversationListRowState]
+        if cursor == nil {
+            didLoadFirstPage = true
+            allRows = originalRows
+        } else {
+            #expect(didLoadFirstPage)
+            allRows = shiftedRows
+        }
+
+        let startIndex = cursor
+            .flatMap { cursor in allRows.firstIndex { $0.id == cursor.conversationID } }
+            .map { allRows.index(after: $0) } ?? allRows.startIndex
+        let pageRows = Array(allRows[startIndex...].prefix(max(limit, 0)))
+
+        return ConversationListPage(
+            rows: pageRows,
+            hasMore: startIndex + pageRows.count < allRows.count,
+            nextCursor: pageRows.last.map { ConversationPageCursor(isPinned: $0.isPinned, sortTimestamp: 0, conversationID: $0.id) }
         )
     }
 
@@ -7280,10 +7407,17 @@ private actor MutableConversationListUseCase: ConversationListUseCase {
         [row]
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         let allRows = try await loadConversations()
-        let rows = Array(allRows.dropFirst(offset).prefix(max(limit, 0)))
-        return ConversationListPage(rows: rows, hasMore: false)
+        let startIndex = cursor
+            .flatMap { cursor in allRows.firstIndex { $0.id == cursor.conversationID } }
+            .map { allRows.index(after: $0) } ?? allRows.startIndex
+        let rows = Array(allRows[startIndex...].prefix(max(limit, 0)))
+        return ConversationListPage(
+            rows: rows,
+            hasMore: false,
+            nextCursor: rows.last.map { ConversationPageCursor(isPinned: $0.isPinned, sortTimestamp: 0, conversationID: $0.id) }
+        )
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {
@@ -7317,24 +7451,26 @@ private actor CountingConversationListUseCase: ConversationListUseCase {
     private(set) var loadPageCallCount = 0
 
     func loadConversations() async throws -> [ConversationListRowState] {
-        try await loadConversationPage(limit: 50, offset: 0).rows
+        try await loadConversationPage(limit: 50, after: nil).rows
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         loadPageCallCount += 1
+        let rows = [
+            ConversationListRowState(
+                id: "counting_conversation",
+                title: "Counting Conversation",
+                subtitle: "Loaded once",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        ]
         return ConversationListPage(
-            rows: [
-                ConversationListRowState(
-                    id: "counting_conversation",
-                    title: "Counting Conversation",
-                    subtitle: "Loaded once",
-                    timeText: "Now",
-                    unreadText: nil,
-                    isPinned: false,
-                    isMuted: false
-                )
-            ],
-            hasMore: false
+            rows: rows,
+            hasMore: false,
+            nextCursor: rows.last.map { ConversationPageCursor(isPinned: $0.isPinned, sortTimestamp: 0, conversationID: $0.id) }
         )
     }
 
@@ -7347,26 +7483,24 @@ private actor ReadClearingConversationListUseCase: ConversationListUseCase {
     private(set) var loadPageCallCount = 0
 
     func loadConversations() async throws -> [ConversationListRowState] {
-        try await loadConversationPage(limit: 50, offset: 0).rows
+        try await loadConversationPage(limit: 50, after: nil).rows
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         loadPageCallCount += 1
         let unreadText = loadPageCallCount == 1 ? "2" : nil
-        return ConversationListPage(
-            rows: [
-                ConversationListRowState(
-                    id: "read_clearing_conversation",
-                    title: "Read Clearing",
-                    subtitle: "Tap to read",
-                    timeText: "Now",
-                    unreadText: unreadText,
-                    isPinned: false,
-                    isMuted: false
-                )
-            ],
-            hasMore: false
-        )
+        let rows = [
+            ConversationListRowState(
+                id: "read_clearing_conversation",
+                title: "Read Clearing",
+                subtitle: "Tap to read",
+                timeText: "Now",
+                unreadText: unreadText,
+                isPinned: false,
+                isMuted: false
+            )
+        ]
+        return makeConversationListPage(rows: rows, limit: limit, after: cursor)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7388,13 +7522,12 @@ private actor SimulatingConversationListUseCase: ConversationListUseCase {
     private(set) var simulateIncomingCallCount = 0
 
     func loadConversations() async throws -> [ConversationListRowState] {
-        try await loadConversationPage(limit: 50, offset: 0).rows
+        try await loadConversationPage(limit: 50, after: nil).rows
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         loadPageCallCount += 1
-        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
-        return ConversationListPage(rows: pageRows, hasMore: false)
+        return makeConversationListPage(rows: [row], limit: limit, after: cursor)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7432,12 +7565,11 @@ private actor ExternalConversationChangeUseCase: ConversationListUseCase {
     )
 
     func loadConversations() async throws -> [ConversationListRowState] {
-        try await loadConversationPage(limit: 50, offset: 0).rows
+        try await loadConversationPage(limit: 50, after: nil).rows
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
-        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
-        return ConversationListPage(rows: pageRows, hasMore: false)
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
+        makeConversationListPage(rows: [row], limit: limit, after: cursor)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7471,17 +7603,16 @@ private actor ImmediateResultSlowRefreshConversationListUseCase: ConversationLis
     private(set) var simulateIncomingCallCount = 0
 
     func loadConversations() async throws -> [ConversationListRowState] {
-        try await loadConversationPage(limit: 50, offset: 0).rows
+        try await loadConversationPage(limit: 50, after: nil).rows
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         loadPageCallCount += 1
         if loadPageCallCount > 1 {
             try await Task.sleep(nanoseconds: 1_000_000_000)
         }
 
-        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
-        return ConversationListPage(rows: pageRows, hasMore: false)
+        return makeConversationListPage(rows: [row], limit: limit, after: cursor)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7523,9 +7654,8 @@ private actor DelayedSimulatingConversationListUseCase: ConversationListUseCase 
         [row]
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
-        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
-        return ConversationListPage(rows: pageRows, hasMore: false)
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
+        makeConversationListPage(rows: [row], limit: limit, after: cursor)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7567,10 +7697,9 @@ private struct FailingSimulationConversationListUseCase: ConversationListUseCase
         ]
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         let rows = try await loadConversations()
-        let pageRows = Array(rows.dropFirst(offset).prefix(max(limit, 0)))
-        return ConversationListPage(rows: pageRows, hasMore: false)
+        return makeConversationListPage(rows: rows, limit: limit, after: cursor)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7587,8 +7716,8 @@ private struct EmptySimulationConversationListUseCase: ConversationListUseCase {
         []
     }
 
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
-        ConversationListPage(rows: [], hasMore: false)
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
+        ConversationListPage(rows: [], hasMore: false, nextCursor: nil)
     }
 
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
@@ -7598,6 +7727,25 @@ private struct EmptySimulationConversationListUseCase: ConversationListUseCase {
     func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
         nil
     }
+}
+
+private func makeConversationListPage(
+    rows: [ConversationListRowState],
+    limit: Int,
+    after cursor: ConversationPageCursor?
+) -> ConversationListPage {
+    let startIndex = cursor
+        .flatMap { cursor in rows.firstIndex { $0.id == cursor.conversationID } }
+        .map { rows.index(after: $0) } ?? rows.startIndex
+    let pageRows = Array(rows[startIndex...].prefix(max(limit, 0)))
+
+    return ConversationListPage(
+        rows: pageRows,
+        hasMore: startIndex + pageRows.count < rows.count,
+        nextCursor: pageRows.last.map {
+            ConversationPageCursor(isPinned: $0.isPinned, sortTimestamp: 0, conversationID: $0.id)
+        }
+    )
 }
 
 private final class ConversationListLoadingDiagnosticsSpy: ConversationListLoadingDiagnostics, @unchecked Sendable {
