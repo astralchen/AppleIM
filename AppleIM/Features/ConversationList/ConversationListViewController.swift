@@ -58,6 +58,10 @@ final class ConversationListViewController: UIViewController {
     private var lastSearchState = SearchViewState()
     /// 是否已上报首次加载结束
     private var didReportInitialLoadFinished = false
+    /// 页面离开后再次出现时刷新列表，避免已读、同步等后台变化滞后
+    private var shouldRefreshOnNextAppear = false
+    /// 页面当前是否处于可见生命周期内
+    private var isVisible = false
 
     /// 会话列表 collection view
     private lazy var collectionView = UICollectionView(
@@ -99,18 +103,27 @@ final class ConversationListViewController: UIViewController {
         configureView()
         configureDataSource()
         bindViewModel()
+        bindConversationStoreNotifications()
     }
 
     /// 页面出现时触发会话加载
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        isVisible = true
         navigationController?.navigationBar.prefersLargeTitles = true
-        viewModel.loadIfNeeded()
+        if shouldRefreshOnNextAppear {
+            shouldRefreshOnNextAppear = false
+            viewModel.refresh()
+        } else {
+            viewModel.loadIfNeeded()
+        }
     }
 
     /// 页面消失时取消会话和搜索任务
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        isVisible = false
+        shouldRefreshOnNextAppear = true
         viewModel.cancel()
         searchViewModel.cancel()
     }
@@ -143,16 +156,17 @@ final class ConversationListViewController: UIViewController {
         accountButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         navigationItem.leftBarButtonItem = UIBarButtonItem(customView: accountButton)
 
-        let composeButton = UIButton(type: .system)
-        var composeConfiguration = UIButton.Configuration.plain()
-        composeConfiguration.image = UIImage(systemName: "square.and.pencil")
-        composeConfiguration.baseForegroundColor = .systemBlue
-        composeConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
-        composeButton.configuration = composeConfiguration
-        composeButton.accessibilityIdentifier = "conversationList.composeButton"
-        composeButton.accessibilityLabel = "New Message"
-        composeButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
-        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: composeButton)
+        let simulateIncomingButton = UIButton(type: .system)
+        var simulateIncomingConfiguration = UIButton.Configuration.plain()
+        simulateIncomingConfiguration.image = UIImage(systemName: "text.bubble")
+        simulateIncomingConfiguration.baseForegroundColor = .systemBlue
+        simulateIncomingConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
+        simulateIncomingButton.configuration = simulateIncomingConfiguration
+        simulateIncomingButton.accessibilityIdentifier = "conversationList.simulateIncomingButton"
+        simulateIncomingButton.accessibilityLabel = "模拟接收消息"
+        simulateIncomingButton.addTarget(self, action: #selector(simulateIncomingButtonTapped), for: .touchUpInside)
+        simulateIncomingButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+        navigationItem.rightBarButtonItem = UIBarButtonItem(customView: simulateIncomingButton)
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
@@ -261,6 +275,17 @@ final class ConversationListViewController: UIViewController {
                 } else {
                     self?.renderConversations(self?.lastConversationState ?? ConversationListViewState())
                 }
+            }
+            .store(in: &cancellables)
+    }
+
+    /// 监听仓储层会话变更，保持列表停留时的未读数与摘要同步。
+    private func bindConversationStoreNotifications() {
+        NotificationCenter.default.publisher(for: .chatStoreConversationsDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self, isVisible else { return }
+                viewModel.refresh()
             }
             .store(in: &cancellables)
     }
@@ -535,6 +560,11 @@ final class ConversationListViewController: UIViewController {
         present(alertController, animated: true)
     }
 
+    /// 触发会话列表模拟收消息。
+    @objc private func simulateIncomingButtonTapped() {
+        viewModel.simulateIncomingMessages()
+    }
+
     /// 二次确认当前账号本地数据删除。
     private func presentDeleteLocalDataConfirmation() {
         let presentConfirmation = { [weak self] in
@@ -585,11 +615,13 @@ extension ConversationListViewController: UICollectionViewDelegate {
                 let searchRow = searchRowsByID[rowID],
                 let conversation = conversationRow(for: searchRow)
             {
+                viewModel.markConversationReadLocally(conversationID: conversation.id)
                 onSelectConversation(conversation)
             }
             return
         }
 
+        viewModel.markConversationReadLocally(conversationID: row.id)
         onSelectConversation(row)
     }
 

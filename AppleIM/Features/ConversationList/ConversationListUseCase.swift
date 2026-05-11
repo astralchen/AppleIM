@@ -15,6 +15,16 @@ nonisolated struct ConversationListPage: Equatable, Sendable {
     let hasMore: Bool
 }
 
+/// 会话列表模拟收消息结果
+nonisolated struct ConversationListSimulationResult: Equatable, Sendable {
+    /// 收到模拟消息的会话 ID
+    let conversationID: ConversationID
+    /// 本次插入的模拟消息数量
+    let messageCount: Int
+    /// 模拟写入后该会话的最终行状态
+    let finalRow: ConversationListRowState
+}
+
 /// 会话列表用例协议
 protocol ConversationListUseCase: Sendable {
     /// 加载会话列表
@@ -44,10 +54,33 @@ protocol ConversationListUseCase: Sendable {
     ///   - isMuted: 是否免打扰
     /// - Throws: 更新错误
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws
+    /// 模拟从随机会话收到若干条 incoming 文本消息。
+    ///
+    /// - Returns: 模拟结果；如果当前没有会话则返回 nil。
+    /// - Throws: 存储访问错误
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult?
+}
+
+extension ConversationListUseCase {
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        nil
+    }
 }
 
 /// 本地会话列表用例实现
 nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
+    /// 模拟接收消息使用的固定发送者 ID
+    private static let simulatedIncomingSenderID = UserID(rawValue: "__chatbridge_simulated_list_peer__")
+    /// 单次模拟最少消息数
+    private static let simulatedIncomingMessageCountRange = 1...5
+    /// 模拟接收消息候选文本
+    private static let simulatedIncomingTextSamples = [
+        "模拟收到一条会话列表消息",
+        "对方发来新的列表测试消息",
+        "这是一条列表入口生成的同步消息",
+        "收到随机会话的新消息",
+        "会话列表应立即刷新这条模拟消息"
+    ]
     /// 用户 ID
     private let userID: UserID
     /// 存储提供者
@@ -149,6 +182,59 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         try await repository.updateConversationMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
     }
 
+    /// 从当前会话中随机选择一个，模拟同步写入 1...5 条 incoming 文本消息。
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        let repository = try await storeProvider.repository()
+        let conversations = try await repository.listConversations(for: userID)
+        guard let selectedConversation = conversations.randomElement() else {
+            return nil
+        }
+
+        let latestMessage = try await repository.listMessages(
+            conversationID: selectedConversation.id,
+            limit: 1,
+            beforeSortSeq: nil
+        ).first
+        let messageCount = Int.random(in: Self.simulatedIncomingMessageCountRange)
+        let baseSequence = max((latestMessage?.sortSequence ?? 0) + 1, Self.currentTimestamp())
+        let batchToken = UUID().uuidString
+        let messages = (0..<messageCount).map { index in
+            let sequence = baseSequence + Int64(index)
+            let messageToken = "\(batchToken)_\(index)"
+            let messageID = MessageID(rawValue: "simulated_list_incoming_\(messageToken)")
+
+            return IncomingSyncMessage(
+                messageID: messageID,
+                conversationID: selectedConversation.id,
+                senderID: Self.simulatedIncomingSenderID,
+                serverMessageID: "server_\(messageID.rawValue)",
+                sequence: sequence,
+                text: Self.simulatedIncomingText(messageToken: messageToken),
+                serverTime: sequence,
+                direction: .incoming,
+                conversationTitle: selectedConversation.title,
+                conversationType: selectedConversation.type
+            )
+        }
+
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(messages: messages, nextCursor: nil, nextSequence: messages.last?.sequence),
+            userID: userID
+        )
+
+        let finalRow = Self.simulatedFinalRow(
+            from: selectedConversation,
+            latestMessage: messages[messages.count - 1],
+            unreadIncrement: messageCount
+        )
+
+        return ConversationListSimulationResult(
+            conversationID: selectedConversation.id,
+            messageCount: messageCount,
+            finalRow: finalRow
+        )
+    }
+
     /// 将会话列表转换为行状态
     ///
     /// - Parameter conversations: 会话列表
@@ -171,6 +257,46 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
                 isMuted: conversation.isMuted
             )
         }
+    }
+
+    private static func simulatedIncomingText(messageToken: String) -> String {
+        let sample = simulatedIncomingTextSamples.randomElement() ?? "模拟收到一条会话列表消息"
+        return "\(sample) #\(messageToken.prefix(6).lowercased())"
+    }
+
+    private static func simulatedFinalRow(
+        from conversation: Conversation,
+        latestMessage: IncomingSyncMessage,
+        unreadIncrement: Int
+    ) -> ConversationListRowState {
+        let mentionIndicatorText = conversation.hasUnreadMention ? "[有人@我]" : nil
+        let baseSubtitle = conversation.draftText.map { "Draft: \($0)" } ?? latestMessage.text
+        let subtitle = mentionIndicatorText.map { "\($0) \(baseSubtitle)" } ?? baseSubtitle
+        let unreadCount = conversation.unreadCount + unreadIncrement
+
+        return ConversationListRowState(
+            id: conversation.id,
+            title: conversation.title,
+            avatarURL: conversation.avatarURL,
+            subtitle: subtitle,
+            mentionIndicatorText: mentionIndicatorText,
+            timeText: timeText(from: latestMessage.serverTime),
+            unreadText: unreadCount > 0 ? "\(unreadCount)" : nil,
+            isPinned: conversation.isPinned,
+            isMuted: conversation.isMuted
+        )
+    }
+
+    private static func currentTimestamp() -> Int64 {
+        Int64(Date().timeIntervalSince1970)
+    }
+
+    private static func timeText(from timestamp: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
     }
 }
 

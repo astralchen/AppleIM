@@ -563,6 +563,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
 
         _ = try await syncStore.applyIncomingSyncBatch(batch, userID: userID)
+        try await conversationRepository?.markConversationRead(conversationID: conversationID, userID: userID)
         guard let storedMessage = try await repository.message(messageID: messageID) else {
             return nil
         }
