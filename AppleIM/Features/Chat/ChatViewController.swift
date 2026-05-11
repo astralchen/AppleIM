@@ -12,6 +12,42 @@ private let chatSection = "messages"
 /// 待发送语音预览播放使用的本地占位 ID，避免影响消息列表播放态
 private let pendingVoicePreviewMessageID = MessageID(rawValue: "__pending_voice_preview__")
 
+/// 串行化 diffable data source 快照 apply，避免 UIKit apply 队列重入。
+@MainActor
+final class ChatSnapshotRenderCoordinator<State> {
+    private var pendingState: State?
+    private(set) var isApplying = false
+
+    func apply(
+        _ state: State,
+        render: @escaping (_ state: State, _ completion: @escaping () -> Void) -> Void
+    ) {
+        if isApplying {
+            pendingState = state
+            return
+        }
+
+        isApplying = true
+        render(state) { [weak self] in
+            self?.complete(render: render)
+        }
+    }
+
+    private func complete(
+        render: @escaping (_ state: State, _ completion: @escaping () -> Void) -> Void
+    ) {
+        guard let pendingState else {
+            isApplying = false
+            return
+        }
+
+        self.pendingState = nil
+        render(pendingState) { [weak self] in
+            self?.complete(render: render)
+        }
+    }
+}
+
 /// 聊天页控制器
 @MainActor
 final class ChatViewController: UIViewController {
@@ -25,6 +61,8 @@ final class ChatViewController: UIViewController {
     private var rowsByID: [String: ChatMessageRowState] = [:]
     /// 最近一次渲染的消息行 ID 顺序
     private var lastRenderedRowIDs: [String] = []
+    /// 消息列表快照 apply 门控，防止 diffable data source 重入。
+    private let snapshotRenderCoordinator = ChatSnapshotRenderCoordinator<ChatViewState>()
     /// 语音按钮触摸是否仍处于按下状态
     private var isVoiceTouchActive = false
     /// 用户是否仍处于贴底阅读状态；composer 高度变化时用它维持最新消息可见
@@ -90,6 +128,7 @@ final class ChatViewController: UIViewController {
     /// 配置聊天页并加载首屏消息
     override func viewDidLoad() {
         super.viewDidLoad()
+        configureNavigationItem()
         configureView()
         configureDataSource()
         configureVoiceRecorder()
@@ -216,6 +255,24 @@ final class ChatViewController: UIViewController {
             photoLibraryInputBottomConstraint,
             photoLibraryInputHeightConstraint
         ])
+    }
+
+    /// 配置聊天页导航栏操作。
+    private func configureNavigationItem() {
+        let simulateIncomingButton = UIBarButtonItem(
+            image: UIImage(systemName: "message.fill"),
+            style: .plain,
+            target: self,
+            action: #selector(simulateIncomingTapped)
+        )
+        simulateIncomingButton.accessibilityIdentifier = "chat.simulateIncomingButton"
+        simulateIncomingButton.accessibilityLabel = "模拟接收消息"
+        navigationItem.rightBarButtonItem = simulateIncomingButton
+    }
+
+    /// 模拟接收一条对方消息。
+    @objc private func simulateIncomingTapped() {
+        viewModel.simulateIncomingMessage()
     }
 
     /// 绑定输入栏按钮和文本变化回调
@@ -674,6 +731,13 @@ final class ChatViewController: UIViewController {
             inputBarView.setText(state.draftText, animated: false)
         }
 
+        snapshotRenderCoordinator.apply(state) { [weak self] state, completion in
+            self?.renderMessageSnapshot(state, completion: completion) ?? completion()
+        }
+    }
+
+    /// 串行应用消息列表快照；调用方负责保证同一时间只有一次 apply 正在进行。
+    private func renderMessageSnapshot(_ state: ChatViewState, completion: @escaping () -> Void) {
         // 在应用新快照前记录旧列表状态，用于判断本次渲染属于首屏、上拉加载还是新消息追加。
         let previousRowsByID = rowsByID
         let previousRowIDs = lastRenderedRowIDs
@@ -697,7 +761,10 @@ final class ChatViewController: UIViewController {
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
         lastRenderedRowIDs = newRowIDs
 
-        guard let dataSource else { return }
+        guard let dataSource else {
+            completion()
+            return
+        }
 
         let snapshot = makeIncrementalSnapshot(
             dataSource: dataSource,
@@ -723,6 +790,8 @@ final class ChatViewController: UIViewController {
                 // 首屏、新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: !isInitialMessageRender)
             }
+
+            completion()
         }
     }
 
@@ -1059,6 +1128,8 @@ final class ChatViewController: UIViewController {
 extension ChatViewController: UICollectionViewDelegate {
     /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !snapshotRenderCoordinator.isApplying else { return }
+
         if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
             shouldMaintainBottomPosition = isNearBottom()
         }

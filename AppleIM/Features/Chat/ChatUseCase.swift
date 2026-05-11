@@ -91,6 +91,8 @@ protocol ChatUseCase: Sendable {
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 标记语音已播放
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState?
+    /// 模拟接收一条对方文本消息
+    func simulateIncomingTextMessage() async throws -> ChatMessageRowState?
     /// 重发消息
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 删除消息
@@ -111,6 +113,10 @@ extension ChatUseCase {
     func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement? {
         nil
     }
+
+    func simulateIncomingTextMessage() async throws -> ChatMessageRowState? {
+        nil
+    }
 }
 
 /// 本地聊天用例实现
@@ -119,6 +125,16 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private static let initialMessageLimit = 50
     /// 最短语音发送时长
     private static let minimumVoiceDurationMilliseconds = 1_000
+    /// 模拟对方发送文本消息使用的固定发送者 ID
+    private static let simulatedIncomingSenderID = UserID(rawValue: "__chatbridge_simulated_peer__")
+    /// 模拟接收消息候选文本
+    private static let simulatedIncomingTextSamples = [
+        "模拟收到一条来自对方的新消息",
+        "对方刚刚补充了一句测试消息",
+        "这是一条从同步链路抵达的模拟消息",
+        "收到新的对方消息，界面应该自动追加",
+        "对方发来一条随机模拟文本"
+    ]
 
     /// 用户 ID
     private let userID: UserID
@@ -511,6 +527,52 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
 
         return row(from: updatedMessage, currentUserID: userID)
+    }
+
+    /// 模拟服务端同步到一条对方文本消息，并返回可直接渲染的行状态。
+    func simulateIncomingTextMessage() async throws -> ChatMessageRowState? {
+        guard let syncStore = repository as? any SyncStore else {
+            return nil
+        }
+
+        let latestMessages = try await repository.listMessages(
+            conversationID: conversationID,
+            limit: 1,
+            beforeSortSeq: nil
+        )
+        let latestMessage = latestMessages.first
+        let sequence = max((latestMessage?.sortSequence ?? 0) + 1, Self.currentTimestamp())
+        let messageToken = UUID().uuidString
+        let messageID = MessageID(rawValue: "simulated_incoming_\(messageToken)")
+        let text = Self.simulatedIncomingText(messageToken: messageToken)
+        let batch = SyncBatch(
+            messages: [
+                IncomingSyncMessage(
+                    messageID: messageID,
+                    conversationID: conversationID,
+                    senderID: Self.simulatedIncomingSenderID,
+                    serverMessageID: "server_\(messageID.rawValue)",
+                    sequence: sequence,
+                    text: text,
+                    serverTime: sequence,
+                    direction: .incoming
+                )
+            ],
+            nextCursor: nil,
+            nextSequence: sequence
+        )
+
+        _ = try await syncStore.applyIncomingSyncBatch(batch, userID: userID)
+        guard let storedMessage = try await repository.message(messageID: messageID) else {
+            return nil
+        }
+
+        return row(from: storedMessage, currentUserID: userID)
+    }
+
+    private static func simulatedIncomingText(messageToken: String) -> String {
+        let sample = simulatedIncomingTextSamples.randomElement() ?? "模拟收到一条来自对方的新消息"
+        return "\(sample) #\(messageToken.prefix(6).lowercased())"
     }
 
     /// 重发失败消息并流式返回重发状态
@@ -1714,6 +1776,13 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)
         return try await useCase.markVoicePlayed(messageID: messageID)
+    }
+
+    /// 模拟接收一条对方文本消息。
+    func simulateIncomingTextMessage() async throws -> ChatMessageRowState? {
+        let repository = try await storeProvider.repository()
+        let useCase = makeLocalUseCase(repository: repository)
+        return try await useCase.simulateIncomingTextMessage()
     }
 
     /// 重发失败消息并透传本地用例的状态流

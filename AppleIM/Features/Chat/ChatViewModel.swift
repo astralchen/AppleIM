@@ -43,6 +43,8 @@ final class ChatViewModel {
     private var draftTask: Task<Void, Never>?
     /// 消息操作任务（重发、删除、撤回）
     private var mutationTask: Task<Void, Never>?
+    /// 模拟接收消息任务
+    private var simulatedIncomingTasks: [UUID: Task<Void, Never>] = [:]
     /// 语音播放状态回写任务
     private var voicePlaybackTask: Task<Void, Never>?
     /// 分页加载任务
@@ -494,6 +496,33 @@ final class ChatViewModel {
         }
     }
 
+    /// 模拟接收一条对方文本消息。
+    ///
+    /// 每次点击都保留独立任务，避免连续点击时互相取消。
+    func simulateIncomingMessage() {
+        let taskID = UUID()
+        simulatedIncomingTasks[taskID] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                simulatedIncomingTasks[taskID] = nil
+            }
+
+            do {
+                guard let row = try await useCase.simulateIncomingTextMessage() else {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                upsert(row)
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to receive simulated message")
+                }
+            }
+        }
+    }
+
     /// 保存草稿（防抖）
     ///
     /// 用户输入时调用，延迟 250ms 后保存，避免频繁写入数据库
@@ -629,12 +658,14 @@ final class ChatViewModel {
         mutationTask?.cancel()
         paginationTask?.cancel()
         voicePlaybackTask?.cancel()
+        simulatedIncomingTasks.values.forEach { $0.cancel() }
         loadTask = nil
         sendTask = nil
         draftTask = nil
         mutationTask = nil
         paginationTask = nil
         voicePlaybackTask = nil
+        simulatedIncomingTasks.removeAll()
     }
 
     /// 更新或插入消息行
