@@ -1170,6 +1170,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 isRevoked: isRevoked
             ),
             sortSequence: message.sortSequence,
+            sentAt: message.localTime,
             timeText: Self.timeText(from: message.localTime),
             statusText: isRevoked ? nil : Self.statusText(for: message),
             uploadProgress: uploadProgress,

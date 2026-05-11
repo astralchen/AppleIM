@@ -1721,6 +1721,154 @@ struct AppleIMTests {
         #expect(conversations.first?.lastMessageDigest == "[视频]")
     }
 
+    @Test func localChatRepositoryResolvesImagePathsAfterStorageRootMoves() async throws {
+        let oldRootDirectory = temporaryDirectory()
+        let newRootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: oldRootDirectory)
+            try? FileManager.default.removeItem(at: newRootDirectory)
+        }
+
+        let accountID = UserID(rawValue: "image_move_user")
+        let (oldRepository, oldDatabaseContext) = try await makeRepository(
+            rootDirectory: oldRootDirectory,
+            accountID: accountID
+        )
+        try await oldRepository.upsertConversation(
+            makeConversationRecord(id: "image_move_conversation", userID: accountID, title: "Image Move", sortTimestamp: 1)
+        )
+
+        let image = StoredImageContent(
+            mediaID: "media_image_move",
+            localPath: oldDatabaseContext.paths.mediaDirectory.appendingPathComponent("image/original/media_image_move.png").path,
+            thumbnailPath: oldDatabaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/media_image_move.jpg").path,
+            width: 120,
+            height: 80,
+            sizeBytes: 512,
+            format: "png"
+        )
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: image.localPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: image.thumbnailPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: URL(fileURLWithPath: image.localPath))
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: URL(fileURLWithPath: image.thumbnailPath))
+        _ = try await oldRepository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: accountID,
+                conversationID: "image_move_conversation",
+                senderID: accountID,
+                image: image,
+                localTime: 521,
+                messageID: "image_move_message",
+                clientMessageID: "image_move_client",
+                sortSequence: 521
+            )
+        )
+
+        try FileManager.default.createDirectory(at: newRootDirectory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: oldDatabaseContext.paths.rootDirectory,
+            to: newRootDirectory.appendingPathComponent(
+                oldDatabaseContext.paths.rootDirectory.lastPathComponent,
+                isDirectory: true
+            )
+        )
+        try FileManager.default.removeItem(at: oldRootDirectory)
+
+        let (newRepository, newDatabaseContext) = try await makeRepository(
+            rootDirectory: newRootDirectory,
+            accountID: accountID
+        )
+        let messages = try await newRepository.listMessages(
+            conversationID: "image_move_conversation",
+            limit: 20,
+            beforeSortSeq: nil
+        )
+        let reloadedImage = try #require(messages.first?.image)
+
+        #expect(reloadedImage.localPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("image/original/media_image_move.png").path)
+        #expect(reloadedImage.thumbnailPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/media_image_move.jpg").path)
+    }
+
+    @Test func localChatRepositoryResolvesVideoPathsAfterStorageRootMoves() async throws {
+        let oldRootDirectory = temporaryDirectory()
+        let newRootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: oldRootDirectory)
+            try? FileManager.default.removeItem(at: newRootDirectory)
+        }
+
+        let accountID = UserID(rawValue: "video_move_user")
+        let (oldRepository, oldDatabaseContext) = try await makeRepository(
+            rootDirectory: oldRootDirectory,
+            accountID: accountID
+        )
+        try await oldRepository.upsertConversation(
+            makeConversationRecord(id: "video_move_conversation", userID: accountID, title: "Video Move", sortTimestamp: 1)
+        )
+
+        let video = StoredVideoContent(
+            mediaID: "media_video_move",
+            localPath: oldDatabaseContext.paths.mediaDirectory.appendingPathComponent("video/media_video_move.mov").path,
+            thumbnailPath: oldDatabaseContext.paths.mediaDirectory.appendingPathComponent("video/thumb/media_video_move.jpg").path,
+            durationMilliseconds: 1_000,
+            width: 64,
+            height: 64,
+            sizeBytes: 2_048
+        )
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: video.localPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: video.thumbnailPath).deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("mov".utf8).write(to: URL(fileURLWithPath: video.localPath))
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: URL(fileURLWithPath: video.thumbnailPath))
+        _ = try await oldRepository.insertOutgoingVideoMessage(
+            OutgoingVideoMessageInput(
+                userID: accountID,
+                conversationID: "video_move_conversation",
+                senderID: accountID,
+                video: video,
+                localTime: 522,
+                messageID: "video_move_message",
+                clientMessageID: "video_move_client",
+                sortSequence: 522
+            )
+        )
+
+        try FileManager.default.createDirectory(at: newRootDirectory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(
+            at: oldDatabaseContext.paths.rootDirectory,
+            to: newRootDirectory.appendingPathComponent(
+                oldDatabaseContext.paths.rootDirectory.lastPathComponent,
+                isDirectory: true
+            )
+        )
+        try FileManager.default.removeItem(at: oldRootDirectory)
+
+        let (newRepository, newDatabaseContext) = try await makeRepository(
+            rootDirectory: newRootDirectory,
+            accountID: accountID
+        )
+        let messages = try await newRepository.listMessages(
+            conversationID: "video_move_conversation",
+            limit: 20,
+            beforeSortSeq: nil
+        )
+        let reloadedVideo = try #require(messages.first?.video)
+
+        #expect(reloadedVideo.localPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("video/media_video_move.mov").path)
+        #expect(reloadedVideo.thumbnailPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("video/thumb/media_video_move.jpg").path)
+    }
+
     @Test func localChatRepositoryIndexesOutgoingImageMediaFiles() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -4820,6 +4968,112 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewModelAppliesWeChatStyleTimeSeparatorsOnInitialLoad() async throws {
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [
+                    makeChatRow(id: "time_first", text: "First", sortSequence: 1, sentAt: 100),
+                    makeChatRow(id: "time_close", text: "Close", sortSequence: 2, sentAt: 220),
+                    makeChatRow(id: "time_gap", text: "Gap", sortSequence: 3, sentAt: 520)
+                ],
+                hasMore: false,
+                nextBeforeSortSequence: 1
+            ),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Times")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 3
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(\.showsTimeSeparator) == [true, false, true])
+    }
+
+    @MainActor
+    @Test func chatViewModelShowsTimeSeparatorWhenMessagesCrossCalendarDay() async throws {
+        let calendar = Calendar.current
+        let beforeMidnight = try #require(
+            calendar.date(from: DateComponents(year: 2024, month: 1, day: 1, hour: 23, minute: 59))
+        )
+        let afterMidnight = try #require(
+            calendar.date(from: DateComponents(year: 2024, month: 1, day: 2, hour: 0, minute: 1))
+        )
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [
+                    makeChatRow(
+                        id: "day_first",
+                        text: "Before midnight",
+                        sortSequence: 1,
+                        sentAt: Int64(beforeMidnight.timeIntervalSince1970)
+                    ),
+                    makeChatRow(
+                        id: "day_next",
+                        text: "After midnight",
+                        sortSequence: 2,
+                        sentAt: Int64(afterMidnight.timeIntervalSince1970)
+                    )
+                ],
+                hasMore: false,
+                nextBeforeSortSequence: 1
+            ),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Days")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(\.showsTimeSeparator) == [true, true])
+    }
+
+    @MainActor
+    @Test func chatViewModelRecalculatesTimeSeparatorsAfterPrependingOlderMessages() async throws {
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(
+                rows: [
+                    makeChatRow(id: "current_message", text: "Current", sortSequence: 3, sentAt: 1_000)
+                ],
+                hasMore: true,
+                nextBeforeSortSequence: 3
+            ),
+            olderPage: ChatMessagePage(
+                rows: [
+                    makeChatRow(id: "older_first", text: "Older first", sortSequence: 1, sentAt: 600),
+                    makeChatRow(id: "older_close", text: "Older close", sortSequence: 2, sentAt: 760)
+                ],
+                hasMore: false,
+                nextBeforeSortSequence: 1
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Paging Times")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["current_message"]
+            }
+        }
+        viewModel.loadOlderMessagesIfNeeded()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 3
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(\.id.rawValue) == ["older_first", "older_close", "current_message"])
+        #expect(viewModel.currentState.rows.map(\.showsTimeSeparator) == [true, false, false])
+    }
+
+    @MainActor
     @Test func chatViewModelDoesNotRequestOlderMessagesWhenPageIsExhausted() async throws {
         let useCase = PagingStubChatUseCase(
             initialPage: ChatMessagePage(
@@ -4901,6 +5155,41 @@ struct AppleIMTests {
 
         #expect(useCase.sentText == "@Sondra 请看这里")
         #expect(useCase.sentMentionsAll == false)
+    }
+
+    @MainActor
+    @Test func chatViewModelRecalculatesTimeSeparatorsWhenAppendingSentMessage() async throws {
+        let useCase = TextSendingTimeStubChatUseCase(
+            initialRows: [
+                makeChatRow(id: "existing_message", text: "Existing", sortSequence: 1, sentAt: 1_000)
+            ],
+            sentRows: [
+                makeChatRow(id: "sent_close", text: "Close", sortSequence: 2, sentAt: 1_120),
+                makeChatRow(id: "sent_gap", text: "Gap", sortSequence: 3, sentAt: 1_420)
+            ]
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Append Times")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 1
+            }
+        }
+        viewModel.sendText("Close")
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+        viewModel.sendText("Gap")
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 3
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(\.showsTimeSeparator) == [true, false, true])
     }
 
     @MainActor
@@ -5000,6 +5289,32 @@ struct AppleIMTests {
 
         #expect(useCase.deletedMessageIDs == ["delete_remove"])
         #expect(viewModel.currentState.phase == .loaded)
+    }
+
+    @MainActor
+    @Test func chatViewModelRecalculatesFirstTimeSeparatorAfterDeletingMessage() async throws {
+        let useCase = MessageActionStubChatUseCase(
+            initialRows: [
+                makeChatRow(id: "delete_time_first", text: "First", sortSequence: 1, sentAt: 100),
+                makeChatRow(id: "delete_time_second", text: "Second", sortSequence: 2, sentAt: 160)
+            ]
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Delete Times")
+
+        viewModel.load()
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.showsTimeSeparator) == [true, false]
+            }
+        }
+        viewModel.delete(messageID: "delete_time_first")
+        try await waitForCondition(timeoutNanoseconds: 15_000_000_000) {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id.rawValue) == ["delete_time_second"]
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(\.showsTimeSeparator) == [true])
     }
 
     @MainActor
@@ -6087,6 +6402,54 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func videoMessageMediaViewActivatesPlaybackFromWholeThumbnail() throws {
+        let directory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let thumbnailURL = directory.appendingPathComponent("video.jpg")
+        try makeJPEGData(width: 320, height: 180, quality: 0.9).write(to: thumbnailURL, options: [.atomic])
+        let row = ChatMessageRowState(
+            id: "video_tap",
+            content: .video(.init(
+                thumbnailPath: thumbnailURL.path,
+                localPath: directory.appendingPathComponent("video.mov").path,
+                durationMilliseconds: 2_000
+            )),
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: false,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+        var playedRow: ChatMessageRowState?
+        let mediaView = MediaMessageContentView()
+        mediaView.configure(
+            row: row,
+            style: ChatMessageContentStyle(
+                textColor: .label,
+                secondaryTextColor: .secondaryLabel,
+                tintColor: .systemBlue
+            ),
+            actions: ChatMessageCellActions(
+                onRetry: { _ in },
+                onDelete: { _ in },
+                onRevoke: { _ in },
+                onPlayVoice: { _ in },
+                onPlayVideo: { playedRow = $0 }
+            )
+        )
+
+        #expect(mediaView.accessibilityActivate())
+        #expect(playedRow?.id == "video_tap")
+    }
+
+    @MainActor
     @Test func chatMessageCellConfigurationPreservesIdentifiersMetadataAndPlaybackState() throws {
         let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
         let row = ChatMessageRowState(
@@ -6150,6 +6513,66 @@ struct AppleIMTests {
 
         #expect(abs(timeCenterX - cell.contentView.bounds.midX) < 1)
         #expect(timeFrame.maxY < bubbleFrame.minY)
+    }
+
+    @MainActor
+    @Test func chatMessageCellHidesMetadataAndKeepsStableSizeWhenTimeSeparatorIsHidden() {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = ChatMessageRowState(
+            id: "cell_hidden_time",
+            content: .text("Hello"),
+            sortSequence: 1,
+            timeText: "18:08",
+            showsTimeSeparator: false,
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        let fittingSize = cell.systemLayoutSizeFitting(
+            CGSize(width: 390, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+
+        #expect(findLabel(withText: "18:08", in: cell) == nil)
+        #expect(fittingSize.height.isFinite)
+        #expect(fittingSize.height < 160)
+    }
+
+    @MainActor
+    @Test func chatMessageCellContentViewFittingIgnoresUnboundedCollectionViewHeightWhenMetadataIsHidden() throws {
+        let row = ChatMessageRowState(
+            id: "cell_hidden_time_unbounded",
+            content: .text("Hello"),
+            sortSequence: 1,
+            timeText: "18:08",
+            showsTimeSeparator: false,
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+        let configuration = ChatMessageCellContentConfiguration(row: row, actions: .empty)
+        let contentView = configuration.makeContentView()
+
+        let fittingSize = contentView.systemLayoutSizeFitting(
+            CGSize(width: 402, height: CGFloat.greatestFiniteMagnitude),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+
+        #expect(fittingSize.height.isFinite)
+        #expect(fittingSize.height < 160)
     }
 
     @MainActor
@@ -8379,6 +8802,64 @@ private final class MessageActionStubChatUseCase: @unchecked Sendable, ChatUseCa
     }
 }
 
+private final class TextSendingTimeStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialRows: [ChatMessageRowState]
+    private var sentRows: [ChatMessageRowState]
+
+    init(initialRows: [ChatMessageRowState], sentRows: [ChatMessageRowState]) {
+        self.initialRows = initialRows
+        self.sentRows = sentRows
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: initialRows, hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        let row = sentRows.removeFirst()
+        return AsyncThrowingStream { continuation in
+            continuation.yield(row)
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
 private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private(set) var sentImageCount = 0
 
@@ -8640,11 +9121,17 @@ private extension ChatUseCase {
     }
 }
 
-private func makeChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
+private func makeChatRow(
+    id: MessageID,
+    text: String,
+    sortSequence: Int64,
+    sentAt: Int64 = 0
+) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
         content: .text(text),
         sortSequence: sortSequence,
+        sentAt: sentAt,
         timeText: "Now",
         statusText: nil,
         uploadProgress: nil,
@@ -8794,6 +9281,36 @@ private func makeRevokedRow(id: MessageID, sortSequence: Int64) -> ChatMessageRo
     let updatedRow = row.withVoicePlayback(isPlaying: true)
 
     #expect(updatedRow.senderAvatarURL == "https://example.com/voice-avatar.png")
+    #expect(isPlayingVoiceContent(updatedRow))
+}
+
+@Test func chatMessageRowStateWithVoicePlaybackPreservesTimeSeparatorState() {
+    let row = ChatMessageRowState(
+        id: "time_voice",
+        content: .voice(
+            ChatMessageRowContent.VoiceContent(
+                localPath: "/tmp/time_voice.m4a",
+                durationMilliseconds: 2_000,
+                isUnplayed: true,
+                isPlaying: false
+            )
+        ),
+        sortSequence: 1,
+        sentAt: 1_000,
+        timeText: "Now",
+        showsTimeSeparator: false,
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: false,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false
+    )
+
+    let updatedRow = row.withVoicePlayback(isPlaying: true)
+
+    #expect(updatedRow.sentAt == 1_000)
+    #expect(updatedRow.showsTimeSeparator == false)
     #expect(isPlayingVoiceContent(updatedRow))
 }
 
