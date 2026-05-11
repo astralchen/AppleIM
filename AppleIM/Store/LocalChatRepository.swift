@@ -47,6 +47,16 @@ nonisolated private struct ConversationExtraContext: Codable, Equatable, Sendabl
     }
 }
 
+extension Notification.Name {
+    /// 聊天存储中的会话摘要、排序或未读状态发生变化。
+    static let chatStoreConversationsDidChange = Notification.Name("ChatStoreConversationsDidChange")
+}
+
+nonisolated enum ChatStoreConversationChangeNotification {
+    static let userIDKey = "userID"
+    static let conversationIDsKey = "conversationIDs"
+}
+
 /// 群公告扩展信息
 nonisolated private struct AnnouncementContext: Codable, Equatable, Sendable {
     let text: String
@@ -194,6 +204,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             paths: paths
         )
         _ = try await refreshApplicationBadge(userID: userID)
+        Self.postConversationsDidChangeNotification(userID: userID, conversationIDs: [conversationID])
     }
 
     /// 更新会话置顶状态
@@ -1543,6 +1554,10 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         for conversationID in Set(messagesToInsert.map(\.conversationID)) {
             scheduleConversationIndex(conversationID: conversationID, userID: userID)
         }
+        Self.postConversationsDidChangeNotification(
+            userID: userID,
+            conversationIDs: Set(messagesToInsert.map(\.conversationID))
+        )
 
         return SyncApplyResult(
             fetchedCount: batch.messages.count,
@@ -1573,6 +1588,26 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             draftText: record.draftText,
             hasUnreadMention: extra?.hasUnreadMention == true
         )
+    }
+
+    private static func postConversationsDidChangeNotification(
+        userID: UserID,
+        conversationIDs: Set<ConversationID>
+    ) {
+        guard !conversationIDs.isEmpty else { return }
+
+        let rawUserID = userID.rawValue
+        let rawConversationIDs = conversationIDs.map(\.rawValue)
+        Task { @MainActor in
+            NotificationCenter.default.post(
+                name: .chatStoreConversationsDidChange,
+                object: nil,
+                userInfo: [
+                    ChatStoreConversationChangeNotification.userIDKey: rawUserID,
+                    ChatStoreConversationChangeNotification.conversationIDsKey: rawConversationIDs
+                ]
+            )
+        }
     }
 
     private func conversationExtras(conversationIDs: [ConversationID]) async throws -> [ConversationID: ConversationExtraContext] {

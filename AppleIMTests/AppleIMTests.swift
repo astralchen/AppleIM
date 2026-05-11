@@ -69,6 +69,28 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func conversationListViewModelClearsUnreadStateForOpenedConversation() {
+        let row = ConversationListRowState(
+            id: "opened_conversation",
+            title: "Opened",
+            subtitle: "Unread message",
+            timeText: "Now",
+            unreadText: "2",
+            isPinned: false,
+            isMuted: false
+        )
+        let viewModel = ConversationListViewModel(
+            useCase: EmptySimulationConversationListUseCase(),
+            initialState: ConversationListViewState(phase: .loaded, rows: [row])
+        )
+
+        viewModel.markConversationReadLocally(conversationID: "opened_conversation")
+
+        #expect(viewModel.currentState.rows.first?.unreadText == nil)
+        #expect(viewModel.currentState.rows.first?.title == "Opened")
+    }
+
+    @MainActor
     @Test func conversationListViewControllerDoesNotReloadLoadedRowsOnRepeatedAppear() async throws {
         let useCase = CountingConversationListUseCase()
         let viewModel = ConversationListViewModel(useCase: useCase)
@@ -88,6 +110,61 @@ struct AppleIMTests {
         try await Task.sleep(nanoseconds: 20_000_000)
 
         #expect(await useCase.loadPageCallCount == 1)
+    }
+
+    @MainActor
+    @Test func conversationListViewControllerRefreshesLoadedRowsAfterReturningFromChat() async throws {
+        let useCase = ReadClearingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in }
+        )
+
+        viewController.loadViewIfNeeded()
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == "2"
+        }
+        #expect(viewModel.currentState.rows.first?.unreadText == "2")
+
+        viewController.viewDidDisappear(false)
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == nil
+        }
+
+        #expect(await useCase.loadPageCallCount == 2)
+    }
+
+    @MainActor
+    @Test func conversationListViewControllerClearsUnreadStateWhenSelectingConversation() async throws {
+        let useCase = ReadClearingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        var selectedConversationID: ConversationID?
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { row in
+                selectedConversationID = row.id
+            }
+        )
+
+        viewController.loadViewIfNeeded()
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == "2"
+        }
+        #expect(viewModel.currentState.rows.first?.unreadText == "2")
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "conversationList.collection") as? UICollectionView)
+        viewController.collectionView(collectionView, didSelectItemAt: IndexPath(item: 0, section: 0))
+
+        #expect(selectedConversationID == "read_clearing_conversation")
+        #expect(viewModel.currentState.rows.first?.unreadText == nil)
     }
 
     @MainActor
@@ -133,6 +210,189 @@ struct AppleIMTests {
         #expect(messages.contains { $0.contains("loadIfNeeded called") })
         #expect(messages.contains { $0.contains("initial load started") })
         #expect(messages.contains { $0.contains("initial load completed") })
+    }
+
+    @MainActor
+    @Test func conversationListViewModelSimulatesIncomingMessagesAndReloadsRows() async throws {
+        let useCase = SimulatingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.simulateIncomingMessages()
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == "3"
+        }
+
+        #expect(await useCase.simulateIncomingCallCount == 1)
+        #expect(await useCase.loadPageCallCount >= 2)
+    }
+
+    @MainActor
+    @Test func conversationListViewModelKeepsLoadedStateWhileRefreshingAfterSimulation() async throws {
+        let useCase = SimulatingConversationListUseCase()
+        let diagnostics = ConversationListLoadingDiagnosticsSpy()
+        let viewModel = ConversationListViewModel(useCase: useCase, diagnostics: diagnostics)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        let loadingLogCountBeforeSimulation = diagnostics.messages.filter {
+            $0.contains("initial load started") && $0.contains("showLoading=true")
+        }.count
+
+        viewModel.simulateIncomingMessages()
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == "3"
+        }
+
+        let loadingLogCountAfterSimulation = diagnostics.messages.filter {
+            $0.contains("initial load started") && $0.contains("showLoading=true")
+        }.count
+        #expect(loadingLogCountAfterSimulation == loadingLogCountBeforeSimulation)
+        #expect(viewModel.currentState.phase == .loaded)
+    }
+
+    @MainActor
+    @Test func conversationListViewModelPublishesSimulationResultBeforeSlowRefreshCompletes() async throws {
+        let useCase = ImmediateResultSlowRefreshConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.simulateIncomingMessages()
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(viewModel.currentState.rows.first?.subtitle == "Immediate simulation result")
+        #expect(viewModel.currentState.rows.first?.unreadText == "4")
+    }
+
+    @MainActor
+    @Test func conversationListViewModelHandlesRapidSimulatedIncomingTaps() async throws {
+        let useCase = DelayedSimulatingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.simulateIncomingMessages()
+        viewModel.simulateIncomingMessages()
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText != nil
+        }
+
+        #expect(await useCase.simulateIncomingCallCount >= 1)
+    }
+
+    @MainActor
+    @Test func conversationListViewModelPublishesFriendlyFailureWhenSimulationFails() async throws {
+        let viewModel = ConversationListViewModel(useCase: FailingSimulationConversationListUseCase())
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.simulateIncomingMessages()
+        try await waitForCondition {
+            viewModel.currentState.phase == .failed("Unable to simulate incoming messages")
+        }
+    }
+
+    @MainActor
+    @Test func conversationListViewControllerSimulateIncomingButtonTriggersViewModel() async throws {
+        let useCase = SimulatingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in }
+        )
+
+        viewController.loadViewIfNeeded()
+        let button = try #require(viewController.navigationItem.rightBarButtonItem?.customView as? UIButton)
+        #expect(button.accessibilityIdentifier == "conversationList.simulateIncomingButton")
+        #expect(button.accessibilityLabel == "模拟接收消息")
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        button.sendActions(for: .touchUpInside)
+        try await waitForCondition {
+            await useCase.simulateIncomingCallCount == 1
+        }
+    }
+
+    @MainActor
+    @Test func conversationListViewControllerReloadsVisibleRowWhenUnreadChangesAfterSimulation() async throws {
+        let useCase = SimulatingConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in }
+        )
+
+        viewController.loadViewIfNeeded()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        viewController.viewWillAppear(false)
+        let collectionView = try #require(findView(in: viewController.view, identifier: "conversationList.collection") as? UICollectionView)
+        viewController.view.layoutIfNeeded()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded && collectionView.cellForItem(at: IndexPath(item: 0, section: 0)) != nil
+        }
+
+        viewModel.simulateIncomingMessages()
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == "3"
+        }
+        collectionView.layoutIfNeeded()
+
+        let cell = try #require(collectionView.cellForItem(at: IndexPath(item: 0, section: 0)))
+        #expect(cell.accessibilityLabel?.contains("3") == true)
+    }
+
+    @MainActor
+    @Test func conversationListViewControllerRefreshesWhenConversationStoreChangesExternally() async throws {
+        let useCase = ExternalConversationChangeUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
+        let viewController = ConversationListViewController(
+            viewModel: viewModel,
+            searchViewModel: searchViewModel,
+            onSelectConversation: { _ in }
+        )
+
+        viewController.loadViewIfNeeded()
+        viewController.viewWillAppear(false)
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+        #expect(viewModel.currentState.rows.first?.unreadText == nil)
+
+        await useCase.receiveUnreadMessage()
+        NotificationCenter.default.post(name: .chatStoreConversationsDidChange, object: nil)
+        try await waitForCondition {
+            viewModel.currentState.rows.first?.unreadText == "1"
+        }
+
+        #expect(viewModel.currentState.rows.first?.unreadText == "1")
     }
 
     @Test func accountStoragePreparesIsolatedDirectories() async throws {
@@ -2428,6 +2688,43 @@ struct AppleIMTests {
         #expect(rows.first(where: { $0.id == "single_sondra" })?.isMuted == true)
     }
 
+    @Test func localConversationListUseCaseSimulatesIncomingMessagesThroughSyncStore() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "conversation_list_sim_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let useCase = LocalConversationListUseCase(userID: "conversation_list_sim_user", storeProvider: storeProvider)
+        let rowsBefore = try await useCase.loadConversations()
+
+        let result = try #require(try await useCase.simulateIncomingMessages())
+        let rowsAfter = try await useCase.loadConversations()
+        let rowBefore = try #require(rowsBefore.first { $0.id == result.conversationID })
+        let rowAfter = try #require(rowsAfter.first { $0.id == result.conversationID })
+        let unreadBefore = Int(rowBefore.unreadText ?? "0") ?? 0
+        let unreadAfter = Int(rowAfter.unreadText ?? "0") ?? 0
+
+        #expect((1...5).contains(result.messageCount))
+        #expect(unreadAfter == unreadBefore + result.messageCount)
+        #expect(rowAfter.subtitle == result.finalRow.subtitle)
+        #expect(rowAfter.subtitle.contains("#"))
+        #expect(result.finalRow.id == result.conversationID)
+    }
+
+    @Test func localConversationListUseCaseReturnsNilWhenNoConversationsExist() async throws {
+        let useCase = EmptySimulationConversationListUseCase()
+
+        let result = try await useCase.simulateIncomingMessages()
+
+        #expect(result == nil)
+    }
+
     @Test func localChatRepositoryStoresGroupMembersAndAnnouncementPermissions() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -2685,6 +2982,47 @@ struct AppleIMTests {
         #expect(secondStoredMessage.sortSequence > storedMessage.sortSequence)
         #expect(page.rows.contains { $0.id == row.id })
         #expect(page.rows.contains { $0.id == secondRow.id })
+    }
+
+    @MainActor
+    @Test func storeBackedChatUseCaseKeepsSimulatedIncomingMessageReadWhenChatIsOpen() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "simulated_read_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "simulated_read_conversation",
+                userID: "simulated_read_user",
+                title: "Simulated Read",
+                unreadCount: 0,
+                sortTimestamp: 100
+            )
+        )
+        let useCase = StoreBackedChatUseCase(
+            userID: "simulated_read_user",
+            conversationID: "simulated_read_conversation",
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: AccountMediaFileStore(accountID: "simulated_read_user", storageService: storageService)
+        )
+
+        _ = try await useCase.loadInitialMessages()
+        let row = try #require(try await useCase.simulateIncomingTextMessage())
+
+        let conversations = try await repository.listConversations(for: "simulated_read_user")
+        let storedMessage = try #require(try await repository.message(messageID: row.id))
+        let conversation = try #require(conversations.first { $0.id == "simulated_read_conversation" })
+        #expect(conversation.unreadCount == 0)
+        #expect(storedMessage.readStatus == .read)
     }
 
     @Test func chatUseCaseMapsSenderAvatarURLsByMessageDirection() async throws {
@@ -5868,6 +6206,59 @@ struct AppleIMTests {
         #expect(checkpoint?.sequence == 10)
     }
 
+    @Test func incomingSyncMessagePostsConversationChangeNotification() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sync_notify_change_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "sync_notify_change_conversation", userID: "sync_notify_change_user", title: "Notify", sortTimestamp: 1)
+        )
+        let notificationSpy = ConversationChangeNotificationSpy()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .chatStoreConversationsDidChange,
+            object: nil,
+            queue: .main
+        ) { notification in
+            let userID = notification.userInfo?[ChatStoreConversationChangeNotification.userIDKey] as? String
+            let conversationIDs = notification.userInfo?[ChatStoreConversationChangeNotification.conversationIDsKey] as? [String] ?? []
+            Task {
+                await notificationSpy.record(userID: userID, conversationIDs: conversationIDs)
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+
+        _ = try await repository.applyIncomingSyncBatch(
+            SyncBatch(
+                messages: [
+                    IncomingSyncMessage(
+                        messageID: "sync_notify_change_message",
+                        conversationID: "sync_notify_change_conversation",
+                        senderID: "sync_sender",
+                        serverMessageID: "sync_notify_change_server",
+                        sequence: 1,
+                        text: "Notify list",
+                        serverTime: 1
+                    )
+                ],
+                nextCursor: nil,
+                nextSequence: 1
+            ),
+            userID: "sync_notify_change_user"
+        )
+
+        try await waitForCondition {
+            await notificationSpy.didRecord(
+                userID: "sync_notify_change_user",
+                conversationID: "sync_notify_change_conversation"
+            )
+        }
+    }
+
     @Test func syncEngineSkipsDuplicateClientServerAndSequenceMessages() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -6952,6 +7343,263 @@ private actor CountingConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
+private actor ReadClearingConversationListUseCase: ConversationListUseCase {
+    private(set) var loadPageCallCount = 0
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        try await loadConversationPage(limit: 50, offset: 0).rows
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        loadPageCallCount += 1
+        let unreadText = loadPageCallCount == 1 ? "2" : nil
+        return ConversationListPage(
+            rows: [
+                ConversationListRowState(
+                    id: "read_clearing_conversation",
+                    title: "Read Clearing",
+                    subtitle: "Tap to read",
+                    timeText: "Now",
+                    unreadText: unreadText,
+                    isPinned: false,
+                    isMuted: false
+                )
+            ],
+            hasMore: false
+        )
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+}
+
+private actor SimulatingConversationListUseCase: ConversationListUseCase {
+    private var row = ConversationListRowState(
+        id: "simulated_list_conversation",
+        title: "Simulated List",
+        subtitle: "Before simulation",
+        timeText: "Now",
+        unreadText: nil,
+        isPinned: false,
+        isMuted: false
+    )
+    private(set) var loadPageCallCount = 0
+    private(set) var simulateIncomingCallCount = 0
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        try await loadConversationPage(limit: 50, offset: 0).rows
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        loadPageCallCount += 1
+        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
+        return ConversationListPage(rows: pageRows, hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        simulateIncomingCallCount += 1
+        row = ConversationListRowState(
+            id: row.id,
+            title: row.title,
+            subtitle: "模拟收到 3 条列表消息 #stub",
+            timeText: "Now",
+            unreadText: "3",
+            isPinned: row.isPinned,
+            isMuted: row.isMuted
+        )
+        return ConversationListSimulationResult(
+            conversationID: row.id,
+            messageCount: 3,
+            finalRow: row
+        )
+    }
+}
+
+private actor ExternalConversationChangeUseCase: ConversationListUseCase {
+    private var row = ConversationListRowState(
+        id: "external_change_conversation",
+        title: "External Change",
+        subtitle: "No unread yet",
+        timeText: "Now",
+        unreadText: nil,
+        isPinned: false,
+        isMuted: false
+    )
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        try await loadConversationPage(limit: 50, offset: 0).rows
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
+        return ConversationListPage(rows: pageRows, hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+
+    func receiveUnreadMessage() {
+        row = ConversationListRowState(
+            id: row.id,
+            title: row.title,
+            subtitle: "Externally received",
+            timeText: "Now",
+            unreadText: "1",
+            isPinned: row.isPinned,
+            isMuted: row.isMuted
+        )
+    }
+}
+
+private actor ImmediateResultSlowRefreshConversationListUseCase: ConversationListUseCase {
+    private var row = ConversationListRowState(
+        id: "immediate_simulated_list_conversation",
+        title: "Immediate Simulated List",
+        subtitle: "Before simulation",
+        timeText: "Now",
+        unreadText: nil,
+        isPinned: false,
+        isMuted: false
+    )
+    private(set) var loadPageCallCount = 0
+    private(set) var simulateIncomingCallCount = 0
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        try await loadConversationPage(limit: 50, offset: 0).rows
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        loadPageCallCount += 1
+        if loadPageCallCount > 1 {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+
+        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
+        return ConversationListPage(rows: pageRows, hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        simulateIncomingCallCount += 1
+        row = ConversationListRowState(
+            id: row.id,
+            title: row.title,
+            subtitle: "Immediate simulation result",
+            timeText: "Now",
+            unreadText: "4",
+            isPinned: row.isPinned,
+            isMuted: row.isMuted
+        )
+        return ConversationListSimulationResult(
+            conversationID: row.id,
+            messageCount: 4,
+            finalRow: row
+        )
+    }
+}
+
+private actor DelayedSimulatingConversationListUseCase: ConversationListUseCase {
+    private var row = ConversationListRowState(
+        id: "delayed_simulated_list_conversation",
+        title: "Delayed Simulated List",
+        subtitle: "Before simulation",
+        timeText: "Now",
+        unreadText: nil,
+        isPinned: false,
+        isMuted: false
+    )
+    private(set) var simulateIncomingCallCount = 0
+
+    func loadConversations() async throws -> [ConversationListRowState] {
+        [row]
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let pageRows = Array([row].dropFirst(offset).prefix(max(limit, 0)))
+        return ConversationListPage(rows: pageRows, hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        simulateIncomingCallCount += 1
+        try await Task.sleep(nanoseconds: 20_000_000)
+        row = ConversationListRowState(
+            id: row.id,
+            title: row.title,
+            subtitle: "模拟收到 \(simulateIncomingCallCount) 条列表消息 #delayed",
+            timeText: "Now",
+            unreadText: "\(simulateIncomingCallCount)",
+            isPinned: false,
+            isMuted: false
+        )
+        return ConversationListSimulationResult(
+            conversationID: row.id,
+            messageCount: simulateIncomingCallCount,
+            finalRow: row
+        )
+    }
+}
+
+private struct FailingSimulationConversationListUseCase: ConversationListUseCase {
+    func loadConversations() async throws -> [ConversationListRowState] {
+        [
+            ConversationListRowState(
+                id: "failing_simulation_conversation",
+                title: "Failing Simulation",
+                subtitle: "Loaded before failure",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        ]
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        let rows = try await loadConversations()
+        let pageRows = Array(rows.dropFirst(offset).prefix(max(limit, 0)))
+        return ConversationListPage(rows: pageRows, hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        throw TestChatError.expectedFailure
+    }
+}
+
+private struct EmptySimulationConversationListUseCase: ConversationListUseCase {
+    func loadConversations() async throws -> [ConversationListRowState] {
+        []
+    }
+
+    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+        ConversationListPage(rows: [], hasMore: false)
+    }
+
+    func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {}
+
+    func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
+
+    func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
+        nil
+    }
+}
+
 private final class ConversationListLoadingDiagnosticsSpy: ConversationListLoadingDiagnostics, @unchecked Sendable {
     private let lock = NSLock()
     private var storedMessages: [String] = []
@@ -6965,6 +7613,20 @@ private final class ConversationListLoadingDiagnosticsSpy: ConversationListLoadi
     func log(_ message: String) {
         lock.withLock {
             storedMessages.append(message)
+        }
+    }
+}
+
+private actor ConversationChangeNotificationSpy {
+    private var records: [(userID: String?, conversationIDs: [String])] = []
+
+    func record(userID: String?, conversationIDs: [String]) {
+        records.append((userID: userID, conversationIDs: conversationIDs))
+    }
+
+    func didRecord(userID: String, conversationID: String) -> Bool {
+        records.contains {
+            $0.userID == userID && $0.conversationIDs.contains(conversationID)
         }
     }
 }
@@ -7813,6 +8475,7 @@ private final class VoicePlaybackStubChatUseCase: @unchecked Sendable, ChatUseCa
 private enum TestChatError: Error {
     case paginationFailed
     case messageActionFailed
+    case expectedFailure
 }
 
 private extension ChatUseCase {

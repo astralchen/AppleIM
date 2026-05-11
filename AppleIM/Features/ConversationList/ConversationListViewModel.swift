@@ -29,6 +29,8 @@ final class ConversationListViewModel {
     private var loadMoreTask: Task<Void, Never>?
     /// 会话设置更新任务
     private var settingTask: Task<Void, Never>?
+    /// 模拟收消息任务集合
+    private var simulationTasks: [UUID: Task<Void, Never>] = [:]
     /// 下一页偏移量
     private var nextOffset = 0
     /// 首屏加载代次，用于忽略已取消的旧任务回调
@@ -76,6 +78,18 @@ final class ConversationListViewModel {
     }
 
     func load() {
+        loadFirstPage(showLoading: true)
+    }
+
+    func refresh() {
+        refreshFirstPageKeepingCurrentRows()
+    }
+
+    private func refreshFirstPageKeepingCurrentRows() {
+        loadFirstPage(showLoading: false)
+    }
+
+    private func loadFirstPage(showLoading: Bool) {
         loadGeneration += 1
         let currentGeneration = loadGeneration
 
@@ -83,13 +97,21 @@ final class ConversationListViewModel {
         loadMoreTask?.cancel()
         nextOffset = 0
         let startUptime = ProcessInfo.processInfo.systemUptime
-        diagnostics.log("ConversationList initial load started generation=\(currentGeneration) pageSize=\(pageSize)")
+        diagnostics.log(
+            "ConversationList initial load started generation=\(currentGeneration) pageSize=\(pageSize) showLoading=\(showLoading)"
+        )
 
-        publish { state in
-            state.phase = .loading
-            state.rows = []
-            state.isLoadingMore = false
-            state.hasMoreRows = false
+        if showLoading {
+            publish { state in
+                state.phase = .loading
+                state.rows = []
+                state.isLoadingMore = false
+                state.hasMoreRows = false
+            }
+        } else {
+            publish { state in
+                state.isLoadingMore = false
+            }
         }
 
         loadTask = Task { [weak self] in
@@ -198,6 +220,69 @@ final class ConversationListViewModel {
         }
     }
 
+    func markConversationReadLocally(conversationID: ConversationID) {
+        publish { state in
+            state.rows = state.rows.map { row in
+                guard row.id == conversationID, row.unreadText != nil else {
+                    return row
+                }
+
+                return ConversationListRowState(
+                    id: row.id,
+                    title: row.title,
+                    avatarURL: row.avatarURL,
+                    subtitle: row.subtitle,
+                    mentionIndicatorText: row.mentionIndicatorText,
+                    timeText: row.timeText,
+                    unreadText: nil,
+                    isPinned: row.isPinned,
+                    isMuted: row.isMuted
+                )
+            }
+        }
+    }
+
+    func simulateIncomingMessages() {
+        let taskID = UUID()
+        simulationTasks[taskID] = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                simulationTasks[taskID] = nil
+            }
+
+            do {
+                let result = try await useCase.simulateIncomingMessages()
+                guard !Task.isCancelled else { return }
+                if let result {
+                    publishSimulationResult(result)
+                    refreshFirstPageKeepingCurrentRows()
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to simulate incoming messages")
+                }
+            }
+        }
+    }
+
+    private func publishSimulationResult(_ result: ConversationListSimulationResult) {
+        publish { state in
+            state.phase = .loaded
+            state.rows.removeAll { $0.id == result.conversationID }
+
+            let insertionIndex: Int
+            if result.finalRow.isPinned {
+                insertionIndex = 0
+            } else {
+                insertionIndex = state.rows.firstIndex { !$0.isPinned } ?? state.rows.count
+            }
+
+            state.rows.insert(result.finalRow, at: insertionIndex)
+        }
+    }
+
     func cancel() {
         loadGeneration += 1
         loadTask?.cancel()
@@ -206,6 +291,8 @@ final class ConversationListViewModel {
         loadMoreTask = nil
         settingTask?.cancel()
         settingTask = nil
+        simulationTasks.values.forEach { $0.cancel() }
+        simulationTasks.removeAll()
     }
 
     private func publish(_ update: (inout ConversationListViewState) -> Void) {
