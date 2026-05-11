@@ -13,6 +13,8 @@ nonisolated struct ConversationListPage: Equatable, Sendable {
     let rows: [ConversationListRowState]
     /// 是否有更多数据
     let hasMore: Bool
+    /// 下一页游标
+    let nextCursor: ConversationPageCursor?
 }
 
 /// 会话列表模拟收消息结果
@@ -36,10 +38,10 @@ protocol ConversationListUseCase: Sendable {
     ///
     /// - Parameters:
     ///   - limit: 每页数量
-    ///   - offset: 偏移量
+    ///   - cursor: 上一页最后一条会话的排序游标
     /// - Returns: 会话列表分页结果
     /// - Throws: 加载错误
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage
     /// 更新会话置顶状态
     ///
     /// - Parameters:
@@ -128,12 +130,12 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     ///
     /// - Parameters:
     ///   - limit: 每页数量
-    ///   - offset: 偏移量
+    ///   - cursor: 上一页最后一条会话的排序游标
     /// - Returns: 会话列表分页结果（包含是否有更多数据）
     /// - Throws: 存储访问错误
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         let startUptime = ProcessInfo.processInfo.systemUptime
-        logger.info("ConversationList useCase page requested limit=\(limit) offset=\(offset)")
+        logger.info("ConversationList useCase page requested limit=\(limit) cursor=\(cursor?.conversationID.rawValue ?? "nil")")
         let repositoryStartUptime = ProcessInfo.processInfo.systemUptime
         let repository = try await storeProvider.repository()
         logger.info(
@@ -142,7 +144,7 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
 
         let requestedLimit = max(limit, 0)
         let queryStartUptime = ProcessInfo.processInfo.systemUptime
-        let conversations = try await repository.listConversations(for: userID, limit: requestedLimit + 1, offset: offset)
+        let conversations = try await repository.listConversations(for: userID, limit: requestedLimit + 1, after: cursor)
         logger.info(
             "ConversationList useCase query completed fetched=\(conversations.count) requestedLimit=\(requestedLimit) elapsed=\(AppLogger.elapsedMilliseconds(since: queryStartUptime))"
         )
@@ -150,13 +152,15 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         let pageConversations = Array(conversations.prefix(requestedLimit))
         let rows = Self.rowStates(from: pageConversations)
         let hasMore = conversations.count > requestedLimit
+        let nextCursor = pageConversations.last.map(ConversationPageCursor.init(conversation:))
         logger.info(
             "ConversationList useCase page completed rows=\(rows.count) hasMore=\(hasMore) totalElapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
 
         return ConversationListPage(
             rows: rows,
-            hasMore: hasMore
+            hasMore: hasMore,
+            nextCursor: nextCursor
         )
     }
 
@@ -340,16 +344,22 @@ nonisolated struct PreviewConversationListUseCase: ConversationListUseCase {
     ///
     /// - Parameters:
     ///   - limit: 每页数量
-    ///   - offset: 偏移量
+    ///   - cursor: 上一页最后一条会话的排序游标
     /// - Returns: 会话列表分页结果
-    func loadConversationPage(limit: Int, offset: Int) async throws -> ConversationListPage {
+    func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
         let rows = try await loadConversations()
         let requestedLimit = max(limit, 0)
-        let pageRows = Array(rows.dropFirst(offset).prefix(requestedLimit))
+        let startIndex = cursor
+            .flatMap { cursor in rows.firstIndex { $0.id == cursor.conversationID } }
+            .map { rows.index(after: $0) } ?? rows.startIndex
+        let pageRows = Array(rows[startIndex...].prefix(requestedLimit))
 
         return ConversationListPage(
             rows: pageRows,
-            hasMore: offset + pageRows.count < rows.count
+            hasMore: startIndex + pageRows.count < rows.count,
+            nextCursor: pageRows.last.map { row in
+                ConversationPageCursor(isPinned: row.isPinned, sortTimestamp: 0, conversationID: row.id)
+            }
         )
     }
 
