@@ -15,6 +15,7 @@ import UIKit
 import UniformTypeIdentifiers
 @testable import AppleIM
 
+@Suite(.serialized)
 struct AppleIMTests {
 
     @MainActor

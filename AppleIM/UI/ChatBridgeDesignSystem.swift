@@ -1000,12 +1000,34 @@ final class ConversationListCell: UICollectionViewCell {
     /// 重用前重置状态和头像加载
     override func prepareForReuse() {
         super.prepareForReuse()
-        if let conversationContentView = contentView.subviews.compactMap({ $0 as? ConversationListCellContentView }).first {
-            conversationContentView.reset()
-        }
+        resetConversationContentViews(in: self)
+        resetAvatarImageViews(in: self)
+        contentConfiguration = nil
         isAccessibilityElement = false
         accessibilityIdentifier = nil
         accessibilityLabel = nil
+    }
+
+    private func resetConversationContentViews(in view: UIView) {
+        for subview in view.subviews {
+            if let conversationContentView = subview as? ConversationListCellContentView {
+                conversationContentView.reset()
+            }
+            resetConversationContentViews(in: subview)
+        }
+    }
+
+    private func resetAvatarImageViews(in view: UIView) {
+        for subview in view.subviews {
+            if
+                let imageView = subview as? UIImageView,
+                imageView.accessibilityIdentifier == "conversation.avatarImageView"
+            {
+                imageView.image = nil
+                imageView.isHidden = true
+            }
+            resetAvatarImageViews(in: subview)
+        }
     }
 
     /// 使用会话行状态配置单元格
