@@ -1,6 +1,6 @@
 # ChatBridge MVP 验收报告
 
-> 日期：2026-05-09  
+> 日期：2026-05-09；稳定回归更新：2026-05-11
 > 范围：第一阶段 MVP，本地 Mock 链路与 iOS Simulator 回归  
 > 依据：`ChatBridge_Apple_IM_Requirements.md`、`ChatBridge_Technical_Development_Requirements.md`、`ChatBridge_Development_Task_Schedule.md`
 
@@ -8,7 +8,7 @@
 
 ChatBridge 第一阶段 MVP 的本地 Mock 链路已具备进入内测的基础条件：账号登录、会话列表、聊天页、文本/图片/语音消息、本地撤回/删除、草稿、搜索、通知、同步、账号隔离、数据库加密与媒体索引均已完成本地闭环或基础验证。
 
-真实生产发布仍依赖服务端联调、设备矩阵补测和本轮单元测试超时失败排查：文本消息 ack、消息重发、图片/视频上传、撤回/删除多端一致性需要在真实接口完成后补充端到端验收；当前本机无 iOS 15.x runtime 或可用 iOS 15 真机，iOS 15 真机和旧系统矩阵仍需 QA 补跑。
+真实生产发布仍依赖服务端联调和设备矩阵补测：文本消息 ack、消息重发、图片/视频上传、撤回/删除多端一致性需要在真实接口完成后补充端到端验收；当前本机无 iOS 15.x runtime 或可用 iOS 15 真机，iOS 15 真机和旧系统矩阵仍需 QA 补跑。2026-05-11 已完成本机稳定回归复测，历史 11 个单元测试超时不再复现，`AppleIMTests` 全量通过。
 
 ## 2. 功能验收
 
@@ -181,6 +181,40 @@ xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS
 - `AppleIMTests/AppleIMTests/conversationListViewControllerReportsInitialLoadFinishedOnce`
 - `AppleIMTests/AppleIMTests/conversationListViewModelRefreshesAfterPinAndMuteChanges`
 
+2026-05-11 稳定回归复测与修复：
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests/AppleIMTests/chatViewModelAppendsImageRowAfterSendingImage -only-testing:AppleIMTests/AppleIMTests/chatViewModelCanLoadOlderMessagesAfterPaginationFailure -only-testing:AppleIMTests/AppleIMTests/chatViewModelLoadsGroupAnnouncementAndMentionOptions -only-testing:AppleIMTests/AppleIMTests/chatViewModelPaginationFailureKeepsCurrentRows -only-testing:AppleIMTests/AppleIMTests/chatViewModelPrependsOlderMessagesWithoutDuplicates -only-testing:AppleIMTests/AppleIMTests/chatViewModelSendsComposerImageThenText -only-testing:AppleIMTests/AppleIMTests/chatViewModelSendsComposerVideoOnly -only-testing:AppleIMTests/AppleIMTests/chatViewModelSendsSelectedMentionMetadata -only-testing:AppleIMTests/AppleIMTests/chatViewModelTracksOnlyActiveVoicePlaybackRow -only-testing:AppleIMTests/AppleIMTests/conversationListViewControllerReportsInitialLoadFinishedOnce -only-testing:AppleIMTests/AppleIMTests/conversationListViewModelRefreshesAfterPinAndMuteChanges
+```
+
+结果：通过，输出 `TEST SUCCEEDED`，测试结果位于 `Test-AppleIM-2026.05.11_10-20-11-+0800.xcresult`。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests
+```
+
+首轮结果：失败，182 个单元测试中 1 个失败，历史 11 个超时用例均已通过；失败项为 `conversationListCellPrepareForReuseClearsAvatarImage`，错误为复用后头像 `UIImageView` 仍保留旧图片且未隐藏。
+
+修复说明：`ConversationListCell.prepareForReuse()` 现在递归重置 UIKit 包装层内的 `ConversationListCellContentView`，并清理旧 `contentConfiguration`，避免复用时保留上一条头像。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests/AppleIMTests/conversationListCellPrepareForReuseClearsAvatarImage
+```
+
+结果：通过，输出 `TEST SUCCEEDED`，测试结果位于 `Test-AppleIM-2026.05.11_10-18-47-+0800.xcresult`。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests
+```
+
+修复后结果：通过，输出 `TEST SUCCEEDED`，测试结果位于 `Test-AppleIM-2026.05.11_10-21-03-+0800.xcresult`。
+
+```sh
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing
+```
+
+结果：通过，输出 `TEST BUILD SUCCEEDED`。
+
 ```sh
 xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMUITests/AppleIMUITests/testLoginAndSendMessage
 ```
@@ -209,10 +243,9 @@ xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS
 | 撤回/删除多端一致性未验证 | 本地状态正确，但无法证明其他端同步一致 | 服务端撤回/删除事件接入后补齐多端同步回归。 |
 | iOS 15 真机矩阵待补跑 | 本机无 iOS 15.x Simulator runtime 或可用 iOS 15 真机，低系统 API 兼容仍需设备级确认 | QA 使用 iOS 15+ 真机和旧系统模拟器补充回归。 |
 | 生产推送链路待验证 | 本地通知已完成，真实 APNs 行为未覆盖 | 接入推送证书和服务端后补充前后台通知验收。 |
-| AppleIMTests 对照回归存在超时失败 | iOS 26.4.1 Simulator 上单元全集 170 passed / 11 failed，失败均为等待条件超时，完整回归不能标记通过 | 优先排查 ChatViewModel/ConversationListViewModel 异步等待类测试，修复或稳定化后补跑 `AppleIMTests`。 |
 
 ## 6. 发布判断
 
 - 本地 Mock/MVP：可进入内测。
 - 真实服务端联调版本：文本消息适配层已就绪，仍需完成真实 endpoint ack、重发幂等、媒体上传、撤回/删除同步验证后再进入灰度。
-- 生产发布：需完成 iOS 15 真机/旧系统矩阵补跑，排查本轮 11 个单元测试超时失败，并确认无 P0/P1 阻塞问题。
+- 生产发布：需完成 iOS 15 真机/旧系统矩阵补跑，完成真实服务端联调，并确认无 P0/P1 阻塞问题。

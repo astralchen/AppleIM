@@ -1000,9 +1000,10 @@ final class ConversationListCell: UICollectionViewCell {
     /// 重用前重置状态和头像加载
     override func prepareForReuse() {
         super.prepareForReuse()
-        if let conversationContentView = contentView.subviews.compactMap({ $0 as? ConversationListCellContentView }).first {
+        if let conversationContentView = findConversationContentView(in: contentView) {
             conversationContentView.reset()
         }
+        contentConfiguration = nil
         isAccessibilityElement = false
         accessibilityIdentifier = nil
         accessibilityLabel = nil
@@ -1031,6 +1032,21 @@ final class ConversationListCell: UICollectionViewCell {
     private func configureView() {
         backgroundColor = .clear
         contentView.backgroundColor = .clear
+    }
+
+    /// UIKit 可能包裹 UIContentConfiguration 内容视图，重用前递归查找并重置。
+    private func findConversationContentView(in view: UIView) -> ConversationListCellContentView? {
+        if let conversationContentView = view as? ConversationListCellContentView {
+            return conversationContentView
+        }
+
+        for subview in view.subviews {
+            if let conversationContentView = findConversationContentView(in: subview) {
+                return conversationContentView
+            }
+        }
+
+        return nil
     }
 }
 
