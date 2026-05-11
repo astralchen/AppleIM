@@ -35,7 +35,7 @@ nonisolated struct MessageDAO: Sendable {
             paths: paths
         )
 
-        return try rows.map(Self.message(from:))
+        return try rows.map { try Self.message(from: $0, paths: paths) }
     }
 
     static func listMessagesQuery(beforeSortSeq: Int64?) -> String {
@@ -184,7 +184,7 @@ nonisolated struct MessageDAO: Sendable {
             return nil
         }
 
-        return try Self.message(from: row)
+        return try Self.message(from: row, paths: paths)
     }
 
     /// 更新消息发送状态
@@ -1073,7 +1073,7 @@ nonisolated struct MessageDAO: Sendable {
     /// - Parameter row: 数据库查询结果行
     /// - Returns: 消息对象
     /// - Throws: 数据格式错误时抛出错误
-    private static func message(from row: SQLiteRow) throws -> StoredMessage {
+    private static func message(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredMessage {
         let typeRawValue = try row.requiredInt("msg_type")
         let directionRawValue = try row.requiredInt("direction")
         let sendStatusRawValue = try row.requiredInt("send_status")
@@ -1111,10 +1111,10 @@ nonisolated struct MessageDAO: Sendable {
             isDeleted: row.bool("is_deleted"),
             revokeReplacementText: row.string("replace_text"),
             text: row.string("text"),
-            image: try image(from: row),
-            voice: try voice(from: row),
-            video: try video(from: row),
-            file: try file(from: row),
+            image: try image(from: row, paths: paths),
+            voice: try voice(from: row, paths: paths),
+            video: try video(from: row, paths: paths),
+            file: try file(from: row, paths: paths),
             sortSequence: try row.requiredInt64("sort_seq"),
             localTime: try row.requiredInt64("local_time")
         )
@@ -1124,7 +1124,7 @@ nonisolated struct MessageDAO: Sendable {
     ///
     /// - Parameter row: 数据库查询结果行
     /// - Returns: 图片内容，如果不是图片消息则返回 nil
-    private static func image(from row: SQLiteRow) throws -> StoredImageContent? {
+    private static func image(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredImageContent? {
         guard
             let mediaID = row.string("image_media_id"),
             let localPath = row.string("image_local_path"),
@@ -1140,8 +1140,8 @@ nonisolated struct MessageDAO: Sendable {
 
         return StoredImageContent(
             mediaID: mediaID,
-            localPath: localPath,
-            thumbnailPath: thumbnailPath,
+            localPath: resolvedMediaPath(localPath, in: paths),
+            thumbnailPath: resolvedMediaPath(thumbnailPath, in: paths),
             width: row.int("image_width") ?? 0,
             height: row.int("image_height") ?? 0,
             sizeBytes: row.int64("image_size_bytes") ?? 0,
@@ -1156,7 +1156,7 @@ nonisolated struct MessageDAO: Sendable {
     ///
     /// - Parameter row: 数据库查询结果行
     /// - Returns: 语音内容，如果不是语音消息则返回 nil
-    private static func voice(from row: SQLiteRow) throws -> StoredVoiceContent? {
+    private static func voice(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredVoiceContent? {
         guard
             let mediaID = row.string("voice_media_id"),
             let localPath = row.string("voice_local_path")
@@ -1171,7 +1171,7 @@ nonisolated struct MessageDAO: Sendable {
 
         return StoredVoiceContent(
             mediaID: mediaID,
-            localPath: localPath,
+            localPath: resolvedMediaPath(localPath, in: paths),
             durationMilliseconds: row.int("voice_duration_ms") ?? 0,
             sizeBytes: row.int64("voice_size_bytes") ?? 0,
             remoteURL: row.string("voice_cdn_url"),
@@ -1180,7 +1180,7 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
-    private static func video(from row: SQLiteRow) throws -> StoredVideoContent? {
+    private static func video(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredVideoContent? {
         guard
             let mediaID = row.string("video_media_id"),
             let localPath = row.string("video_local_path"),
@@ -1196,8 +1196,8 @@ nonisolated struct MessageDAO: Sendable {
 
         return StoredVideoContent(
             mediaID: mediaID,
-            localPath: localPath,
-            thumbnailPath: thumbnailPath,
+            localPath: resolvedMediaPath(localPath, in: paths),
+            thumbnailPath: resolvedMediaPath(thumbnailPath, in: paths),
             durationMilliseconds: row.int("video_duration_ms") ?? 0,
             width: row.int("video_width") ?? 0,
             height: row.int("video_height") ?? 0,
@@ -1208,7 +1208,7 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
-    private static func file(from row: SQLiteRow) throws -> StoredFileContent? {
+    private static func file(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredFileContent? {
         guard
             let mediaID = row.string("file_media_id"),
             let localPath = row.string("file_local_path"),
@@ -1224,7 +1224,7 @@ nonisolated struct MessageDAO: Sendable {
 
         return StoredFileContent(
             mediaID: mediaID,
-            localPath: localPath,
+            localPath: resolvedMediaPath(localPath, in: paths),
             fileName: fileName,
             fileExtension: row.string("file_ext"),
             sizeBytes: row.int64("file_size_bytes") ?? 0,
@@ -1232,5 +1232,24 @@ nonisolated struct MessageDAO: Sendable {
             md5: row.string("file_md5"),
             uploadStatus: uploadStatus
         )
+    }
+
+    private static func resolvedMediaPath(_ storedPath: String, in paths: AccountStoragePaths) -> String {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: storedPath) else {
+            return storedPath
+        }
+
+        let standardizedPath = URL(fileURLWithPath: storedPath).standardizedFileURL.path
+        guard let mediaRange = standardizedPath.range(of: "/media/") else {
+            return storedPath
+        }
+
+        let relativeMediaPath = String(standardizedPath[mediaRange.upperBound...])
+        let currentPath = paths.mediaDirectory.appendingPathComponent(relativeMediaPath).path
+        guard fileManager.fileExists(atPath: currentPath) else {
+            return storedPath
+        }
+        return currentPath
     }
 }

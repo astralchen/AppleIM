@@ -57,6 +57,8 @@ final class ChatViewModel {
     private var selectedMentionsAll = false
     /// 每页加载的消息数量
     private let pageSize = 50
+    /// 微信式时间分隔阈值：相邻消息间隔达到 5 分钟时显示时间
+    private static let timeSeparatorInterval: Int64 = 5 * 60
 
     /// 状态发布器，UI 订阅此 Publisher 以接收状态更新
     var statePublisher: AnyPublisher<ChatViewState, Never> {
@@ -107,7 +109,7 @@ final class ChatViewModel {
                 self.groupContext = loadedGroupContext
                 publish { state in
                     state.phase = .loaded
-                    state.rows = loadedPage.rows
+                    state.rows = Self.rowsWithTimeSeparators(loadedPage.rows)
                     state.draftText = loadedDraft
                     state.groupAnnouncement = Self.announcementState(from: loadedGroupContext)
                     state.hasMoreOlderMessages = loadedPage.hasMore
@@ -161,7 +163,7 @@ final class ChatViewModel {
                 publish { state in
                     let existingIDs = Set(state.rows.map(\.id))
                     let olderRows = page.rows.filter { !existingIDs.contains($0.id) }
-                    state.rows = olderRows + state.rows
+                    state.rows = Self.rowsWithTimeSeparators(olderRows + state.rows)
                     state.hasMoreOlderMessages = page.hasMore
                     state.isLoadingOlderMessages = false
                     state.paginationErrorMessage = nil
@@ -604,6 +606,7 @@ final class ChatViewModel {
 
                 publish { state in
                     state.rows.removeAll { $0.id == messageID }
+                    state.rows = Self.rowsWithTimeSeparators(state.rows)
                     state.phase = .loaded
                 }
             } catch is CancellationError {
@@ -632,7 +635,7 @@ final class ChatViewModel {
                 guard !Task.isCancelled else { return }
 
                 publish { state in
-                    state.rows = page.rows
+                    state.rows = Self.rowsWithTimeSeparators(page.rows)
                     state.hasMoreOlderMessages = page.hasMore
                     state.isLoadingOlderMessages = false
                     state.paginationErrorMessage = nil
@@ -681,7 +684,23 @@ final class ChatViewModel {
                 state.rows.append(row)
             }
 
+            state.rows = Self.rowsWithTimeSeparators(state.rows)
             state.phase = .loaded
+        }
+    }
+
+    private static func rowsWithTimeSeparators(_ rows: [ChatMessageRowState]) -> [ChatMessageRowState] {
+        rows.enumerated().map { index, row in
+            guard index > 0 else {
+                return row.withTimeSeparator(true)
+            }
+
+            let previousRow = rows[index - 1]
+            let previousDate = Date(timeIntervalSince1970: TimeInterval(previousRow.sentAt))
+            let currentDate = Date(timeIntervalSince1970: TimeInterval(row.sentAt))
+            let crossesDay = !Calendar.current.isDate(previousDate, inSameDayAs: currentDate)
+            let reachesInterval = row.sentAt - previousRow.sentAt >= Self.timeSeparatorInterval
+            return row.withTimeSeparator(crossesDay || reachesInterval)
         }
     }
 

@@ -94,7 +94,7 @@ xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/plat
 ```
 
 ```sh
-xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 16' test
+xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test
 ```
 
 如本机模拟器名称不同，先查询可用设备：

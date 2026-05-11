@@ -99,8 +99,12 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
     let content: ChatMessageRowContent
     /// 排序序号
     let sortSequence: Int64
+    /// 消息发送时间戳（秒）
+    let sentAt: Int64
     /// 时间文本
     let timeText: String
+    /// 是否显示时间分隔
+    let showsTimeSeparator: Bool
     /// 状态文本（发送中、失败等）
     let statusText: String?
     /// 上传进度（0.0-1.0）
@@ -120,7 +124,9 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         id: MessageID,
         content: ChatMessageRowContent,
         sortSequence: Int64,
+        sentAt: Int64 = 0,
         timeText: String,
+        showsTimeSeparator: Bool = true,
         statusText: String?,
         uploadProgress: Double?,
         senderAvatarURL: String? = nil,
@@ -132,7 +138,9 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         self.id = id
         self.content = content
         self.sortSequence = sortSequence
+        self.sentAt = sentAt
         self.timeText = timeText
+        self.showsTimeSeparator = showsTimeSeparator
         self.statusText = statusText
         self.uploadProgress = uploadProgress
         self.senderAvatarURL = senderAvatarURL
@@ -158,7 +166,27 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             id: id,
             content: .voice(updatedVoice),
             sortSequence: sortSequence,
+            sentAt: sentAt,
             timeText: timeText,
+            showsTimeSeparator: showsTimeSeparator,
+            statusText: statusText,
+            uploadProgress: uploadProgress,
+            senderAvatarURL: senderAvatarURL,
+            isOutgoing: isOutgoing,
+            canRetry: canRetry,
+            canDelete: canDelete,
+            canRevoke: canRevoke
+        )
+    }
+
+    func withTimeSeparator(_ showsTimeSeparator: Bool) -> ChatMessageRowState {
+        ChatMessageRowState(
+            id: id,
+            content: content,
+            sortSequence: sortSequence,
+            sentAt: sentAt,
+            timeText: timeText,
+            showsTimeSeparator: showsTimeSeparator,
             statusText: statusText,
             uploadProgress: uploadProgress,
             senderAvatarURL: senderAvatarURL,

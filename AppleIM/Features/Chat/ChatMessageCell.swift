@@ -274,6 +274,7 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
     private var mediaWidthConstraint: NSLayoutConstraint?
     private var mediaHeightConstraint: NSLayoutConstraint?
     private var row: ChatMessageRowState?
+    private var isVideoMessage = false
     private var actions = ChatMessageCellActions.empty
 
     override init(frame: CGRect) {
@@ -312,6 +313,7 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
             isVideo = false
             videoDurationMilliseconds = nil
         }
+        isVideoMessage = isVideo
 
         if let thumbnailPath {
             thumbnailImageView.image = UIImage(contentsOfFile: thumbnailPath)
@@ -331,15 +333,19 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
         videoPlaybackButton.accessibilityLabel = "Play Video"
         videoDurationLabel.text = Self.durationText(milliseconds: videoDurationMilliseconds ?? 0)
         videoDurationLabel.textColor = .white
+        accessibilityLabel = isVideo ? "Play Video" : "Image"
     }
 
     private func configureView() {
         translatesAutoresizingMaskIntoConstraints = false
+        isAccessibilityElement = true
 
         mediaContainerView.translatesAutoresizingMaskIntoConstraints = false
         mediaContainerView.clipsToBounds = true
         mediaContainerView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleMessageMedia
         mediaContainerView.backgroundColor = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming
+        mediaContainerView.isUserInteractionEnabled = true
+        mediaContainerView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(mediaContainerTapped)))
 
         thumbnailImageView.translatesAutoresizingMaskIntoConstraints = false
         thumbnailImageView.contentMode = .scaleAspectFill
@@ -417,7 +423,21 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
     }
 
     @objc private func videoPlaybackButtonTapped() {
-        guard let row else { return }
+        playVideoIfAvailable()
+    }
+
+    @objc private func mediaContainerTapped() {
+        playVideoIfAvailable()
+    }
+
+    override func accessibilityActivate() -> Bool {
+        guard isVideoMessage else { return false }
+        playVideoIfAvailable()
+        return true
+    }
+
+    private func playVideoIfAvailable() {
+        guard isVideoMessage, let row else { return }
         actions.onPlayVideo(row)
     }
 
@@ -668,6 +688,10 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
     private var incomingAvatarLeadingConstraint: NSLayoutConstraint?
     private var incomingBubbleLeadingConstraint: NSLayoutConstraint?
     private var outgoingBubbleTrailingConstraint: NSLayoutConstraint?
+    private var metadataTopConstraint: NSLayoutConstraint?
+    private var bubbleTopConstraint: NSLayoutConstraint?
+    private var bubbleTopWithoutMetadataConstraint: NSLayoutConstraint?
+    private var metadataHiddenHeightConstraint: NSLayoutConstraint?
     private var stackTopConstraint: NSLayoutConstraint?
     private var stackLeadingConstraint: NSLayoutConstraint?
     private var stackTrailingConstraint: NSLayoutConstraint?
@@ -728,6 +752,29 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         avatarDataTask?.cancel()
     }
 
+    override func systemLayoutSizeFitting(
+        _ targetSize: CGSize,
+        withHorizontalFittingPriority horizontalFittingPriority: UILayoutPriority,
+        verticalFittingPriority: UILayoutPriority
+    ) -> CGSize {
+        let hasUnboundedHeight = !targetSize.height.isFinite
+            || targetSize.height >= CGFloat.greatestFiniteMagnitude / 2
+        let fittingTargetSize = CGSize(
+            width: targetSize.width,
+            height: hasUnboundedHeight ? UIView.layoutFittingCompressedSize.height : targetSize.height
+        )
+        let fittingVerticalPriority = hasUnboundedHeight ? UILayoutPriority.fittingSizeLevel : verticalFittingPriority
+        let fittingSize = super.systemLayoutSizeFitting(
+            fittingTargetSize,
+            withHorizontalFittingPriority: horizontalFittingPriority,
+            verticalFittingPriority: fittingVerticalPriority
+        )
+        guard fittingSize.height.isFinite, fittingSize.height < CGFloat.greatestFiniteMagnitude / 2 else {
+            return CGSize(width: fittingSize.width, height: UIView.layoutFittingCompressedSize.height)
+        }
+        return fittingSize
+    }
+
     private func apply(configuration: ChatMessageCellContentConfiguration) {
         configure(row: configuration.row, actions: configuration.actions)
         updateCellState(configuration: configuration)
@@ -774,11 +821,23 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         configureBubblePadding(style: bubbleStyle)
 
         let progressText = row.uploadProgress.map { "Uploading \(Int($0 * 100))%" }
-        metadataLabel.text = [row.timeText, progressText ?? row.statusText].compactMap { $0 }.joined(separator: " · ")
+        let metadataText = [
+            row.showsTimeSeparator ? row.timeText : nil,
+            progressText ?? row.statusText
+        ].compactMap { $0 }.joined(separator: " · ")
+        let showsMetadataText = !metadataText.isEmpty
+        let showsMetadata = showsMetadataText || row.canRetry
+        metadataLabel.text = metadataText
+        metadataLabel.isHidden = !showsMetadataText
         metadataLabel.textColor = .secondaryLabel
         retryButton.isHidden = !row.canRetry
         retryButton.tintColor = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
         retryButton.accessibilityIdentifier = "chat.retryButton.\(row.id.rawValue)"
+        metadataStackView.isHidden = !showsMetadata
+        metadataHiddenHeightConstraint?.isActive = !showsMetadata
+        metadataTopConstraint?.constant = showsMetadata ? 4 : 0
+        bubbleTopConstraint?.isActive = showsMetadata
+        bubbleTopWithoutMetadataConstraint?.isActive = !showsMetadata
 
         incomingAvatarLeadingConstraint?.isActive = !row.isOutgoing
         incomingBubbleLeadingConstraint?.isActive = !row.isOutgoing
@@ -887,10 +946,18 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         incomingBubbleLeadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 8)
         outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor)
 
+        let metadataTopConstraint = metadataStackView.topAnchor.constraint(equalTo: topAnchor, constant: 4)
+        let bubbleTopConstraint = bubbleView.topAnchor.constraint(equalTo: metadataStackView.bottomAnchor, constant: 4)
+        let bubbleTopWithoutMetadataConstraint = bubbleView.topAnchor.constraint(equalTo: topAnchor)
+        let metadataHiddenHeightConstraint = metadataStackView.heightAnchor.constraint(equalToConstant: 0)
         let stackTopConstraint = stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10)
         let stackLeadingConstraint = stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 13)
         let stackTrailingConstraint = stackView.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -13)
         let stackBottomConstraint = stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -10)
+        self.metadataTopConstraint = metadataTopConstraint
+        self.bubbleTopConstraint = bubbleTopConstraint
+        self.bubbleTopWithoutMetadataConstraint = bubbleTopWithoutMetadataConstraint
+        self.metadataHiddenHeightConstraint = metadataHiddenHeightConstraint
         self.stackTopConstraint = stackTopConstraint
         self.stackLeadingConstraint = stackLeadingConstraint
         self.stackTrailingConstraint = stackTrailingConstraint
@@ -911,12 +978,12 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
             avatarImageView.trailingAnchor.constraint(equalTo: avatarView.trailingAnchor),
             avatarImageView.bottomAnchor.constraint(equalTo: avatarView.bottomAnchor),
 
-            metadataStackView.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            metadataTopConstraint,
             metadataStackView.centerXAnchor.constraint(equalTo: centerXAnchor),
             metadataStackView.leadingAnchor.constraint(greaterThanOrEqualTo: layoutMarginsGuide.leadingAnchor),
             metadataStackView.trailingAnchor.constraint(lessThanOrEqualTo: layoutMarginsGuide.trailingAnchor),
 
-            bubbleView.topAnchor.constraint(equalTo: metadataStackView.bottomAnchor, constant: 4),
+            bubbleTopConstraint,
             bubbleView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
             bubbleView.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, multiplier: 0.72),
 
