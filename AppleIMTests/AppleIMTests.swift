@@ -1417,6 +1417,187 @@ struct AppleIMTests {
         #expect(messageResults.messages.contains { $0.messageID == "usecase_search_message" })
     }
 
+    @Test func bundleContactCatalogReadsContactsForAccount() async throws {
+        let catalog = BundleContactCatalog(resourceURL: try makeMockContactsFile())
+
+        let contacts = try await catalog.contacts(for: "mock_user")
+
+        #expect(contacts.map(\.contactID.rawValue) == ["contact_sondra", "group_core_contact"])
+        #expect(contacts.first?.displayName == "Sondra")
+        #expect(contacts.first?.type == .friend)
+        #expect(contacts.last?.type == .group)
+    }
+
+    @Test func demoDataSeederSeedsContactsIdempotentlyWithoutOverwritingExistingRows() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "mock_user")
+        try await repository.upsertContact(
+            ContactRecord(
+                contactID: "contact_sondra",
+                userID: "mock_user",
+                wxid: "sondra",
+                nickname: "Existing Sondra",
+                remark: "Do Not Replace",
+                avatarURL: nil,
+                type: .friend,
+                isStarred: false,
+                isBlocked: false,
+                isDeleted: false,
+                source: nil,
+                extraJSON: nil,
+                updatedAt: 1,
+                createdAt: 1
+            )
+        )
+
+        try await DemoDataSeeder.seedContactsIfNeeded(
+            repository: repository,
+            userID: "mock_user",
+            catalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+        try await DemoDataSeeder.seedContactsIfNeeded(
+            repository: repository,
+            userID: "mock_user",
+            catalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+
+        let contacts = try await repository.listContacts(for: "mock_user")
+        let existing = try #require(contacts.first { $0.contactID == "contact_sondra" })
+
+        #expect(contacts.count == 1)
+        #expect(existing.displayName == "Do Not Replace")
+        #expect(existing.isStarred == false)
+    }
+
+    @Test func demoDataSeederSeedsContactsFromJSONWhenAccountHasNoContacts() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "mock_user")
+
+        try await DemoDataSeeder.seedContactsIfNeeded(
+            repository: repository,
+            userID: "mock_user",
+            catalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+
+        let contacts = try await repository.listContacts(for: "mock_user")
+
+        #expect(contacts.map(\.contactID.rawValue) == ["contact_sondra", "group_core_contact"])
+        #expect(contacts.first?.displayName == "Sondra")
+        #expect(contacts.last?.type == .group)
+    }
+
+    @Test func demoDataSeederSeedsUITestAccountAndConversationPageLoads() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "ui_test_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
+
+        let page = try await useCase.loadConversationPage(limit: 50, after: nil)
+
+        #expect(page.rows.map(\.id.rawValue).contains("single_sondra"))
+        #expect(page.rows.map(\.title).contains("Sondra"))
+    }
+
+    @Test func localContactListUseCaseGroupsAndFiltersContacts() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "contacts_group_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertContact(makeContactRecord(contactID: "friend_normal", userID: "contacts_group_user", wxid: "normal", nickname: "Normal Friend"))
+        try await repository.upsertContact(makeContactRecord(contactID: "friend_starred", userID: "contacts_group_user", wxid: "star", nickname: "Star Friend", isStarred: true))
+        try await repository.upsertContact(makeContactRecord(contactID: "group_ios", userID: "contacts_group_user", wxid: "ios_group", nickname: "iOS Group", type: .group))
+        try await repository.upsertContact(makeContactRecord(contactID: "deleted_friend", userID: "contacts_group_user", wxid: "deleted", nickname: "Deleted", isDeleted: true))
+
+        let useCase = LocalContactListUseCase(userID: "contacts_group_user", storeProvider: storeProvider)
+        let state = try await useCase.loadContacts(query: "")
+        let filtered = try await useCase.loadContacts(query: "star")
+
+        #expect(state.groupRows.map(\.title) == ["iOS Group"])
+        #expect(state.starredRows.map(\.title) == ["Star Friend"])
+        #expect(state.contactRows.map(\.title) == ["Normal Friend"])
+        #expect(filtered.starredRows.map(\.title) == ["Star Friend"])
+        #expect(filtered.contactRows.isEmpty)
+        #expect(filtered.groupRows.isEmpty)
+    }
+
+    @MainActor
+    @Test func contactListViewModelLoadsFiltersAndOpensContactConversation() async throws {
+        let useCase = StubContactListUseCase()
+        let viewModel = ContactListViewModel(useCase: useCase)
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        #expect(viewModel.currentState.contactRows.map(\.title) == ["Sondra"])
+
+        viewModel.updateSearchQuery("son")
+        try await waitForCondition {
+            let queries = await useCase.queries
+            return viewModel.currentState.query == "son" && queries.contains("son")
+        }
+
+        var openedConversation: ConversationListRowState?
+        viewModel.open(row: ContactListRowState(contact: makeContactRecord(contactID: "contact_sondra", userID: "contact_vm_user", wxid: "sondra", nickname: "Sondra"))) {
+            openedConversation = $0
+        }
+        try await waitForCondition {
+            openedConversation?.id == "single_sondra"
+        }
+    }
+
+    @Test func localContactListUseCaseCreatesSingleConversationForFriendAndReusesExistingConversation() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "contacts_open_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        let contact = makeContactRecord(contactID: "contact_new", userID: "contacts_open_user", wxid: "new_friend", nickname: "New Friend")
+        try await repository.upsertContact(contact)
+
+        let useCase = LocalContactListUseCase(userID: "contacts_open_user", storeProvider: storeProvider)
+        let created = try await useCase.openConversation(for: contact.contactID)
+        let reused = try await useCase.openConversation(for: contact.contactID)
+        let conversations = try await repository.listConversations(for: "contacts_open_user")
+
+        #expect(created.id == "single_new_friend")
+        #expect(created.title == "New Friend")
+        #expect(reused.id == created.id)
+        #expect(conversations.filter { $0.id == "single_new_friend" }.count == 1)
+    }
+
     @MainActor
     @Test func searchViewModelDebouncesAndIgnoresStaleResults() async throws {
         let useCase = StaleSearchUseCase()
@@ -7985,6 +8166,42 @@ private struct StubConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
+private actor StubContactListUseCase: ContactListUseCase {
+    private(set) var queries: [String] = []
+
+    func loadContacts(query: String) async throws -> ContactListViewState {
+        queries.append(query)
+        let row = ContactListRowState(
+            contact: makeContactRecord(
+                contactID: "contact_sondra",
+                userID: "contact_vm_user",
+                wxid: "sondra",
+                nickname: "Sondra"
+            )
+        )
+        return ContactListViewState(
+            query: query,
+            phase: .loaded,
+            groupRows: [],
+            starredRows: [],
+            contactRows: [row]
+        )
+    }
+
+    func openConversation(for contactID: ContactID) async throws -> ConversationListRowState {
+        #expect(contactID == "contact_sondra")
+        return ConversationListRowState(
+            id: "single_sondra",
+            title: "Sondra",
+            subtitle: "",
+            timeText: "",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        )
+    }
+}
+
 private struct PagedConversationListUseCase: ConversationListUseCase {
     private let rows: [ConversationListRowState] = (0..<3).map { index in
         ConversationListRowState(
@@ -9924,6 +10141,55 @@ private func makeMockAccountsFile() throws -> URL {
     return url
 }
 
+private func makeMockContactsFile() throws -> URL {
+    let directory = temporaryDirectory()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("mock_contacts.json")
+    let json = """
+    [
+      {
+        "accountID": "mock_user",
+        "contacts": [
+          {
+            "contactID": "contact_sondra",
+            "wxid": "sondra",
+            "nickname": "Sondra",
+            "remark": "",
+            "avatarURL": "https://example.com/sondra.png",
+            "type": "friend",
+            "isStarred": true
+          },
+          {
+            "contactID": "group_core_contact",
+            "wxid": "chatbridge_core",
+            "nickname": "ChatBridge Core",
+            "remark": "",
+            "avatarURL": null,
+            "type": "group",
+            "isStarred": false
+          }
+        ]
+      },
+      {
+        "accountID": "other_user",
+        "contacts": [
+          {
+            "contactID": "contact_other",
+            "wxid": "other",
+            "nickname": "Other",
+            "remark": "",
+            "avatarURL": null,
+            "type": "friend",
+            "isStarred": false
+          }
+        ]
+      }
+    ]
+    """
+    try Data(json.utf8).write(to: url, options: [.atomic])
+    return url
+}
+
 private func samplePNGData() -> Data {
     Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=")!
 }
@@ -10254,6 +10520,39 @@ private func makeConversationRecord(
         sortTimestamp: sortTimestamp,
         updatedAt: sortTimestamp,
         createdAt: sortTimestamp
+    )
+}
+
+private func makeContactRecord(
+    contactID: ContactID,
+    userID: UserID,
+    wxid: String,
+    nickname: String,
+    remark: String? = nil,
+    avatarURL: String? = nil,
+    type: ContactType = .friend,
+    isStarred: Bool = false,
+    isBlocked: Bool = false,
+    isDeleted: Bool = false,
+    source: Int? = nil,
+    extraJSON: String? = nil,
+    timestamp: Int64 = 1
+) -> ContactRecord {
+    ContactRecord(
+        contactID: contactID,
+        userID: userID,
+        wxid: wxid,
+        nickname: nickname,
+        remark: remark,
+        avatarURL: avatarURL,
+        type: type,
+        isStarred: isStarred,
+        isBlocked: isBlocked,
+        isDeleted: isDeleted,
+        source: source,
+        extraJSON: extraJSON,
+        updatedAt: timestamp,
+        createdAt: timestamp
     )
 }
 

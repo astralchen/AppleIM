@@ -85,6 +85,8 @@ nonisolated enum DemoDataSeeder {
 
             try await repository.insertInitialConversations(records)
         }
+
+        try await seedContactsIfNeeded(repository: repository, userID: userID)
         try await repository.upsertGroupMembers([
             GroupMember(
                 conversationID: "group_core",
@@ -121,6 +123,20 @@ nonisolated enum DemoDataSeeder {
             text: "群聊 P1 本地闭环演示：公告、@ 成员与会话提示已接入。"
         )
         try await seedEmojiIfNeeded(repository: repository, userID: userID, now: now)
+    }
+
+    /// 如果当前账号没有联系人，则从本地 JSON 模拟通讯录填充。
+    static func seedContactsIfNeeded(
+        repository: LocalChatRepository,
+        userID: UserID,
+        catalog: any ContactCatalog = BundleContactCatalog()
+    ) async throws {
+        guard try await repository.countContacts(for: userID) == 0 else {
+            return
+        }
+
+        let contacts = try await catalog.contacts(for: userID)
+        try await repository.upsertContacts(contacts)
     }
 
     private static func seedEmojiIfNeeded(repository: LocalChatRepository, userID: UserID, now: Int64) async throws {

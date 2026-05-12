@@ -193,6 +193,44 @@ nonisolated struct ConversationDAO: Sendable {
         return try rows.first?.requiredInt("conversation_count") ?? 0
     }
 
+    /// 根据账号、会话类型和目标 ID 查询会话。
+    func conversation(userID: UserID, type: ConversationType, targetID: String) async throws -> ConversationRecord? {
+        let rows = try await database.query(
+            """
+            SELECT
+                conversation_id,
+                user_id,
+                biz_type,
+                target_id,
+                title,
+                avatar_url,
+                last_message_id,
+                last_message_time,
+                last_message_digest,
+                unread_count,
+                draft_text,
+                is_pinned,
+                is_muted,
+                is_hidden,
+                sort_ts,
+                updated_at,
+                created_at
+            FROM conversation
+            WHERE user_id = ? AND biz_type = ? AND target_id = ? AND is_hidden = 0
+            ORDER BY sort_ts DESC, conversation_id DESC
+            LIMIT 1;
+            """,
+            parameters: [
+                .text(userID.rawValue),
+                .integer(Int64(type.rawValue)),
+                .text(targetID)
+            ],
+            paths: paths
+        )
+
+        return try rows.first.map(Self.record(from:))
+    }
+
     /// 标记会话已读
     ///
     /// 将未读数清零

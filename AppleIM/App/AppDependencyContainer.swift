@@ -237,6 +237,27 @@ final class AppDependencyContainer {
         )
     }
 
+    func makeContactListViewController() -> ContactListViewController {
+        let useCase = LocalContactListUseCase(
+            userID: accountID,
+            storeProvider: storeProvider
+        )
+        let viewModel = ContactListViewModel(useCase: useCase)
+        return ContactListViewController(
+            viewModel: viewModel,
+            onSelectConversation: { conversation in
+                let chatViewController = self.makeChatViewController(conversation: conversation)
+                UIApplication.shared.connectedScenes
+                    .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+                    .first?
+                    .rootViewController?
+                    .topVisibleViewController
+                    .navigationController?
+                    .pushViewController(chatViewController, animated: true)
+            }
+        )
+    }
+
     func makeChatViewController(conversation: ConversationListRowState) -> ChatViewController {
         let useCase = StoreBackedChatUseCase(
             userID: accountID,
@@ -266,6 +287,10 @@ private extension UIViewController {
     var topVisibleViewController: UIViewController {
         if let navigationController = self as? UINavigationController {
             return navigationController.visibleViewController?.topVisibleViewController ?? navigationController
+        }
+
+        if let tabBarController = self as? UITabBarController {
+            return tabBarController.selectedViewController?.topVisibleViewController ?? tabBarController
         }
 
         if let presentedViewController {

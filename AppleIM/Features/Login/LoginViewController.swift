@@ -119,7 +119,7 @@ final class LoginViewController: UIViewController {
         accountTextField.translatesAutoresizingMaskIntoConstraints = false
         configureAuthTextField(accountTextField)
         accountTextField.placeholder = "Apple ID or account"
-        accountTextField.textContentType = .username
+        accountTextField.textContentType = AppUITestConfiguration.current == nil ? .username : .oneTimeCode
         accountTextField.autocapitalizationType = .none
         accountTextField.autocorrectionType = .no
         accountTextField.returnKeyType = .next
@@ -129,7 +129,7 @@ final class LoginViewController: UIViewController {
         passwordTextField.translatesAutoresizingMaskIntoConstraints = false
         configureAuthTextField(passwordTextField)
         passwordTextField.placeholder = "Password"
-        passwordTextField.textContentType = .password
+        passwordTextField.textContentType = AppUITestConfiguration.current == nil ? .password : .oneTimeCode
         passwordTextField.isSecureTextEntry = true
         passwordTextField.returnKeyType = .go
         passwordTextField.accessibilityIdentifier = "login.passwordTextField"

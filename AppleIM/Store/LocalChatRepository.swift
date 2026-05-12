@@ -90,13 +90,15 @@ nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
 /// 所有操作通过 DatabaseActor 串行化执行
-nonisolated struct LocalChatRepository: ConversationRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, EmojiRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, ContactRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, EmojiRepository, SyncStore {
     /// 数据库 Actor
     private let database: DatabaseActor
     /// 账号存储路径
     private let paths: AccountStoragePaths
     /// 会话 DAO
     private let conversationDAO: ConversationDAO
+    /// 联系人 DAO
+    private let contactDAO: ContactDAO
     /// 消息 DAO
     private let messageDAO: MessageDAO
     /// 表情 DAO
@@ -115,6 +117,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         self.database = database
         self.paths = paths
         self.conversationDAO = ConversationDAO(database: database, paths: paths)
+        self.contactDAO = ContactDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
         self.emojiDAO = EmojiDAO(database: database, paths: paths)
         self.localNotificationManager = localNotificationManager
@@ -335,6 +338,75 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             updatedAt: now
         )
         try await updateConversationExtra(conversationID: conversationID, extra: extra, updatedAt: now)
+    }
+
+    // MARK: - ContactRepository
+
+    /// 查询当前账号未删除联系人。
+    func listContacts(for userID: UserID) async throws -> [ContactRecord] {
+        try await contactDAO.listContacts(for: userID)
+    }
+
+    /// 统计当前账号联系人数量。
+    func countContacts(for userID: UserID) async throws -> Int {
+        try await contactDAO.countContacts(for: userID)
+    }
+
+    /// 查询单个联系人。
+    func contact(id contactID: ContactID, userID: UserID) async throws -> ContactRecord? {
+        try await contactDAO.contact(id: contactID, userID: userID)
+    }
+
+    /// 插入或更新联系人。
+    func upsertContact(_ record: ContactRecord) async throws {
+        try await contactDAO.upsert(record)
+    }
+
+    /// 批量插入或更新联系人。
+    func upsertContacts(_ records: [ContactRecord]) async throws {
+        try await contactDAO.upsert(records)
+    }
+
+    /// 获取联系人对应会话；没有会话时创建本地空会话。
+    func conversationForContact(contactID: ContactID, userID: UserID) async throws -> Conversation {
+        guard let contact = try await contact(id: contactID, userID: userID) else {
+            throw ContactStoreError.contactNotFound(contactID)
+        }
+
+        guard let conversationType = contact.type.conversationType else {
+            throw ContactStoreError.unsupportedContactType(contact.type)
+        }
+
+        if let existing = try await conversationDAO.conversation(userID: userID, type: conversationType, targetID: contact.wxid) {
+            return Self.conversation(from: existing)
+        }
+
+        let now = Self.currentTimestamp()
+        let conversationID = Self.conversationID(for: contact)
+        let record = ConversationRecord(
+            id: conversationID,
+            userID: userID,
+            type: conversationType,
+            targetID: contact.wxid,
+            title: contact.displayName,
+            avatarURL: contact.avatarURL,
+            lastMessageID: nil,
+            lastMessageTime: nil,
+            lastMessageDigest: "No messages yet",
+            unreadCount: 0,
+            draftText: nil,
+            isPinned: false,
+            isMuted: false,
+            isHidden: false,
+            sortTimestamp: now,
+            updatedAt: now,
+            createdAt: now
+        )
+
+        try await conversationDAO.upsert(record)
+        scheduleConversationIndex(conversationID: record.id, userID: userID)
+        Self.postConversationsDidChangeNotification(userID: userID, conversationIDs: [record.id])
+        return Self.conversation(from: record)
     }
 
     // MARK: - NotificationSettingsRepository
@@ -1637,6 +1709,17 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
             sortTimestamp: record.sortTimestamp,
             hasUnreadMention: extra?.hasUnreadMention == true
         )
+    }
+
+    private static func conversationID(for contact: ContactRecord) -> ConversationID {
+        switch contact.type {
+        case .friend:
+            ConversationID(rawValue: "single_\(contact.wxid)")
+        case .group:
+            ConversationID(rawValue: "group_\(contact.wxid)")
+        case .service, .system, .stranger:
+            ConversationID(rawValue: "contact_\(contact.wxid)")
+        }
     }
 
     private static func postConversationsDidChangeNotification(

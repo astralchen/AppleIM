@@ -525,6 +525,12 @@ actor DatabaseActor {
             in: .main,
             paths: paths
         )
+
+        for script in DatabaseSchema.migrationScripts {
+            for statement in script.statements {
+                try executeIdempotentStatement(statement, in: script.database, paths: paths)
+            }
+        }
     }
 
     /// 执行幂等 SQL
