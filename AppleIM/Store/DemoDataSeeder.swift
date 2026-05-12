@@ -84,6 +84,7 @@ nonisolated enum DemoDataSeeder {
             ]
 
             try await repository.insertInitialConversations(records)
+            try await repository.insertInitialTextMessages(initialMessages(userID: userID, now: now))
         }
 
         try await seedContactsIfNeeded(repository: repository, userID: userID)
@@ -137,6 +138,63 @@ nonisolated enum DemoDataSeeder {
 
         let contacts = try await catalog.contacts(for: userID)
         try await repository.upsertContacts(contacts)
+    }
+
+    private static func initialMessages(userID: UserID, now: Int64) -> [InitialTextMessageInput] {
+        [
+            InitialTextMessageInput(
+                userID: userID,
+                conversationID: "single_sondra",
+                senderID: "sondra",
+                text: "本地账号存储已准备完成。",
+                localTime: now - 90,
+                messageID: "seed_single_sondra_1",
+                serverMessageID: "server_seed_single_sondra_1",
+                sequence: now - 90,
+                direction: .incoming,
+                readStatus: .unread,
+                sortSequence: now - 90
+            ),
+            InitialTextMessageInput(
+                userID: userID,
+                conversationID: "single_sondra",
+                senderID: "sondra",
+                text: "Repository/DAO 链路已接入 SQLite。",
+                localTime: now,
+                messageID: "seed_single_sondra_2",
+                serverMessageID: "server_seed_single_sondra_2",
+                sequence: now,
+                direction: .incoming,
+                readStatus: .unread,
+                sortSequence: now
+            ),
+            InitialTextMessageInput(
+                userID: userID,
+                conversationID: "group_core",
+                senderID: "ios_yan",
+                text: "Swift 6 严格并发检查保持开启。",
+                localTime: now - 1_800,
+                messageID: "seed_group_core_1",
+                serverMessageID: "server_seed_group_core_1",
+                sequence: now - 1_800,
+                direction: .incoming,
+                readStatus: .read,
+                sortSequence: now - 1_800
+            ),
+            InitialTextMessageInput(
+                userID: userID,
+                conversationID: "system_release",
+                senderID: "system",
+                text: "Sprint 1 本地存储收口中。",
+                localTime: now - 7_200,
+                messageID: "seed_system_release_1",
+                serverMessageID: "server_seed_system_release_1",
+                sequence: now - 7_200,
+                direction: .incoming,
+                readStatus: .read,
+                sortSequence: now - 7_200
+            )
+        ]
     }
 
     private static func seedEmojiIfNeeded(repository: LocalChatRepository, userID: UserID, now: Int64) async throws {

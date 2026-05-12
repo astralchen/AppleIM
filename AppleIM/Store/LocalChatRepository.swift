@@ -186,6 +186,16 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         )
     }
 
+    /// 批量插入首次演示文本消息。
+    func insertInitialTextMessages(_ messages: [InitialTextMessageInput]) async throws {
+        guard !messages.isEmpty else { return }
+
+        try await database.performTransaction(
+            messages.flatMap(MessageDAO.insertInitialTextStatements),
+            paths: paths
+        )
+    }
+
     /// 标记会话已读
     ///
     /// 清空会话未读数，并刷新应用角标

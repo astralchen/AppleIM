@@ -1006,6 +1006,38 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatStoreProviderSeedsDemoMessagesForInitialConversations() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "seed_message_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore()
+        )
+
+        let repository = try await storeProvider.repository()
+        let conversations = try await repository.listConversations(for: "seed_message_user")
+        let conversationsByID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
+
+        for conversationID in [ConversationID("single_sondra"), ConversationID("group_core"), ConversationID("system_release")] {
+            let conversation = try #require(conversationsByID[conversationID])
+            let messages = try await repository.listMessages(
+                conversationID: conversationID,
+                limit: 20,
+                beforeSortSeq: nil
+            )
+            let latestMessage = try #require(messages.first)
+
+            #expect(latestMessage.text == conversation.lastMessageDigest)
+        }
+    }
+
+    @MainActor
     @Test func encryptedDatabaseCannotBeReadWithoutConfiguredKeyOrWithWrongKey() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

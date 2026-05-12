@@ -16,6 +16,12 @@
   - `ChatBridge_Development_Task_Schedule.md`
   - `mobile_wechat_database_design_field_comments.md`
 
+## Communication
+
+- 必须始终使用中文回答。
+- 所有代码解释、分析、注释必须使用中文。
+- 除非用户明确要求，否则禁止使用英文。
+
 ## Repository Layout
 
 - `AppleIM/`: App 源码。

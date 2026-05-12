@@ -140,6 +140,64 @@ nonisolated struct ConversationPageCursor: Equatable, Sendable {
     }
 }
 
+/// 初始演示文本消息输入参数。
+///
+/// 仅用于首次账号 seed，将会话摘要背后的演示消息落到真实消息表。
+nonisolated struct InitialTextMessageInput: Equatable, Sendable {
+    /// 用户 ID
+    let userID: UserID
+    /// 会话 ID
+    let conversationID: ConversationID
+    /// 发送者 ID
+    let senderID: UserID
+    /// 文本内容
+    let text: String
+    /// 本地时间戳
+    let localTime: Int64
+    /// 消息 ID
+    let messageID: MessageID
+    /// 客户端消息 ID
+    let clientMessageID: String?
+    /// 服务端消息 ID
+    let serverMessageID: String?
+    /// 服务端序号
+    let sequence: Int64?
+    /// 消息方向
+    let direction: MessageDirection
+    /// 已读状态
+    let readStatus: MessageReadStatus
+    /// 排序序号
+    let sortSequence: Int64
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        text: String,
+        localTime: Int64,
+        messageID: MessageID,
+        clientMessageID: String? = nil,
+        serverMessageID: String? = nil,
+        sequence: Int64? = nil,
+        direction: MessageDirection,
+        readStatus: MessageReadStatus,
+        sortSequence: Int64
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.text = text
+        self.localTime = localTime
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.serverMessageID = serverMessageID
+        self.sequence = sequence
+        self.direction = direction
+        self.readStatus = readStatus
+        self.sortSequence = sortSequence
+    }
+}
+
 /// 发出的文本消息输入参数
 nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
     /// 用户 ID

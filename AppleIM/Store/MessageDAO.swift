@@ -409,6 +409,91 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    /// 生成首次演示文本消息的插入 SQL。
+    static func insertInitialTextStatements(_ input: InitialTextMessageInput) -> [SQLiteStatement] {
+        let contentID = "seed_text_\(input.messageID.rawValue)"
+
+        return [
+            SQLiteStatement(
+                """
+                INSERT INTO message_text (
+                    content_id,
+                    text,
+                    mentions_json,
+                    at_all,
+                    rich_text_json
+                ) VALUES (?, ?, NULL, 0, NULL);
+                """,
+                parameters: [
+                    .text(contentID),
+                    .text(input.text)
+                ]
+            ),
+            SQLiteStatement(
+                """
+                INSERT INTO message (
+                    message_id,
+                    conversation_id,
+                    sender_id,
+                    client_msg_id,
+                    server_msg_id,
+                    seq,
+                    msg_type,
+                    direction,
+                    send_status,
+                    delivery_status,
+                    read_status,
+                    revoke_status,
+                    is_deleted,
+                    content_table,
+                    content_id,
+                    sort_seq,
+                    server_time,
+                    local_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?, ?, ?, ?);
+                """,
+                parameters: [
+                    .text(input.messageID.rawValue),
+                    .text(input.conversationID.rawValue),
+                    .text(input.senderID.rawValue),
+                    .optionalText(input.clientMessageID),
+                    .optionalText(input.serverMessageID),
+                    .optionalInteger(input.sequence),
+                    .integer(Int64(MessageType.text.rawValue)),
+                    .integer(Int64(input.direction.rawValue)),
+                    .integer(Int64(MessageSendStatus.success.rawValue)),
+                    .integer(Int64(input.readStatus.rawValue)),
+                    .text("message_text"),
+                    .text(contentID),
+                    .integer(input.sortSequence),
+                    .integer(input.localTime),
+                    .integer(input.localTime)
+                ]
+            ),
+            SQLiteStatement(
+                """
+                UPDATE conversation
+                SET
+                    last_message_id = ?,
+                    last_message_time = ?,
+                    last_message_digest = ?,
+                    sort_ts = ?,
+                    updated_at = ?
+                WHERE conversation_id = ? AND user_id = ?;
+                """,
+                parameters: [
+                    .text(input.messageID.rawValue),
+                    .integer(input.localTime),
+                    .text(input.text),
+                    .integer(input.sortSequence),
+                    .integer(input.localTime),
+                    .text(input.conversationID.rawValue),
+                    .text(input.userID.rawValue)
+                ]
+            )
+        ]
+    }
+
     private static func mentionsJSON(for userIDs: [UserID]) -> String? {
         let values = userIDs.map(\.rawValue)
         guard !values.isEmpty else {
