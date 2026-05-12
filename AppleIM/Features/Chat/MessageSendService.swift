@@ -118,6 +118,8 @@ protocol MessageSendService: Sendable {
     ///   - upload: 文件上传确认信息
     /// - Returns: 发送结果
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult
+    /// 发送表情消息。
+    func sendEmoji(message: StoredMessage) async -> MessageSendResult
 }
 
 /// 模拟消息发送服务
@@ -206,6 +208,10 @@ nonisolated struct MockMessageSendService: MessageSendService {
     ///   - upload: 文件上传确认信息
     /// - Returns: 发送结果
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
+        await sendMedia(message: message)
+    }
+
+    func sendEmoji(message: StoredMessage) async -> MessageSendResult {
         await sendMedia(message: message)
     }
 

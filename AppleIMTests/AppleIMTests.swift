@@ -1095,6 +1095,185 @@ struct AppleIMTests {
         #expect(setting.badgeIncludeMuted == true)
     }
 
+    @Test func databaseBootstrapCreatesEmojiTablesAndIndexes() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "emoji_schema_user")
+        let tableNames = try await databaseActor.tableNames(in: .main, paths: paths)
+        let indexes = try await databaseActor.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_emoji_%' ORDER BY name;",
+            paths: paths
+        )
+        let indexNames = indexes.compactMap { $0.string("name") }
+
+        #expect(tableNames.contains("emoji_store"))
+        #expect(tableNames.contains("emoji_package"))
+        #expect(tableNames.contains("message_emoji"))
+        #expect(indexNames.contains("idx_emoji_user_recent"))
+        #expect(indexNames.contains("idx_emoji_user_favorite"))
+        #expect(indexNames.contains("idx_emoji_package_user_sort"))
+    }
+
+    @Test func emojiRepositoryListsPackagesFavoritesAndRecentPerAccount() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "emoji_user")
+        let package = EmojiPackageRecord(
+            packageID: "pkg_wave",
+            userID: "emoji_user",
+            title: "Wave Pack",
+            author: "ChatBridge",
+            coverURL: nil,
+            localCoverPath: nil,
+            version: 1,
+            status: .downloaded,
+            sortOrder: 1,
+            createdAt: 10,
+            updatedAt: 10
+        )
+        let wave = EmojiAssetRecord(
+            emojiID: "wave",
+            userID: "emoji_user",
+            packageID: "pkg_wave",
+            emojiType: .package,
+            name: "Wave",
+            md5: "wave_md5",
+            localPath: "/tmp/wave.png",
+            thumbPath: "/tmp/wave-thumb.png",
+            cdnURL: nil,
+            width: 128,
+            height: 128,
+            sizeBytes: 2048,
+            useCount: 0,
+            lastUsedAt: nil,
+            isFavorite: false,
+            isDeleted: false,
+            extraJSON: nil,
+            createdAt: 10,
+            updatedAt: 10
+        )
+        let otherAccountEmoji = EmojiAssetRecord(
+            emojiID: "other_wave",
+            userID: "other_user",
+            packageID: "pkg_wave",
+            emojiType: .package,
+            name: "Other",
+            md5: nil,
+            localPath: nil,
+            thumbPath: nil,
+            cdnURL: nil,
+            width: nil,
+            height: nil,
+            sizeBytes: nil,
+            useCount: 0,
+            lastUsedAt: nil,
+            isFavorite: false,
+            isDeleted: false,
+            extraJSON: nil,
+            createdAt: 10,
+            updatedAt: 10
+        )
+
+        try await repository.upsertEmojiPackage(package)
+        try await repository.upsertEmojiAsset(wave)
+        try await repository.upsertEmojiAsset(otherAccountEmoji)
+        try await repository.setEmojiFavorite(emojiID: "wave", userID: "emoji_user", isFavorite: true, updatedAt: 20)
+        try await repository.recordEmojiUsed(emojiID: "wave", userID: "emoji_user", usedAt: 30)
+
+        let packages = try await repository.listEmojiPackages(for: "emoji_user")
+        let favorites = try await repository.listFavoriteEmojis(for: "emoji_user")
+        let recent = try await repository.listRecentEmojis(for: "emoji_user", limit: 10)
+        let otherRecent = try await repository.listRecentEmojis(for: "other_user", limit: 10)
+
+        #expect(packages.map(\.packageID) == ["pkg_wave"])
+        #expect(favorites.map(\.emojiID) == ["wave"])
+        #expect(recent.map(\.emojiID) == ["wave"])
+        #expect(recent.first?.useCount == 1)
+        #expect(otherRecent.isEmpty)
+    }
+
+    @Test func insertingOutgoingEmojiMessagePersistsContentAndConversationDigest() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "emoji_message_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "emoji_conversation", userID: "emoji_message_user", title: "Emoji", sortTimestamp: 1)
+        )
+
+        let message = try await repository.insertOutgoingEmojiMessage(
+            OutgoingEmojiMessageInput(
+                userID: "emoji_message_user",
+                conversationID: "emoji_conversation",
+                senderID: "emoji_message_user",
+                emoji: StoredEmojiContent(
+                    emojiID: "smile",
+                    packageID: "pkg_smile",
+                    emojiType: .package,
+                    name: "Smile",
+                    localPath: "/tmp/smile.png",
+                    thumbPath: "/tmp/smile-thumb.png",
+                    cdnURL: nil,
+                    width: 128,
+                    height: 128,
+                    sizeBytes: 1024
+                ),
+                localTime: 100,
+                messageID: "emoji_message",
+                clientMessageID: "emoji_client",
+                sortSequence: 100
+            )
+        )
+        let loaded = try await repository.message(messageID: "emoji_message")
+        let conversations = try await repository.listConversations(for: "emoji_message_user")
+
+        #expect(message.type == .emoji)
+        #expect(loaded?.emoji?.emojiID == "smile")
+        #expect(loaded?.emoji?.thumbPath == "/tmp/smile-thumb.png")
+        #expect(conversations.first { $0.id == "emoji_conversation" }?.lastMessageDigest == "[表情]")
+    }
+
+    @MainActor
+    @Test func chatViewModelLoadsFavoritesAndSendsEmoji() async throws {
+        let useCase = EmojiPanelStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Emoji Chat")
+
+        viewModel.loadEmojiPanel()
+        try await waitForCondition {
+            viewModel.currentState.emojiPanel.packages.map(\.packageID) == ["pkg_stub"]
+        }
+
+        #expect(viewModel.currentState.emojiPanel.favoriteEmojis.map(\.emojiID) == ["favorite_stub"])
+        viewModel.toggleEmojiFavorite(emojiID: "package_stub", isFavorite: true)
+        try await waitForCondition {
+            useCase.favoriteUpdates == ["package_stub:true"]
+        }
+
+        viewModel.sendEmoji(useCase.packageEmoji)
+        try await waitForCondition {
+            viewModel.currentState.rows.contains { $0.id == "sent_emoji" }
+        }
+
+        #expect(useCase.sentEmojiIDs == ["package_stub"])
+        #expect(viewModel.currentState.rows.first?.content == .emoji(
+            ChatMessageRowContent.EmojiContent(
+                emojiID: "package_stub",
+                name: "Package Stub",
+                localPath: "/tmp/package.png",
+                thumbPath: "/tmp/package-thumb.png",
+                cdnURL: nil
+            )
+        ))
+    }
+
     @Test func searchIndexRebuildIndexesContactsConversationsAndMessages() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -9034,6 +9213,159 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
     func revoke(messageID: MessageID) async throws {}
 }
 
+@MainActor
+private final class EmojiPanelStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    let packageEmoji = EmojiAssetRecord(
+        emojiID: "package_stub",
+        userID: "emoji_panel_user",
+        packageID: "pkg_stub",
+        emojiType: .package,
+        name: "Package Stub",
+        md5: nil,
+        localPath: "/tmp/package.png",
+        thumbPath: "/tmp/package-thumb.png",
+        cdnURL: nil,
+        width: 128,
+        height: 128,
+        sizeBytes: 1024,
+        useCount: 0,
+        lastUsedAt: nil,
+        isFavorite: false,
+        isDeleted: false,
+        extraJSON: nil,
+        createdAt: 1,
+        updatedAt: 1
+    )
+    private(set) var favoriteUpdates: [String] = []
+    private(set) var sentEmojiIDs: [String] = []
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
+        ChatEmojiPanelState(
+            packages: [
+                EmojiPackageRecord(
+                    packageID: "pkg_stub",
+                    userID: "emoji_panel_user",
+                    title: "Stub Pack",
+                    author: "Tests",
+                    coverURL: nil,
+                    localCoverPath: nil,
+                    version: 1,
+                    status: .downloaded,
+                    sortOrder: 1,
+                    createdAt: 1,
+                    updatedAt: 1
+                )
+            ],
+            recentEmojis: [],
+            favoriteEmojis: [
+                EmojiAssetRecord(
+                    emojiID: "favorite_stub",
+                    userID: "emoji_panel_user",
+                    packageID: nil,
+                    emojiType: .customImage,
+                    name: "Favorite Stub",
+                    md5: nil,
+                    localPath: "/tmp/favorite.png",
+                    thumbPath: "/tmp/favorite-thumb.png",
+                    cdnURL: nil,
+                    width: 128,
+                    height: 128,
+                    sizeBytes: 1024,
+                    useCount: 2,
+                    lastUsedAt: 2,
+                    isFavorite: true,
+                    isDeleted: false,
+                    extraJSON: nil,
+                    createdAt: 1,
+                    updatedAt: 2
+                )
+            ],
+            packageEmojisByPackageID: ["pkg_stub": [packageEmoji]]
+        )
+    }
+
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
+        favoriteUpdates.append("\(emojiID):\(isFavorite)")
+        return try await loadEmojiPanelState()
+    }
+
+    func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sentEmojiIDs.append(emoji.emojiID)
+
+        return AsyncThrowingStream { continuation in
+            continuation.yield(
+                ChatMessageRowState(
+                    id: "sent_emoji",
+                    content: .emoji(
+                        ChatMessageRowContent.EmojiContent(
+                            emojiID: emoji.emojiID,
+                            name: emoji.name,
+                            localPath: emoji.localPath,
+                            thumbPath: emoji.thumbPath,
+                            cdnURL: emoji.cdnURL
+                        )
+                    ),
+                    sortSequence: 1,
+                    timeText: "Now",
+                    statusText: nil,
+                    uploadProgress: nil,
+                    isOutgoing: true,
+                    canRetry: false,
+                    canDelete: true,
+                    canRevoke: false
+                )
+            )
+            continuation.finish()
+        }
+    }
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
 private final class ComposerSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private(set) var events: [String] = []
 
@@ -9485,6 +9817,8 @@ private func rowText(_ row: ChatMessageRowState) -> String {
         return "Video \(durationText(milliseconds: video.durationMilliseconds))"
     case let .file(file):
         return file.fileName
+    case let .emoji(emoji):
+        return emoji.name ?? "Emoji"
     }
 }
 

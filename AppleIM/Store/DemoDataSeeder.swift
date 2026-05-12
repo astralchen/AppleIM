@@ -120,5 +120,62 @@ nonisolated enum DemoDataSeeder {
             userID: userID,
             text: "群聊 P1 本地闭环演示：公告、@ 成员与会话提示已接入。"
         )
+        try await seedEmojiIfNeeded(repository: repository, userID: userID, now: now)
+    }
+
+    private static func seedEmojiIfNeeded(repository: LocalChatRepository, userID: UserID, now: Int64) async throws {
+        let packageID = "chatbridge_default_emoji"
+        try await repository.upsertEmojiPackage(
+            EmojiPackageRecord(
+                packageID: packageID,
+                userID: userID,
+                title: "ChatBridge",
+                author: "ChatBridge",
+                coverURL: nil,
+                localCoverPath: nil,
+                version: 1,
+                status: .downloaded,
+                sortOrder: 0,
+                createdAt: now,
+                updatedAt: now
+            )
+        )
+
+        let names = [
+            ("cb_smile", "Smile"),
+            ("cb_wave", "Wave"),
+            ("cb_ok", "OK"),
+            ("cb_party", "Party"),
+            ("cb_thanks", "Thanks"),
+            ("cb_heart", "Heart"),
+            ("cb_working", "Working"),
+            ("cb_done", "Done")
+        ]
+
+        for (index, item) in names.enumerated() {
+            try await repository.upsertEmojiAsset(
+                EmojiAssetRecord(
+                    emojiID: item.0,
+                    userID: userID,
+                    packageID: packageID,
+                    emojiType: .package,
+                    name: item.1,
+                    md5: nil,
+                    localPath: nil,
+                    thumbPath: nil,
+                    cdnURL: nil,
+                    width: 128,
+                    height: 128,
+                    sizeBytes: nil,
+                    useCount: 0,
+                    lastUsedAt: nil,
+                    isFavorite: index < 2,
+                    isDeleted: false,
+                    extraJSON: nil,
+                    createdAt: now + Int64(index),
+                    updatedAt: now + Int64(index)
+                )
+            )
+        }
     }
 }

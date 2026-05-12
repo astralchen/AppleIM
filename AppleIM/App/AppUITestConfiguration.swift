@@ -159,6 +159,11 @@ actor FailFirstUITestMessageSendService: MessageSendService {
         await send(message: message)
     }
 
+    /// 发送表情消息
+    func sendEmoji(message: StoredMessage) async -> MessageSendResult {
+        await send(message: message)
+    }
+
     /// 发送消息（内部实现）
     ///
     /// 第一次调用返回失败，后续调用返回成功

@@ -98,12 +98,18 @@ final class ChatViewController: UIViewController {
     private let inputBarView = ChatInputBarView()
     /// 图片库输入面板
     private lazy var photoLibraryInputView = makePhotoLibraryInputView()
+    /// 表情输入面板
+    private lazy var emojiPanelView = makeEmojiPanelView()
     /// 输入栏贴系统键盘约束
     private var inputBarKeyboardBottomConstraint: NSLayoutConstraint?
     /// 输入栏贴图片库面板约束
     private var inputBarPhotoLibraryBottomConstraint: NSLayoutConstraint?
     /// 图片库面板底部约束
     private var photoLibraryInputBottomConstraint: NSLayoutConstraint?
+    /// 输入栏贴表情面板约束
+    private var inputBarEmojiBottomConstraint: NSLayoutConstraint?
+    /// 表情面板底部约束
+    private var emojiPanelBottomConstraint: NSLayoutConstraint?
     /// 语音录制控制器
     private let voiceRecorder = VoiceRecordingController()
     /// 语音播放控制器
@@ -200,6 +206,8 @@ final class ChatViewController: UIViewController {
         photoLibraryInputView.translatesAutoresizingMaskIntoConstraints = false
         photoLibraryInputView.isHidden = true
         photoLibraryInputView.accessibilityIdentifier = "chat.photoLibraryInputPanel"
+        emojiPanelView.translatesAutoresizingMaskIntoConstraints = false
+        emojiPanelView.isHidden = true
         configureInputBarCallbacks()
 
         view.addSubview(topBannerStackView)
@@ -208,6 +216,7 @@ final class ChatViewController: UIViewController {
         view.addSubview(mentionPickerStackView)
         view.addSubview(inputBarView)
         view.addSubview(photoLibraryInputView)
+        view.addSubview(emojiPanelView)
 
         let inputBarKeyboardBottomConstraint = inputBarView.bottomAnchor.constraint(
             equalTo: view.keyboardLayoutGuide.topAnchor,
@@ -223,9 +232,21 @@ final class ChatViewController: UIViewController {
         let photoLibraryInputBottomConstraint = photoLibraryInputView.bottomAnchor.constraint(
             equalTo: view.bottomAnchor
         )
+        let inputBarEmojiBottomConstraint = inputBarView.bottomAnchor.constraint(
+            equalTo: emojiPanelView.topAnchor,
+            constant: -8
+        )
+        let emojiPanelHeightConstraint = emojiPanelView.heightAnchor.constraint(
+            equalToConstant: ChatEmojiPanelView.panelHeight
+        )
+        let emojiPanelBottomConstraint = emojiPanelView.bottomAnchor.constraint(
+            equalTo: view.bottomAnchor
+        )
         self.inputBarKeyboardBottomConstraint = inputBarKeyboardBottomConstraint
         self.inputBarPhotoLibraryBottomConstraint = inputBarPhotoLibraryBottomConstraint
         self.photoLibraryInputBottomConstraint = photoLibraryInputBottomConstraint
+        self.inputBarEmojiBottomConstraint = inputBarEmojiBottomConstraint
+        self.emojiPanelBottomConstraint = emojiPanelBottomConstraint
 
         NSLayoutConstraint.activate([
             backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -258,7 +279,12 @@ final class ChatViewController: UIViewController {
             photoLibraryInputView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             photoLibraryInputView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             photoLibraryInputBottomConstraint,
-            photoLibraryInputHeightConstraint
+            photoLibraryInputHeightConstraint,
+
+            emojiPanelView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            emojiPanelView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            emojiPanelBottomConstraint,
+            emojiPanelHeightConstraint
         ])
     }
 
@@ -290,6 +316,9 @@ final class ChatViewController: UIViewController {
         }
         inputBarView.onPhotoTapped = { [weak self] in
             self?.showPhotoLibraryInput()
+        }
+        inputBarView.onEmojiTapped = { [weak self] in
+            self?.showEmojiInput()
         }
         inputBarView.onKeyboardInputRequested = { [weak self] in
             self?.showKeyboardInput()
@@ -471,18 +500,43 @@ final class ChatViewController: UIViewController {
         return inputView
     }
 
+    /// 创建并绑定表情输入面板
+    private func makeEmojiPanelView() -> ChatEmojiPanelView {
+        let panelView = ChatEmojiPanelView(frame: .zero)
+        panelView.onEmojiSelected = { [weak self] emoji in
+            self?.viewModel.sendEmoji(emoji)
+        }
+        panelView.onFavoriteToggled = { [weak self] emoji, isFavorite in
+            self?.viewModel.toggleEmojiFavorite(emojiID: emoji.emojiID, isFavorite: isFavorite)
+        }
+        return panelView
+    }
+
     /// 展示图片库输入面板
     private func showPhotoLibraryInput() {
         let shouldStickToBottom = shouldStickToBottomForLayoutChange()
         isSwitchingPhotoLibraryInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
+        hideEmojiInput(animated: false)
         photoLibraryInputView.refreshAuthorization()
         setPhotoLibraryInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
         inputBarView.showPhotoLibraryInput()
     }
 
+    /// 展示表情输入面板
+    private func showEmojiInput() {
+        let shouldStickToBottom = shouldStickToBottomForLayoutChange()
+        isSwitchingPhotoLibraryInputToKeyboard = false
+        shouldStickToBottomDuringKeyboardInputSwitch = false
+        hidePhotoLibraryInput(animated: false)
+        viewModel.loadEmojiPanel()
+        setEmojiInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
+        inputBarView.showEmojiInput()
+    }
+
     /// 从图片库输入面板切回系统键盘输入
     private func showKeyboardInput() {
+        hideEmojiInput(animated: false)
         guard !photoLibraryInputView.isHidden else {
             inputBarView.showKeyboardInput()
             return
@@ -496,6 +550,16 @@ final class ChatViewController: UIViewController {
     /// 隐藏图片库输入面板
     private func hidePhotoLibraryInput(animated: Bool, completion: (() -> Void)? = nil) {
         setPhotoLibraryInputVisible(
+            false,
+            animated: animated,
+            shouldStickToBottom: shouldStickToBottomForLayoutChange(),
+            completion: completion
+        )
+    }
+
+    /// 隐藏表情输入面板
+    private func hideEmojiInput(animated: Bool, completion: (() -> Void)? = nil) {
+        setEmojiInputVisible(
             false,
             animated: animated,
             shouldStickToBottom: shouldStickToBottomForLayoutChange(),
@@ -524,6 +588,7 @@ final class ChatViewController: UIViewController {
 
         inputBarKeyboardBottomConstraint?.isActive = !isVisible
         inputBarPhotoLibraryBottomConstraint?.isActive = isVisible
+        inputBarEmojiBottomConstraint?.isActive = false
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
@@ -538,6 +603,61 @@ final class ChatViewController: UIViewController {
             if !isVisible {
                 self.photoLibraryInputView.isHidden = true
                 self.photoLibraryInputView.resetDismissGestureState()
+            }
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+            externalCompletion?()
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.25,
+                delay: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: layoutChanges,
+                completion: completion
+            )
+        } else {
+            layoutChanges()
+            completion(true)
+        }
+    }
+
+    /// 切换表情输入面板布局
+    private func setEmojiInputVisible(
+        _ isVisible: Bool,
+        animated: Bool,
+        shouldStickToBottom: Bool,
+        completion externalCompletion: (() -> Void)? = nil
+    ) {
+        guard emojiPanelView.isHidden == isVisible else {
+            externalCompletion?()
+            return
+        }
+
+        if isVisible {
+            emojiPanelView.isHidden = false
+            emojiPanelBottomConstraint?.constant = 0
+            inputBarEmojiBottomConstraint?.constant = -8
+        }
+
+        inputBarKeyboardBottomConstraint?.isActive = !isVisible
+        inputBarPhotoLibraryBottomConstraint?.isActive = false
+        inputBarEmojiBottomConstraint?.isActive = isVisible
+
+        let layoutChanges = { [weak self] in
+            guard let self else { return }
+            self.emojiPanelView.alpha = isVisible ? 1 : 0
+            self.view.layoutIfNeeded()
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+        }
+        let completion: (Bool) -> Void = { [weak self] _ in
+            guard let self else { return }
+            if !isVisible {
+                self.emojiPanelView.isHidden = true
             }
             if shouldStickToBottom {
                 self.scrollToBottom(animated: false)
@@ -737,6 +857,7 @@ final class ChatViewController: UIViewController {
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
         renderGroupAnnouncement(state.groupAnnouncement)
         renderMentionPicker(state.mentionPicker)
+        emojiPanelView.render(state.emojiPanel)
 
         // 用户正在输入时不覆盖输入框内容，避免 Combine 状态回放打断编辑。
         if !inputBarView.isEditingText, inputBarView.text != state.draftText {

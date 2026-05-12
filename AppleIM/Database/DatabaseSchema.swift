@@ -45,7 +45,7 @@ nonisolated struct MigrationScript: Equatable, Sendable {
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
     /// 当前 Schema 版本
-    static let currentVersion = 5
+    static let currentVersion = 6
 
     /// 增量迁移脚本元数据
     static let migrationScripts: [MigrationScript] = [
@@ -77,6 +77,69 @@ nonisolated enum DatabaseSchema {
             version: 5,
             statements: [
                 "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_cursor_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC, conversation_id DESC);"
+            ]
+        ),
+        MigrationScript(
+            id: "006_emoji_tables",
+            database: .main,
+            version: 6,
+            statements: [
+                """
+                CREATE TABLE IF NOT EXISTS emoji_package (
+                    package_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    author TEXT,
+                    cover_url TEXT,
+                    local_cover_path TEXT,
+                    version INTEGER DEFAULT 0,
+                    status INTEGER DEFAULT 0,
+                    sort_order INTEGER DEFAULT 0,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS emoji_store (
+                    emoji_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    package_id TEXT,
+                    emoji_type INTEGER NOT NULL,
+                    name TEXT,
+                    md5 TEXT,
+                    local_path TEXT,
+                    thumb_path TEXT,
+                    cdn_url TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    size_bytes INTEGER,
+                    use_count INTEGER DEFAULT 0,
+                    last_used_at INTEGER,
+                    is_favorite INTEGER DEFAULT 0,
+                    is_deleted INTEGER DEFAULT 0,
+                    extra_json TEXT,
+                    created_at INTEGER,
+                    updated_at INTEGER
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS message_emoji (
+                    content_id TEXT PRIMARY KEY,
+                    emoji_id TEXT NOT NULL,
+                    package_id TEXT,
+                    emoji_type INTEGER NOT NULL,
+                    name TEXT,
+                    local_path TEXT,
+                    thumb_path TEXT,
+                    cdn_url TEXT,
+                    width INTEGER,
+                    height INTEGER,
+                    size_bytes INTEGER
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_emoji_package_user_sort ON emoji_package(user_id, sort_order ASC, updated_at DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_emoji_user_recent ON emoji_store(user_id, last_used_at DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_emoji_user_favorite ON emoji_store(user_id, is_favorite, updated_at DESC);"
             ]
         )
     ]

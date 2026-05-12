@@ -49,6 +49,8 @@ final class ChatViewModel {
     private var voicePlaybackTask: Task<Void, Never>?
     /// 分页加载任务
     private var paginationTask: Task<Void, Never>?
+    /// 表情面板加载或变更任务
+    private var emojiPanelTask: Task<Void, Never>?
     /// 群聊上下文缓存
     private var groupContext: GroupChatContext?
     /// 当前已选择的 @ 用户
@@ -86,6 +88,7 @@ final class ChatViewModel {
     func load() {
         loadTask?.cancel()
         paginationTask?.cancel()
+        emojiPanelTask?.cancel()
         paginationTask = nil
         publish { state in
             state.phase = .loading
@@ -250,6 +253,82 @@ final class ChatViewModel {
             } catch {
                 publish { state in
                     state.phase = .failed("Unable to send image")
+                }
+            }
+        }
+    }
+
+    /// 加载表情面板状态。
+    func loadEmojiPanel() {
+        emojiPanelTask?.cancel()
+        publish { state in
+            state.emojiPanel.isLoading = true
+            state.emojiPanel.errorMessage = nil
+        }
+
+        emojiPanelTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let panelState = try await useCase.loadEmojiPanelState()
+                guard !Task.isCancelled else { return }
+                publish { state in
+                    state.emojiPanel = panelState
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.emojiPanel.isLoading = false
+                    state.emojiPanel.errorMessage = "Unable to load emoji"
+                }
+            }
+        }
+    }
+
+    /// 收藏或取消收藏表情。
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) {
+        emojiPanelTask?.cancel()
+        emojiPanelTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let panelState = try await useCase.toggleEmojiFavorite(emojiID: emojiID, isFavorite: isFavorite)
+                guard !Task.isCancelled else { return }
+                publish { state in
+                    state.emojiPanel = panelState
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.emojiPanel.errorMessage = "Unable to update favorite emoji"
+                }
+            }
+        }
+    }
+
+    /// 发送表情消息。
+    func sendEmoji(_ emoji: EmojiAssetRecord) {
+        sendTask?.cancel()
+        sendTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                publish { state in
+                    state.draftText = ""
+                }
+
+                for try await row in useCase.sendEmoji(emoji) {
+                    guard !Task.isCancelled else { return }
+                    upsert(row)
+                }
+                loadEmojiPanel()
+            } catch is CancellationError {
+                return
+            } catch {
+                publish { state in
+                    state.phase = .failed("Unable to send emoji")
                 }
             }
         }
@@ -678,6 +757,7 @@ final class ChatViewModel {
         mutationTask?.cancel()
         paginationTask?.cancel()
         voicePlaybackTask?.cancel()
+        emojiPanelTask?.cancel()
         simulatedIncomingTasks.values.forEach { $0.cancel() }
         loadTask = nil
         sendTask = nil
@@ -685,6 +765,7 @@ final class ChatViewModel {
         mutationTask = nil
         paginationTask = nil
         voicePlaybackTask = nil
+        emojiPanelTask = nil
         simulatedIncomingTasks.removeAll()
     }
 

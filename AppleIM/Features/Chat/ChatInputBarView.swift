@@ -44,6 +44,7 @@ struct ChatPendingAttachmentPreviewItem {
 /// - `onTextChanged`: 文本变化
 /// - `onSend`: 发送消息
 /// - `onPhotoTapped`: 点击相册按钮
+/// - `onEmojiTapped`: 点击表情菜单项
 /// - `onKeyboardInputRequested`: 从相册面板切回系统键盘输入
 /// - `onAttachmentRemoved`: 移除附件
 /// - `onVoiceTouchDown/DragExit/DragEnter/TouchUpInside/TouchUpOutside/TouchCancel`: 语音按钮触摸事件
@@ -56,6 +57,8 @@ final class ChatInputBarView: UIView {
     var onSend: ((String) -> Void)?
     /// 点击相册按钮回调
     var onPhotoTapped: (() -> Void)?
+    /// 点击表情菜单项回调
+    var onEmojiTapped: (() -> Void)?
     /// 请求恢复系统键盘输入回调
     var onKeyboardInputRequested: (() -> Void)?
     /// 移除待发送附件回调
@@ -289,6 +292,14 @@ final class ChatInputBarView: UIView {
     /// 切换到相册输入面板
     func showPhotoLibraryInput() {
         isShowingPhotoLibraryInput = true
+        isWaitingForKeyboardInputTransition = false
+        textView.inputView = nil
+        textView.resignFirstResponder()
+    }
+
+    /// 切换到表情输入面板
+    func showEmojiInput() {
+        isShowingPhotoLibraryInput = false
         isWaitingForKeyboardInputTransition = false
         textView.inputView = nil
         textView.resignFirstResponder()
@@ -1067,6 +1078,14 @@ final class ChatInputBarView: UIView {
 
     /// 创建更多操作菜单
     private func makeMoreMenu() -> UIMenu {
+        let emojiAction = UIAction(
+            title: "表情",
+            image: UIImage(systemName: "face.smiling")
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.onEmojiTapped?()
+            }
+        }
         let photoAction = UIAction(
             title: "Choose Photo or Video",
             image: UIImage(systemName: "photo.on.rectangle")
@@ -1076,7 +1095,7 @@ final class ChatInputBarView: UIView {
             }
         }
 
-        return UIMenu(children: [photoAction])
+        return UIMenu(children: [emojiAction, photoAction])
     }
 }
 

@@ -89,6 +89,12 @@ protocol ChatUseCase: Sendable {
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 发送文件消息
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    /// 加载表情面板状态
+    func loadEmojiPanelState() async throws -> ChatEmojiPanelState
+    /// 收藏或取消收藏表情
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState
+    /// 发送表情消息
+    func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 标记语音已播放
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState?
     /// 模拟接收一条对方文本消息
@@ -116,6 +122,20 @@ extension ChatUseCase {
 
     func simulateIncomingTextMessage() async throws -> ChatMessageRowState? {
         nil
+    }
+
+    func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
+        .empty
+    }
+
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
+        .empty
+    }
+
+    func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
     }
 }
 
@@ -510,6 +530,84 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
     }
 
+    func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
+        guard let emojiRepository = repository as? any EmojiRepository else {
+            return .empty
+        }
+
+        return try await emojiPanelState(from: emojiRepository)
+    }
+
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
+        guard let emojiRepository = repository as? any EmojiRepository else {
+            return .empty
+        }
+
+        let now = Self.currentTimestamp()
+        try await emojiRepository.setEmojiFavorite(
+            emojiID: emojiID,
+            userID: userID,
+            isFavorite: isFavorite,
+            updatedAt: now
+        )
+        return try await emojiPanelState(from: emojiRepository)
+    }
+
+    func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let now = Self.currentTimestamp()
+                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
+                    let insertedMessage = try await repository.insertOutgoingEmojiMessage(
+                        OutgoingEmojiMessageInput(
+                            userID: userID,
+                            conversationID: conversationID,
+                            senderID: userID,
+                            emoji: emoji.storedContent,
+                            localTime: now,
+                            sortSequence: now
+                        )
+                    )
+                    try await (repository as? any EmojiRepository)?.recordEmojiUsed(
+                        emojiID: emoji.emojiID,
+                        userID: userID,
+                        usedAt: now
+                    )
+
+                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
+                    let result = await sendService.sendEmoji(message: insertedMessage)
+                    let finalStatus: MessageSendStatus
+                    let ack: MessageSendAck?
+                    switch result {
+                    case let .success(successAck):
+                        finalStatus = .success
+                        ack = successAck
+                    case .failure:
+                        finalStatus = .failed
+                        ack = nil
+                    }
+                    try await updateSendStatus(
+                        messageID: insertedMessage.id,
+                        status: finalStatus,
+                        ack: ack,
+                        pendingJob: nil
+                    )
+                    if let updatedMessage = try await repository.message(messageID: insertedMessage.id) {
+                        continuation.yield(row(from: updatedMessage, currentUserID: userID))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
     /// 标记语音消息已播放并返回更新后的行状态
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
         guard let existingMessage = try await repository.message(messageID: messageID) else {
@@ -527,6 +625,24 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         }
 
         return row(from: updatedMessage, currentUserID: userID)
+    }
+
+    private func emojiPanelState(from emojiRepository: any EmojiRepository) async throws -> ChatEmojiPanelState {
+        let packages = try await emojiRepository.listEmojiPackages(for: userID)
+        var packageEmojisByPackageID: [String: [EmojiAssetRecord]] = [:]
+        for package in packages {
+            packageEmojisByPackageID[package.packageID] = try await emojiRepository.listPackageEmojis(
+                for: userID,
+                packageID: package.packageID
+            )
+        }
+
+        return ChatEmojiPanelState(
+            packages: packages,
+            recentEmojis: try await emojiRepository.listRecentEmojis(for: userID, limit: 24),
+            favoriteEmojis: try await emojiRepository.listFavoriteEmojis(for: userID),
+            packageEmojisByPackageID: packageEmojisByPackageID
+        )
     }
 
     /// 模拟服务端同步到一条对方文本消息，并返回可直接渲染的行状态。
@@ -1177,7 +1293,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             senderAvatarURL: senderAvatarURL,
             isOutgoing: isOutgoing,
             canRetry: isOutgoing
-                && (message.type == .text || message.type == .image || message.type == .video)
+                && (message.type == .text || message.type == .image || message.type == .video || message.type == .emoji)
                 && message.sendStatus == .failed
                 && !isRevoked,
             canDelete: !message.isDeleted,
@@ -1236,7 +1352,19 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     )
                 )
             }
-        case .text, .system, .emoji, .quote, .revoked:
+        case .emoji:
+            if let emoji = message.emoji {
+                return .emoji(
+                    ChatMessageRowContent.EmojiContent(
+                        emojiID: emoji.emojiID,
+                        name: emoji.name,
+                        localPath: emoji.localPath,
+                        thumbPath: emoji.thumbPath,
+                        cdnURL: emoji.cdnURL
+                    )
+                )
+            }
+        case .text, .system, .quote, .revoked:
             break
         }
 
@@ -1758,6 +1886,41 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                     let useCase = makeLocalUseCase(repository: repository)
 
                     for try await row in useCase.sendFile(fileURL: fileURL) {
+                        continuation.yield(row)
+                    }
+
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
+        let repository = try await storeProvider.repository()
+        let useCase = makeLocalUseCase(repository: repository)
+        return try await useCase.loadEmojiPanelState()
+    }
+
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
+        let repository = try await storeProvider.repository()
+        let useCase = makeLocalUseCase(repository: repository)
+        return try await useCase.toggleEmojiFavorite(emojiID: emojiID, isFavorite: isFavorite)
+    }
+
+    func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let repository = try await storeProvider.repository()
+                    let useCase = makeLocalUseCase(repository: repository)
+
+                    for try await row in useCase.sendEmoji(emoji) {
                         continuation.yield(row)
                     }
 

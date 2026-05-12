@@ -17,6 +17,7 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
         case voice
         case video
         case file
+        case emoji
         case revoked
     }
 
@@ -62,11 +63,20 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
         let sizeBytes: Int64
     }
 
+    nonisolated struct EmojiContent: Hashable, Sendable {
+        let emojiID: String
+        let name: String?
+        let localPath: String?
+        let thumbPath: String?
+        let cdnURL: String?
+    }
+
     case text(String)
     case image(ImageContent)
     case voice(VoiceContent)
     case video(VideoContent)
     case file(FileContent)
+    case emoji(EmojiContent)
     case revoked(String)
 
     var kind: Kind {
@@ -81,6 +91,8 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
             return .video
         case .file:
             return .file
+        case .emoji:
+            return .emoji
         case .revoked:
             return .revoked
         }
@@ -98,6 +110,8 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
             return "Video"
         case let .file(file):
             return file.fileName
+        case let .emoji(emoji):
+            return emoji.name ?? "Emoji"
         }
     }
 
@@ -327,6 +341,8 @@ nonisolated struct ChatViewState: Equatable, Sendable {
     var groupAnnouncement: ChatGroupAnnouncementState?
     /// @ 成员选择器
     var mentionPicker: ChatMentionPickerState?
+    /// 表情面板状态
+    var emojiPanel: ChatEmojiPanelState = .empty
 
     /// 是否为空
     var isEmpty: Bool {

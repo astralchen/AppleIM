@@ -165,6 +165,37 @@ nonisolated struct ServerFileMessageSendRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// 服务端表情消息发送请求。
+nonisolated struct ServerEmojiMessageSendRequest: Codable, Equatable, Sendable {
+    let conversationID: String
+    let clientMessageID: String
+    let senderID: String
+    let emojiID: String
+    let packageID: String?
+    let emojiType: Int
+    let name: String?
+    let cdnURL: String?
+    let width: Int?
+    let height: Int?
+    let sizeBytes: Int64?
+    let localTime: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case conversationID = "conversation_id"
+        case clientMessageID = "client_msg_id"
+        case senderID = "sender_id"
+        case emojiID = "emoji_id"
+        case packageID = "package_id"
+        case emojiType = "emoji_type"
+        case name
+        case cdnURL = "cdn_url"
+        case width
+        case height
+        case sizeBytes = "size_bytes"
+        case localTime = "local_time"
+    }
+}
+
 /// 真实服务端消息发送服务。
 nonisolated struct ServerMessageSendService: MessageSendService {
     /// 默认文本消息发送路径；真实接口确认后只需要在此处调整映射。
@@ -173,6 +204,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     private static let sendVoicePath = "/v1/messages/voice"
     private static let sendVideoPath = "/v1/messages/video"
     private static let sendFilePath = "/v1/messages/file"
+    private static let sendEmojiPath = "/v1/messages/emoji"
 
     /// 服务配置
     nonisolated struct Configuration: Sendable {
@@ -402,6 +434,33 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         )
 
         return await sendMedia(path: Self.sendFilePath, request: request)
+    }
+
+    func sendEmoji(message: StoredMessage) async -> MessageSendResult {
+        guard
+            message.type == .emoji,
+            let emoji = message.emoji,
+            let clientMessageID = message.clientMessageID
+        else {
+            return .failure(.ackMissing)
+        }
+
+        let request = ServerEmojiMessageSendRequest(
+            conversationID: message.conversationID.rawValue,
+            clientMessageID: clientMessageID,
+            senderID: message.senderID.rawValue,
+            emojiID: emoji.emojiID,
+            packageID: emoji.packageID,
+            emojiType: emoji.emojiType.rawValue,
+            name: emoji.name,
+            cdnURL: emoji.cdnURL,
+            width: emoji.width,
+            height: emoji.height,
+            sizeBytes: emoji.sizeBytes,
+            localTime: message.localTime
+        )
+
+        return await sendMedia(path: Self.sendEmojiPath, request: request)
     }
 
     private func sendMedia<Request: Encodable & Sendable>(

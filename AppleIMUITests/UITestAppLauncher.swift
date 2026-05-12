@@ -271,6 +271,43 @@ func sendTextMessage(
 }
 
 @MainActor
+func openEmojiPanel(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    let moreButton = app.buttons["chat.moreButton"]
+    XCTAssertTrue(moreButton.waitForExistence(timeout: 5), "Expected chat more button", file: file, line: line)
+    moreButton.tap()
+
+    let emojiAction = app.buttons["表情"].firstMatch
+    XCTAssertTrue(emojiAction.waitForExistence(timeout: 5), "Expected emoji menu action", file: file, line: line)
+    emojiAction.tap()
+
+    XCTAssertTrue(
+        app.otherElements["chat.emojiInputPanel"].waitForExistence(timeout: 5),
+        "Expected emoji input panel",
+        file: file,
+        line: line
+    )
+}
+
+@MainActor
+func selectEmojiPanelSection(
+    _ title: String,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let section = app.buttons[title].firstMatch
+    XCTAssertTrue(section.waitForExistence(timeout: 5), "Expected emoji section \(title)", file: file, line: line)
+    section.tap()
+}
+
+@MainActor
+func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let predicate = NSPredicate(format: "exists == false")
+    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+    return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+}
+
+@MainActor
 func openMessageAction(
     _ actionTitle: String,
     forMessageContaining text: String,
