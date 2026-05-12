@@ -227,6 +227,8 @@ struct AppleIMTests {
         let messages = diagnostics.messages
         #expect(messages.contains { $0.contains("loadIfNeeded called") })
         #expect(messages.contains { $0.contains("initial load started") })
+        #expect(messages.contains { $0.contains("loading state published") })
+        #expect(messages.contains { $0.contains("loaded state published") })
         #expect(messages.contains { $0.contains("initial load completed") })
     }
 
@@ -877,6 +879,61 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatStoreProviderClosesDatabaseConnectionsBeforeDeletingAccountStorage() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let databaseActor = DatabaseActor()
+        let storeProvider = ChatStoreProvider(
+            accountID: "delete_cached_connection_user",
+            storageService: storageService,
+            database: databaseActor,
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore()
+        )
+
+        _ = try await storeProvider.repository()
+        let paths = try await storageService.prepareStorage(for: "delete_cached_connection_user")
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+
+        #expect(await databaseActor.cachedConnectionCount(for: paths) > 0)
+
+        try await storeProvider.deleteAccountStorage()
+
+        #expect(await databaseActor.cachedConnectionCount(for: paths) == 0)
+        #expect(FileManager.default.fileExists(atPath: paths.rootDirectory.path) == false)
+    }
+
+    @MainActor
+    @Test func chatStoreProviderClosesCurrentAccountConnectionsWithoutDeletingStorage() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let databaseActor = DatabaseActor()
+        let storeProvider = ChatStoreProvider(
+            accountID: "logout_cached_connection_user",
+            storageService: storageService,
+            database: databaseActor,
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore()
+        )
+
+        _ = try await storeProvider.repository()
+        let paths = try await storageService.prepareStorage(for: "logout_cached_connection_user")
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+        #expect(await databaseActor.cachedConnectionCount(for: paths) > 0)
+
+        try await storeProvider.closeAccountConnections()
+
+        #expect(await databaseActor.cachedConnectionCount(for: paths) == 0)
+        #expect(FileManager.default.fileExists(atPath: paths.rootDirectory.path))
+    }
+
+    @MainActor
     @Test func chatStoreProviderInitializesEncryptedDatabasesWithSQLCipher() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -1032,6 +1089,46 @@ struct AppleIMTests {
         #expect(description.contains("secret token message") == false)
         #expect(description.contains("INSERT INTO") == false)
         #expect(description.contains("/private/") == false)
+    }
+
+    @Test func databaseActorReusesCachedConnectionForRepeatedQueries() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "cached_connection_user")
+        try await databaseActor.closeConnections(for: paths)
+        #expect(await databaseActor.cachedConnectionCount(for: paths) == 0)
+
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+        let openCountAfterFirstQuery = await databaseActor.openCount(for: .main, paths: paths)
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+        let openCountAfterSecondQuery = await databaseActor.openCount(for: .main, paths: paths)
+
+        #expect(openCountAfterFirstQuery == 1)
+        #expect(openCountAfterSecondQuery == openCountAfterFirstQuery)
+        #expect(await databaseActor.cachedConnectionCount(for: paths) == 1)
+    }
+
+    @Test func databaseActorReopensConnectionAfterClosingAccountPaths() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "reopen_connection_user")
+        try await databaseActor.closeConnections(for: paths)
+
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+        #expect(await databaseActor.openCount(for: .main, paths: paths) == 1)
+
+        try await databaseActor.closeConnections(for: paths)
+        #expect(await databaseActor.cachedConnectionCount(for: paths) == 0)
+
+        _ = try await databaseActor.tableNames(in: .main, paths: paths)
+        #expect(await databaseActor.openCount(for: .main, paths: paths) == 2)
+        #expect(await databaseActor.cachedConnectionCount(for: paths) == 1)
     }
 
     @Test func databaseBootstrapPersistsMigrationMetadata() async throws {

@@ -34,6 +34,8 @@ nonisolated enum ConversationListAccountAction: Sendable {
 final class ConversationListViewController: UIViewController {
     /// 会话列表 ViewModel
     private let viewModel: ConversationListViewModel
+    /// 会话列表日志
+    private let logger = AppLogger(category: .conversationList)
     /// 搜索 ViewModel
     private let searchViewModel: SearchViewModel
     /// 选择会话回调
@@ -62,6 +64,8 @@ final class ConversationListViewController: UIViewController {
     private var shouldRefreshOnNextAppear = false
     /// 页面当前是否处于可见生命周期内
     private var isVisible = false
+    /// 首次出现的起始时间，用于首屏链路诊断
+    private var firstAppearStartUptime: TimeInterval?
 
     /// 会话列表 collection view
     private lazy var collectionView = UICollectionView(
@@ -99,23 +103,46 @@ final class ConversationListViewController: UIViewController {
 
     /// 配置视图、数据源和状态绑定
     override func viewDidLoad() {
+        let startUptime = ProcessInfo.processInfo.systemUptime
         super.viewDidLoad()
+        let configureStartUptime = ProcessInfo.processInfo.systemUptime
         configureView()
+        logger.info(
+            "ConversationListViewController configureView completed elapsed=\(AppLogger.elapsedMilliseconds(since: configureStartUptime))"
+        )
+        let dataSourceStartUptime = ProcessInfo.processInfo.systemUptime
         configureDataSource()
+        logger.info(
+            "ConversationListViewController configureDataSource completed elapsed=\(AppLogger.elapsedMilliseconds(since: dataSourceStartUptime))"
+        )
+        let bindStartUptime = ProcessInfo.processInfo.systemUptime
         bindViewModel()
         bindConversationStoreNotifications()
+        logger.info(
+            "ConversationListViewController bindings completed elapsed=\(AppLogger.elapsedMilliseconds(since: bindStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        )
     }
 
     /// 页面出现时触发会话加载
     override func viewWillAppear(_ animated: Bool) {
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        if firstAppearStartUptime == nil {
+            firstAppearStartUptime = startUptime
+        }
         super.viewWillAppear(animated)
         isVisible = true
         navigationController?.navigationBar.prefersLargeTitles = true
         if shouldRefreshOnNextAppear {
             shouldRefreshOnNextAppear = false
             viewModel.refresh()
+            logger.info(
+                "ConversationListViewController viewWillAppear requested refresh elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            )
         } else {
             viewModel.loadIfNeeded()
+            logger.info(
+                "ConversationListViewController viewWillAppear requested loadIfNeeded elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            )
         }
     }
 
@@ -292,6 +319,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 渲染普通会话列表状态
     private func renderConversations(_ state: ConversationListViewState) {
+        let renderStartUptime = ProcessInfo.processInfo.systemUptime
         title = conversationListNavigationTitle
         emptyLabel.text = state.emptyMessage
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
@@ -303,17 +331,29 @@ final class ConversationListViewController: UIViewController {
         }
 
         let previousRowsByID = rowsByID
+        let cacheStartUptime = ProcessInfo.processInfo.systemUptime
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
         searchRowsByID = [:]
         let rowIDs = state.rows.map { $0.id.rawValue }
         let changedRowIDs = rowIDs.filter { previousRowsByID[$0] != rowsByID[$0] }
+        logger.info(
+            "ConversationListViewController render cache prepared rows=\(rowIDs.count) changed=\(changedRowIDs.count) phase=\(state.phase.logDescription) elapsed=\(AppLogger.elapsedMilliseconds(since: cacheStartUptime))"
+        )
 
         if shouldRebuildConversationSnapshot(with: rowIDs, phase: state.phase) {
+            let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
             var snapshot = NSDiffableDataSourceSnapshot<String, String>()
             snapshot.appendSections([conversationListSection])
             snapshot.appendItems(rowIDs, toSection: conversationListSection)
-            dataSource?.apply(snapshot, animatingDifferences: state.phase != .loading && !renderedConversationIDs.isEmpty)
+            let shouldAnimate = state.phase != .loading && !renderedConversationIDs.isEmpty
+            dataSource?.apply(snapshot, animatingDifferences: shouldAnimate) { [weak self] in
+                guard let self else { return }
+                self.logger.info(
+                    "ConversationListViewController snapshot rebuild applied rows=\(rowIDs.count) animated=\(shouldAnimate) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                )
+            }
         } else if rowIDs.count > renderedConversationIDs.count {
+            let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
             var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<String, String>()
 
             if !snapshot.sectionIdentifiers.contains(conversationListSection) {
@@ -323,11 +363,26 @@ final class ConversationListViewController: UIViewController {
             let newRowIDs = Array(rowIDs.dropFirst(renderedConversationIDs.count))
             snapshot.appendItems(newRowIDs, toSection: conversationListSection)
             snapshot.reconfigureItems(changedRowIDs.filter { !newRowIDs.contains($0) })
-            dataSource?.apply(snapshot, animatingDifferences: false)
+            dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
+                guard let self else { return }
+                self.logger.info(
+                    "ConversationListViewController snapshot append applied rows=\(rowIDs.count) appended=\(newRowIDs.count) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                )
+            }
         } else if !changedRowIDs.isEmpty {
+            let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
             var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<String, String>()
             snapshot.reconfigureItems(changedRowIDs)
-            dataSource?.apply(snapshot, animatingDifferences: false)
+            dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
+                guard let self else { return }
+                self.logger.info(
+                    "ConversationListViewController snapshot reconfigure applied rows=\(rowIDs.count) changed=\(changedRowIDs.count) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                )
+            }
+        } else {
+            logger.info(
+                "ConversationListViewController render skipped snapshot rows=\(rowIDs.count) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+            )
         }
 
         renderedConversationIDs = rowIDs
@@ -340,6 +395,11 @@ final class ConversationListViewController: UIViewController {
         switch state.phase {
         case .loaded, .failed:
             didReportInitialLoadFinished = true
+            if let firstAppearStartUptime {
+                logger.info(
+                    "ConversationListViewController initial load finished phase=\(state.phase.logDescription) rows=\(state.rows.count) total=\(AppLogger.elapsedMilliseconds(since: firstAppearStartUptime))"
+                )
+            }
             onInitialLoadFinished()
         case .idle, .loading:
             break
@@ -659,6 +719,21 @@ private extension Array {
     /// 越界时返回 nil
     subscript(safe index: Index) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+private extension ConversationListViewState.LoadingPhase {
+    var logDescription: String {
+        switch self {
+        case .idle:
+            "idle"
+        case .loading:
+            "loading"
+        case .loaded:
+            "loaded"
+        case .failed:
+            "failed"
+        }
     }
 }
 

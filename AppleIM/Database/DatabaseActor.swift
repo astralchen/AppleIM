@@ -116,6 +116,12 @@ nonisolated struct DatabaseIntegrityCheckResult: Equatable, Sendable {
 actor DatabaseActor {
     /// 按数据库标准路径缓存的 SQLCipher 密钥
     private var encryptionKeysByDatabasePath: [String: Data] = [:]
+    /// 按数据库标准路径缓存的 SQLite 连接
+    private var connectionsByDatabasePath: [String: OpaquePointer] = [:]
+    /// 按数据库标准路径统计实际打开连接次数，便于测试和诊断缓存命中。
+    private var openCountsByDatabasePath: [String: Int] = [:]
+    /// 数据库日志
+    private let logger = AppLogger(category: .database)
 
     /// 为账号下的所有数据库文件配置同一个 SQLCipher 密钥。
     ///
@@ -124,6 +130,35 @@ actor DatabaseActor {
         for database in DatabaseFileKind.allCases {
             encryptionKeysByDatabasePath[normalizedPath(for: url(for: database, in: paths))] = key
         }
+    }
+
+    /// 关闭指定账号下的数据库连接。
+    ///
+    /// 用于切换账号、登出或删除本地数据前释放 SQLite 文件句柄。
+    func closeConnections(for paths: AccountStoragePaths) throws {
+        for database in DatabaseFileKind.allCases {
+            try closeCachedConnection(at: url(for: database, in: paths))
+        }
+    }
+
+    /// 关闭当前 actor 管理的全部数据库连接。
+    func closeAllConnections() throws {
+        for path in connectionsByDatabasePath.keys.sorted() {
+            try closeCachedConnection(for: path)
+        }
+    }
+
+    /// 返回指定账号下当前缓存的连接数量。
+    func cachedConnectionCount(for paths: AccountStoragePaths) -> Int {
+        DatabaseFileKind.allCases.reduce(0) { count, database in
+            let path = normalizedPath(for: url(for: database, in: paths))
+            return count + (connectionsByDatabasePath[path] == nil ? 0 : 1)
+        }
+    }
+
+    /// 返回指定数据库实际打开连接的次数。
+    func openCount(for database: DatabaseFileKind, paths: AccountStoragePaths) -> Int {
+        openCountsByDatabasePath[normalizedPath(for: url(for: database, in: paths))] ?? 0
     }
 
     /// 初始化数据库
@@ -308,10 +343,7 @@ actor DatabaseActor {
         paths: AccountStoragePaths
     ) async throws {
         let databaseURL = url(for: database, in: paths)
-        let handle = try openDatabase(at: databaseURL)
-        defer {
-            try? closeDatabase(handle, at: databaseURL)
-        }
+        let handle = try connection(for: databaseURL)
 
         try executeRaw("BEGIN TRANSACTION;", using: handle, at: databaseURL)
 
@@ -336,10 +368,7 @@ actor DatabaseActor {
     private func applyInitialScripts(to paths: AccountStoragePaths) throws {
         for script in DatabaseSchema.initialScripts {
             let databaseURL = url(for: script.database, in: paths)
-            let handle = try openDatabase(at: databaseURL)
-            defer {
-                try? closeDatabase(handle, at: databaseURL)
-            }
+            let handle = try connection(for: databaseURL)
 
             try executeRaw("BEGIN TRANSACTION;", using: handle, at: databaseURL)
 
@@ -548,10 +577,7 @@ actor DatabaseActor {
         paths: AccountStoragePaths
     ) throws {
         let databaseURL = url(for: database, in: paths)
-        let handle = try openDatabase(at: databaseURL)
-        defer {
-            try? closeDatabase(handle, at: databaseURL)
-        }
+        let handle = try connection(for: databaseURL)
 
         try executeRaw(statement, using: handle, at: databaseURL)
     }
@@ -575,10 +601,7 @@ actor DatabaseActor {
         paths: AccountStoragePaths
     ) throws {
         let databaseURL = url(for: database, in: paths)
-        let handle = try openDatabase(at: databaseURL)
-        defer {
-            try? closeDatabase(handle, at: databaseURL)
-        }
+        let handle = try connection(for: databaseURL)
 
         let columns = try columnNames(in: table, using: handle, at: databaseURL)
         guard !columns.contains(column) else {
@@ -612,10 +635,7 @@ actor DatabaseActor {
     /// - Throws: 数据库操作失败时抛出错误
     private func loadMigrationMetadataFromDatabase(in paths: AccountStoragePaths) throws -> MigrationMetadata? {
         let databaseURL = url(for: .main, in: paths)
-        let handle = try openDatabase(at: databaseURL)
-        defer {
-            try? closeDatabase(handle, at: databaseURL)
-        }
+        let handle = try connection(for: databaseURL)
 
         let rows = try query(
             """
@@ -721,13 +741,9 @@ actor DatabaseActor {
         url.standardizedFileURL.path
     }
 
-    /// 执行预编译语句（打开连接、执行、关闭连接）
+    /// 执行预编译语句（复用缓存连接）
     private func executePrepared(_ statement: String, parameters: [SQLiteValue], at url: URL) throws {
-        let handle = try openDatabase(at: url)
-        defer {
-            try? closeDatabase(handle, at: url)
-        }
-
+        let handle = try connection(for: url)
         try executePrepared(statement, parameters: parameters, using: handle, at: url)
     }
 
@@ -770,13 +786,9 @@ actor DatabaseActor {
         }
     }
 
-    /// 执行查询（打开连接、查询、关闭连接）
+    /// 执行查询（复用缓存连接）
     private func query(_ statement: String, parameters: [SQLiteValue], at url: URL) throws -> [SQLiteRow] {
-        let handle = try openDatabase(at: url)
-        defer {
-            try? closeDatabase(handle, at: url)
-        }
-
+        let handle = try connection(for: url)
         return try query(statement, parameters: parameters, using: handle, at: url)
     }
 
@@ -917,6 +929,24 @@ actor DatabaseActor {
         try openDatabase(at: url, applyingConfiguredKey: true)
     }
 
+    /// 获取指定数据库的缓存连接；不存在时打开并缓存。
+    private func connection(for url: URL) throws -> OpaquePointer {
+        let path = normalizedPath(for: url)
+        if let handle = connectionsByDatabasePath[path] {
+            logger.debug("Database connection cache hit database=\(url.lastPathComponent)")
+            return handle
+        }
+
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        let handle = try openDatabase(at: url)
+        connectionsByDatabasePath[path] = handle
+        openCountsByDatabasePath[path, default: 0] += 1
+        logger.info(
+            "Database connection opened database=\(url.lastPathComponent) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        )
+        return handle
+    }
+
     /// 打开数据库连接，并按需应用已配置密钥
     private func openDatabase(at url: URL, applyingConfiguredKey: Bool) throws -> OpaquePointer {
         try openDatabase(at: url, encryptionKey: applyingConfiguredKey ? encryptionKey(for: url) : nil)
@@ -981,6 +1011,26 @@ actor DatabaseActor {
         guard status == SQLITE_OK else {
             throw DatabaseActorError.closeFailed(path: url.path, message: Self.currentErrorMessage(for: handle))
         }
+    }
+
+    /// 关闭指定 URL 的缓存连接。
+    private func closeCachedConnection(at url: URL) throws {
+        try closeCachedConnection(for: normalizedPath(for: url))
+    }
+
+    /// 关闭指定标准化路径的缓存连接。
+    private func closeCachedConnection(for path: String) throws {
+        guard let handle = connectionsByDatabasePath[path] else {
+            return
+        }
+
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        let url = URL(fileURLWithPath: path)
+        try closeDatabase(handle, at: url)
+        connectionsByDatabasePath[path] = nil
+        logger.info(
+            "Database connection closed database=\(url.lastPathComponent) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        )
     }
 
     /// 获取当前错误消息

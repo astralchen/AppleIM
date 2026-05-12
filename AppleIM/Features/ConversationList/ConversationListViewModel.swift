@@ -102,32 +102,48 @@ final class ConversationListViewModel {
         )
 
         if showLoading {
+            let loadingPublishStartUptime = ProcessInfo.processInfo.systemUptime
             publish { state in
                 state.phase = .loading
                 state.rows = []
                 state.isLoadingMore = false
                 state.hasMoreRows = false
             }
+            diagnostics.log(
+                "ConversationList loading state published generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: loadingPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            )
         } else {
+            let refreshPublishStartUptime = ProcessInfo.processInfo.systemUptime
             publish { state in
                 state.isLoadingMore = false
             }
+            diagnostics.log(
+                "ConversationList refresh state published generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: refreshPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            )
         }
 
         loadTask = Task { [weak self] in
             guard let self else { return }
 
             do {
+                let useCaseStartUptime = ProcessInfo.processInfo.systemUptime
                 let page = try await useCase.loadConversationPage(limit: pageSize, after: nil)
                 guard !Task.isCancelled, loadGeneration == currentGeneration else { return }
+                diagnostics.log(
+                    "ConversationList initial load useCase returned generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: useCaseStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                )
                 let elapsed = AppLogger.elapsedMilliseconds(since: startUptime)
 
+                let loadedPublishStartUptime = ProcessInfo.processInfo.systemUptime
                 publish { state in
                     state.phase = .loaded
                     state.rows = page.rows
                     state.hasMoreRows = page.hasMore
                     state.isLoadingMore = false
                 }
+                diagnostics.log(
+                    "ConversationList loaded state published generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: loadedPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                )
                 nextCursor = page.nextCursor
                 loadTask = nil
                 diagnostics.log(

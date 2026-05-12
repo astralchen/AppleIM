@@ -29,6 +29,8 @@ nonisolated struct AppLogger: Sendable {
         case chat = "Chat"
         /// 模拟后台推送
         case simulatedPush = "SimulatedPush"
+        /// 数据库
+        case database = "Database"
         /// 存储层
         case store = "Store"
     }

@@ -291,6 +291,10 @@ final class AppDependencyContainer {
     func deleteCurrentAccountStorage() async throws {
         try await storeProvider.deleteAccountStorage()
     }
+
+    func closeCurrentAccountConnections() async throws {
+        try await storeProvider.closeAccountConnections()
+    }
 }
 
 private extension UIViewController {

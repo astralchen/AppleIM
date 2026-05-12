@@ -116,13 +116,20 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// 清空会话缓存，返回登录界面
     private func endCurrentSession() {
+        let dependenciesToClose = dependencies
         sessionStore.clearSession()
-        guard let window else {
-            dependencies = nil
-            return
-        }
 
-        showLoginInterface(in: window)
+        Task { @MainActor [weak self, dependenciesToClose] in
+            try? await dependenciesToClose?.closeCurrentAccountConnections()
+            guard let self else { return }
+
+            guard let window = self.window else {
+                self.dependencies = nil
+                return
+            }
+
+            self.showLoginInterface(in: window)
+        }
     }
 
     /// 删除当前账号本地数据后结束会话。

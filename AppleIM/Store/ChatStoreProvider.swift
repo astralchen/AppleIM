@@ -156,8 +156,16 @@ actor ChatStoreProvider {
         )
     }
 
+    /// 关闭当前账号已打开的数据库连接，但保留本地数据和缓存对象。
+    func closeAccountConnections() async throws {
+        if let cachedBootstrappedPaths {
+            try await database.closeConnections(for: cachedBootstrappedPaths)
+        }
+    }
+
     /// 删除当前账号本地存储和账号绑定密钥
     func deleteAccountStorage() async throws {
+        try await closeAccountConnections()
         cachedRepository = nil
         cachedSearchIndex = nil
         cachedBootstrappedPaths = nil
