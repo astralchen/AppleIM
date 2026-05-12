@@ -201,7 +201,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             dependencies.refreshApplicationBadge()
             dependencies.runStartupDataRepair()
-            let rootViewController = UINavigationController(
+            let conversationNavigationController = UINavigationController(
                 rootViewController: dependencies.makeConversationListViewController { [weak self] action in
                     switch action {
                     case .switchAccount, .logOut:
@@ -211,7 +211,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                     }
                 }
             )
-            window.rootViewController = rootViewController
+            conversationNavigationController.tabBarItem = UITabBarItem(
+                title: "会话",
+                image: UIImage(systemName: "bubble.left.and.bubble.right"),
+                selectedImage: UIImage(systemName: "bubble.left.and.bubble.right.fill")
+            )
+
+            let contactNavigationController = UINavigationController(
+                rootViewController: dependencies.makeContactListViewController()
+            )
+            contactNavigationController.tabBarItem = UITabBarItem(
+                title: "通讯录",
+                image: UIImage(systemName: "person.2"),
+                selectedImage: UIImage(systemName: "person.2.fill")
+            )
+
+            let tabBarController = UITabBarController()
+            tabBarController.viewControllers = [
+                conversationNavigationController,
+                contactNavigationController
+            ]
+            window.rootViewController = tabBarController
         } catch {
             window.rootViewController = makeStartupErrorViewController()
         }
@@ -280,6 +300,10 @@ private extension UIViewController {
     var topVisibleViewController: UIViewController {
         if let navigationController = self as? UINavigationController {
             return navigationController.visibleViewController?.topVisibleViewController ?? navigationController
+        }
+
+        if let tabBarController = self as? UITabBarController {
+            return tabBarController.selectedViewController?.topVisibleViewController ?? tabBarController
         }
 
         if let presentedViewController {

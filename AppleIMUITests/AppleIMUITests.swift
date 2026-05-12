@@ -301,6 +301,23 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testContactsTabCanOpenChat() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+
+        app.tabBars.buttons["通讯录"].tap()
+        XCTAssertTrue(app.collectionViews["contacts.collection"].waitForExistence(timeout: 5), "Expected contacts collection")
+        XCTAssertTrue(app.cells["contacts.cell.contact_sondra"].waitForExistence(timeout: 5), "Expected Sondra contact")
+        XCTAssertTrue(app.cells["contacts.cell.group_core_contact"].exists, "Expected seeded group contact")
+
+        app.cells["contacts.cell.contact_sondra"].tap()
+
+        XCTAssertTrue(app.navigationBars["Sondra"].waitForExistence(timeout: 5), "Expected Sondra chat")
+        XCTAssertTrue(app.textViews["chat.messageInput"].waitForExistence(timeout: 5), "Expected chat input")
+    }
+
+    @MainActor
     func testConversationCanBePinnedAndUnpinned() throws {
         let app = makeUITestApplication()
         app.launch()

@@ -1,0 +1,84 @@
+[
+  {
+    "accountID": "demo_user",
+    "contacts": [
+      {
+        "contactID": "contact_sondra",
+        "wxid": "sondra",
+        "nickname": "Sondra",
+        "remark": "",
+        "avatarURL": null,
+        "type": "friend",
+        "isStarred": true
+      },
+      {
+        "contactID": "contact_qa_ming",
+        "wxid": "qa_ming",
+        "nickname": "明明",
+        "remark": "",
+        "avatarURL": null,
+        "type": "friend",
+        "isStarred": false
+      },
+      {
+        "contactID": "contact_ios_yan",
+        "wxid": "ios_yan",
+        "nickname": "Yan",
+        "remark": "",
+        "avatarURL": null,
+        "type": "friend",
+        "isStarred": false
+      },
+      {
+        "contactID": "group_core_contact",
+        "wxid": "chatbridge_core",
+        "nickname": "ChatBridge Core",
+        "remark": "",
+        "avatarURL": null,
+        "type": "group",
+        "isStarred": false
+      }
+    ]
+  },
+  {
+    "accountID": "ui_test_user",
+    "contacts": [
+      {
+        "contactID": "contact_sondra",
+        "wxid": "sondra",
+        "nickname": "Sondra",
+        "remark": "",
+        "avatarURL": null,
+        "type": "friend",
+        "isStarred": true
+      },
+      {
+        "contactID": "contact_qa_ming",
+        "wxid": "qa_ming",
+        "nickname": "明明",
+        "remark": "",
+        "avatarURL": null,
+        "type": "friend",
+        "isStarred": false
+      },
+      {
+        "contactID": "contact_ios_yan",
+        "wxid": "ios_yan",
+        "nickname": "Yan",
+        "remark": "",
+        "avatarURL": null,
+        "type": "friend",
+        "isStarred": false
+      },
+      {
+        "contactID": "group_core_contact",
+        "wxid": "chatbridge_core",
+        "nickname": "ChatBridge Core",
+        "remark": "",
+        "avatarURL": null,
+        "type": "group",
+        "isStarred": false
+      }
+    ]
+  }
+]

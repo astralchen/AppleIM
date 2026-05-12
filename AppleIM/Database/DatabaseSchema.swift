@@ -45,7 +45,7 @@ nonisolated struct MigrationScript: Equatable, Sendable {
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
     /// 当前 Schema 版本
-    static let currentVersion = 6
+    static let currentVersion = 7
 
     /// 增量迁移脚本元数据
     static let migrationScripts: [MigrationScript] = [
@@ -140,6 +140,16 @@ nonisolated enum DatabaseSchema {
                 "CREATE INDEX IF NOT EXISTS idx_emoji_package_user_sort ON emoji_package(user_id, sort_order ASC, updated_at DESC);",
                 "CREATE INDEX IF NOT EXISTS idx_emoji_user_recent ON emoji_store(user_id, last_used_at DESC);",
                 "CREATE INDEX IF NOT EXISTS idx_emoji_user_favorite ON emoji_store(user_id, is_favorite, updated_at DESC);"
+            ]
+        ),
+        MigrationScript(
+            id: "007_contact_lookup_indexes",
+            database: .main,
+            version: 7,
+            statements: [
+                "CREATE INDEX IF NOT EXISTS idx_contact_user_wxid ON contact(user_id, wxid);",
+                "CREATE INDEX IF NOT EXISTS idx_contact_user_type_name ON contact(user_id, is_deleted, type, is_starred DESC, remark, nickname, wxid);",
+                "CREATE INDEX IF NOT EXISTS idx_conversation_user_type_target ON conversation(user_id, biz_type, target_id, is_hidden);"
             ]
         )
     ]

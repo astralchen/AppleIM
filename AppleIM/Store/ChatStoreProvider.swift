@@ -28,6 +28,8 @@ actor ChatStoreProvider {
     private let logger = AppLogger(category: .store)
     /// 缓存的仓储实例
     private var cachedRepository: LocalChatRepository?
+    /// 正在进行中的仓储初始化任务，避免 actor 可重入导致重复 seed。
+    private var repositoryInitializationTask: Task<LocalChatRepository, any Error>?
     /// 缓存的搜索索引 Actor
     private var cachedSearchIndex: SearchIndexActor?
     /// 已准备并完成 bootstrap 的账号存储路径
@@ -75,6 +77,28 @@ actor ChatStoreProvider {
             return cachedRepository
         }
 
+        if let repositoryInitializationTask {
+            logger.debug("ChatStoreProvider repository initialization task hit")
+            return try await repositoryInitializationTask.value
+        }
+
+        let repositoryInitializationTask = Task {
+            try await self.makeRepository()
+        }
+        self.repositoryInitializationTask = repositoryInitializationTask
+
+        do {
+            let repository = try await repositoryInitializationTask.value
+            cachedRepository = repository
+            self.repositoryInitializationTask = nil
+            return repository
+        } catch {
+            self.repositoryInitializationTask = nil
+            throw error
+        }
+    }
+
+    private func makeRepository() async throws -> LocalChatRepository {
         let startUptime = ProcessInfo.processInfo.systemUptime
         logger.info("ChatStoreProvider repository create started")
         let paths = try await bootstrappedAccountStorage()
@@ -87,7 +111,6 @@ actor ChatStoreProvider {
         let seedStartUptime = ProcessInfo.processInfo.systemUptime
         try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
         logger.info("ChatStoreProvider demo seed checked elapsed=\(AppLogger.elapsedMilliseconds(since: seedStartUptime))")
-        cachedRepository = repository
         logger.info("ChatStoreProvider repository create completed elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))")
         return repository
     }
