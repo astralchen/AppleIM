@@ -27,6 +27,10 @@ nonisolated enum ChatStoreError: Error, Equatable, Sendable {
     case invalidPendingJobStatus(Int)
     /// 无效的媒体上传状态
     case invalidMediaUploadStatus(Int)
+    /// 无效的表情类型
+    case invalidEmojiType(Int)
+    /// 无效的表情包状态
+    case invalidEmojiPackageStatus(Int)
     /// 消息未找到
     case messageNotFound(MessageID)
     /// 消息无法重发
@@ -986,6 +990,8 @@ protocol MessageRepository: Sendable {
     func insertOutgoingVideoMessage(_ input: OutgoingVideoMessageInput) async throws -> StoredMessage
     /// 插入发出的文件消息
     func insertOutgoingFileMessage(_ input: OutgoingFileMessageInput) async throws -> StoredMessage
+    /// 插入发出的表情消息
+    func insertOutgoingEmojiMessage(_ input: OutgoingEmojiMessageInput) async throws -> StoredMessage
     /// 查询消息列表
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
     /// 查询单条消息

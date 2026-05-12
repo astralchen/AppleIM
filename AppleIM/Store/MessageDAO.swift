@@ -94,13 +94,24 @@ nonisolated struct MessageDAO: Sendable {
             message_file.local_path AS file_local_path,
             message_file.cdn_url AS file_cdn_url,
             message_file.md5 AS file_md5,
-            message_file.upload_status AS file_upload_status
+            message_file.upload_status AS file_upload_status,
+            message_emoji.emoji_id AS emoji_id,
+            message_emoji.package_id AS emoji_package_id,
+            message_emoji.emoji_type AS emoji_type,
+            message_emoji.name AS emoji_name,
+            message_emoji.local_path AS emoji_local_path,
+            message_emoji.thumb_path AS emoji_thumb_path,
+            message_emoji.cdn_url AS emoji_cdn_url,
+            message_emoji.width AS emoji_width,
+            message_emoji.height AS emoji_height,
+            message_emoji.size_bytes AS emoji_size_bytes
         FROM message INDEXED BY idx_message_conversation_visible_sort
         LEFT JOIN message_text ON message_text.content_id = message.content_id
         LEFT JOIN message_image ON message_image.content_id = message.content_id
         LEFT JOIN message_voice ON message_voice.content_id = message.content_id
         LEFT JOIN message_video ON message_video.content_id = message.content_id
         LEFT JOIN message_file ON message_file.content_id = message.content_id
+        LEFT JOIN message_emoji ON message_emoji.content_id = message.content_id
         LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
         WHERE message.conversation_id = ?
         AND message.is_deleted = 0\(cursorPredicate)
@@ -164,13 +175,24 @@ nonisolated struct MessageDAO: Sendable {
                 message_file.local_path AS file_local_path,
                 message_file.cdn_url AS file_cdn_url,
                 message_file.md5 AS file_md5,
-                message_file.upload_status AS file_upload_status
+                message_file.upload_status AS file_upload_status,
+                message_emoji.emoji_id AS emoji_id,
+                message_emoji.package_id AS emoji_package_id,
+                message_emoji.emoji_type AS emoji_type,
+                message_emoji.name AS emoji_name,
+                message_emoji.local_path AS emoji_local_path,
+                message_emoji.thumb_path AS emoji_thumb_path,
+                message_emoji.cdn_url AS emoji_cdn_url,
+                message_emoji.width AS emoji_width,
+                message_emoji.height AS emoji_height,
+                message_emoji.size_bytes AS emoji_size_bytes
             FROM message
             LEFT JOIN message_text ON message_text.content_id = message.content_id
             LEFT JOIN message_image ON message_image.content_id = message.content_id
             LEFT JOIN message_voice ON message_voice.content_id = message.content_id
             LEFT JOIN message_video ON message_video.content_id = message.content_id
             LEFT JOIN message_file ON message_file.content_id = message.content_id
+            LEFT JOIN message_emoji ON message_emoji.content_id = message.content_id
             LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
             WHERE message.message_id = ?
             AND message.is_deleted = 0
@@ -1005,6 +1027,116 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
+    static func insertOutgoingEmojiStatements(_ input: OutgoingEmojiMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
+        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
+        let clientMessageID = input.clientMessageID ?? messageID.rawValue
+        let contentID = "emoji_\(messageID.rawValue)"
+        let sortSequence = input.sortSequence ?? input.localTime
+
+        let message = StoredMessage(
+            id: messageID,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            clientMessageID: clientMessageID,
+            serverMessageID: nil,
+            sequence: nil,
+            type: .emoji,
+            direction: .outgoing,
+            sendStatus: .sending,
+            readStatus: .read,
+            serverTime: nil,
+            isRevoked: false,
+            isDeleted: false,
+            revokeReplacementText: nil,
+            text: nil,
+            image: nil,
+            voice: nil,
+            video: nil,
+            file: nil,
+            emoji: input.emoji,
+            sortSequence: sortSequence,
+            localTime: input.localTime
+        )
+
+        return (
+            message,
+            [
+                SQLiteStatement(
+                    """
+                    INSERT INTO message_emoji (
+                        content_id,
+                        emoji_id,
+                        package_id,
+                        emoji_type,
+                        name,
+                        local_path,
+                        thumb_path,
+                        cdn_url,
+                        width,
+                        height,
+                        size_bytes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    parameters: [
+                        .text(contentID),
+                        .text(input.emoji.emojiID),
+                        .optionalText(input.emoji.packageID),
+                        .integer(Int64(input.emoji.emojiType.rawValue)),
+                        .optionalText(input.emoji.name),
+                        .optionalText(input.emoji.localPath),
+                        .optionalText(input.emoji.thumbPath),
+                        .optionalText(input.emoji.cdnURL),
+                        .optionalInteger(input.emoji.width.map(Int64.init)),
+                        .optionalInteger(input.emoji.height.map(Int64.init)),
+                        .optionalInteger(input.emoji.sizeBytes)
+                    ]
+                ),
+                SQLiteStatement(
+                    """
+                    INSERT INTO message (
+                        message_id,
+                        conversation_id,
+                        sender_id,
+                        client_msg_id,
+                        msg_type,
+                        direction,
+                        send_status,
+                        delivery_status,
+                        read_status,
+                        revoke_status,
+                        is_deleted,
+                        content_table,
+                        content_id,
+                        sort_seq,
+                        local_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
+                    """,
+                    parameters: [
+                        .text(message.id.rawValue),
+                        .text(input.conversationID.rawValue),
+                        .text(input.senderID.rawValue),
+                        .text(clientMessageID),
+                        .integer(Int64(MessageType.emoji.rawValue)),
+                        .integer(Int64(MessageDirection.outgoing.rawValue)),
+                        .integer(Int64(MessageSendStatus.sending.rawValue)),
+                        .text("message_emoji"),
+                        .text(contentID),
+                        .integer(sortSequence),
+                        .integer(input.localTime)
+                    ]
+                ),
+                conversationUpdateStatement(
+                    messageID: message.id,
+                    conversationID: input.conversationID,
+                    userID: input.userID,
+                    localTime: input.localTime,
+                    digest: "[表情]",
+                    sortSequence: sortSequence
+                )
+            ]
+        )
+    }
+
     private static func conversationUpdateStatement(
         messageID: MessageID,
         input: OutgoingVideoMessageInput,
@@ -1115,6 +1247,7 @@ nonisolated struct MessageDAO: Sendable {
             voice: try voice(from: row, paths: paths),
             video: try video(from: row, paths: paths),
             file: try file(from: row, paths: paths),
+            emoji: try emoji(from: row, paths: paths),
             sortSequence: try row.requiredInt64("sort_seq"),
             localTime: try row.requiredInt64("local_time")
         )
@@ -1231,6 +1364,30 @@ nonisolated struct MessageDAO: Sendable {
             remoteURL: row.string("file_cdn_url"),
             md5: row.string("file_md5"),
             uploadStatus: uploadStatus
+        )
+    }
+
+    private static func emoji(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredEmojiContent? {
+        guard let emojiID = row.string("emoji_id") else {
+            return nil
+        }
+
+        let typeRawValue = row.int("emoji_type") ?? EmojiType.package.rawValue
+        guard let emojiType = EmojiType(rawValue: typeRawValue) else {
+            throw ChatStoreError.invalidEmojiType(typeRawValue)
+        }
+
+        return StoredEmojiContent(
+            emojiID: emojiID,
+            packageID: row.string("emoji_package_id"),
+            emojiType: emojiType,
+            name: row.string("emoji_name"),
+            localPath: row.string("emoji_local_path").map { resolvedMediaPath($0, in: paths) },
+            thumbPath: row.string("emoji_thumb_path").map { resolvedMediaPath($0, in: paths) },
+            cdnURL: row.string("emoji_cdn_url"),
+            width: row.int("emoji_width"),
+            height: row.int("emoji_height"),
+            sizeBytes: row.int64("emoji_size_bytes")
         )
     }
 

@@ -190,8 +190,58 @@ nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let video: StoredVideoContent?
     /// 文件内容（仅文件消息）
     let file: StoredFileContent?
+    /// 表情内容（仅表情消息）
+    let emoji: StoredEmojiContent?
     /// 排序序号
     let sortSequence: Int64
     /// 本地时间戳（毫秒）
     let localTime: Int64
+
+    init(
+        id: MessageID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        clientMessageID: String?,
+        serverMessageID: String?,
+        sequence: Int64?,
+        type: MessageType,
+        direction: MessageDirection,
+        sendStatus: MessageSendStatus,
+        readStatus: MessageReadStatus,
+        serverTime: Int64?,
+        isRevoked: Bool,
+        isDeleted: Bool,
+        revokeReplacementText: String?,
+        text: String?,
+        image: StoredImageContent?,
+        voice: StoredVoiceContent?,
+        video: StoredVideoContent?,
+        file: StoredFileContent?,
+        emoji: StoredEmojiContent? = nil,
+        sortSequence: Int64,
+        localTime: Int64
+    ) {
+        self.id = id
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.clientMessageID = clientMessageID
+        self.serverMessageID = serverMessageID
+        self.sequence = sequence
+        self.type = type
+        self.direction = direction
+        self.sendStatus = sendStatus
+        self.readStatus = readStatus
+        self.serverTime = serverTime
+        self.isRevoked = isRevoked
+        self.isDeleted = isDeleted
+        self.revokeReplacementText = revokeReplacementText
+        self.text = text
+        self.image = image
+        self.voice = voice
+        self.video = video
+        self.file = file
+        self.emoji = emoji
+        self.sortSequence = sortSequence
+        self.localTime = localTime
+    }
 }

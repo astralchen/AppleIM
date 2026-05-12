@@ -90,7 +90,7 @@ nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
 /// 所有操作通过 DatabaseActor 串行化执行
-nonisolated struct LocalChatRepository: ConversationRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, EmojiRepository, SyncStore {
     /// 数据库 Actor
     private let database: DatabaseActor
     /// 账号存储路径
@@ -99,6 +99,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
     private let conversationDAO: ConversationDAO
     /// 消息 DAO
     private let messageDAO: MessageDAO
+    /// 表情 DAO
+    private let emojiDAO: EmojiDAO
     /// 本地通知管理器
     private let localNotificationManager: (any LocalNotificationManaging)?
     /// App 角标管理器
@@ -114,6 +116,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         self.paths = paths
         self.conversationDAO = ConversationDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
+        self.emojiDAO = EmojiDAO(database: database, paths: paths)
         self.localNotificationManager = localNotificationManager
         self.applicationBadgeManager = applicationBadgeManager
     }
@@ -485,6 +488,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         let result = MessageDAO.insertOutgoingFileStatements(input)
         try await database.performTransaction(result.statements, paths: paths)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.file, userID: input.userID, createdAt: input.localTime))
+        scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
+        return result.message
+    }
+
+    func insertOutgoingEmojiMessage(_ input: OutgoingEmojiMessageInput) async throws -> StoredMessage {
+        let result = MessageDAO.insertOutgoingEmojiStatements(input)
+        try await database.performTransaction(result.statements, paths: paths)
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
         return result.message
     }
@@ -1434,6 +1444,44 @@ nonisolated struct LocalChatRepository: ConversationRepository, NotificationSett
         }
 
         return jobs
+    }
+
+    // MARK: - EmojiRepository
+
+    func upsertEmojiPackage(_ package: EmojiPackageRecord) async throws {
+        try await emojiDAO.upsertPackage(package)
+    }
+
+    func upsertEmojiAsset(_ emoji: EmojiAssetRecord) async throws {
+        try await emojiDAO.upsertEmoji(emoji)
+    }
+
+    func listEmojiPackages(for userID: UserID) async throws -> [EmojiPackageRecord] {
+        try await emojiDAO.listPackages(for: userID)
+    }
+
+    func listPackageEmojis(for userID: UserID, packageID: String) async throws -> [EmojiAssetRecord] {
+        try await emojiDAO.listEmojis(userID: userID, packageID: packageID)
+    }
+
+    func listFavoriteEmojis(for userID: UserID) async throws -> [EmojiAssetRecord] {
+        try await emojiDAO.listFavoriteEmojis(for: userID)
+    }
+
+    func listRecentEmojis(for userID: UserID, limit: Int) async throws -> [EmojiAssetRecord] {
+        try await emojiDAO.listRecentEmojis(for: userID, limit: limit)
+    }
+
+    func emoji(emojiID: String, userID: UserID) async throws -> EmojiAssetRecord? {
+        try await emojiDAO.emoji(emojiID: emojiID, userID: userID)
+    }
+
+    func setEmojiFavorite(emojiID: String, userID: UserID, isFavorite: Bool, updatedAt: Int64) async throws {
+        try await emojiDAO.setFavorite(emojiID: emojiID, userID: userID, isFavorite: isFavorite, updatedAt: updatedAt)
+    }
+
+    func recordEmojiUsed(emojiID: String, userID: UserID, usedAt: Int64) async throws {
+        try await emojiDAO.recordUsed(emojiID: emojiID, userID: userID, usedAt: usedAt)
     }
 
     // MARK: - SyncStore

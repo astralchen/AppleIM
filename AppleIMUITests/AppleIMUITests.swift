@@ -144,6 +144,55 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testEmojiPanelOpensFromMoreMenu() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+
+        openEmojiPanel(in: app)
+
+        XCTAssertTrue(app.otherElements["chat.emojiInputPanel"].exists)
+    }
+
+    @MainActor
+    func testSendingEmojiShowsEmojiMessage() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+        openEmojiPanel(in: app)
+        selectEmojiPanelSection("收藏", in: app)
+
+        let emoji = app.buttons["chat.emojiItem.cb_smile"]
+        XCTAssertTrue(emoji.waitForExistence(timeout: 5), "Expected seeded favorite emoji")
+        emoji.tap()
+
+        XCTAssertTrue(app.staticTexts["Smile"].waitForExistence(timeout: 5), "Expected sent emoji message")
+    }
+
+    @MainActor
+    func testEmojiCanBeFavoritedAndUnfavorited() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+        openEmojiPanel(in: app)
+        selectEmojiPanelSection("ChatBridge", in: app)
+
+        let favoriteButton = app.buttons["chat.emojiFavorite.cb_ok"]
+        XCTAssertTrue(favoriteButton.waitForExistence(timeout: 5), "Expected package emoji favorite button")
+        favoriteButton.tap()
+
+        selectEmojiPanelSection("收藏", in: app)
+        let favoritedEmoji = app.buttons["chat.emojiItem.cb_ok"]
+        XCTAssertTrue(favoritedEmoji.waitForExistence(timeout: 5), "Expected favorited emoji in favorites")
+
+        app.buttons["chat.emojiFavorite.cb_ok"].tap()
+        XCTAssertTrue(waitForDisappearance(of: favoritedEmoji, timeout: 5), "Expected emoji to leave favorites")
+    }
+
+    @MainActor
     func testKeyboardDoesNotCoverLatestMessage() throws {
         let app = makeUITestApplication()
         app.launch()
