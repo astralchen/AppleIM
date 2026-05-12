@@ -24,6 +24,8 @@ actor ChatStoreProvider {
     private let localNotificationManager: (any LocalNotificationManaging)?
     /// App 角标管理器
     private let applicationBadgeManager: (any ApplicationBadgeManaging)?
+    /// 是否初始化演示数据。
+    private let shouldSeedDemoData: Bool
     /// 日志
     private let logger = AppLogger(category: .store)
     /// 缓存的仓储实例
@@ -47,7 +49,8 @@ actor ChatStoreProvider {
         database: DatabaseActor,
         databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
         localNotificationManager: (any LocalNotificationManaging)? = nil,
-        applicationBadgeManager: (any ApplicationBadgeManaging)? = nil
+        applicationBadgeManager: (any ApplicationBadgeManaging)? = nil,
+        shouldSeedDemoData: Bool = true
     ) {
         self.accountID = accountID
         self.storageService = storageService
@@ -55,6 +58,7 @@ actor ChatStoreProvider {
         self.databaseKeyStore = databaseKeyStore
         self.localNotificationManager = localNotificationManager
         self.applicationBadgeManager = applicationBadgeManager
+        self.shouldSeedDemoData = shouldSeedDemoData
     }
 
     /// 获取聊天仓储实例
@@ -108,9 +112,11 @@ actor ChatStoreProvider {
             localNotificationManager: localNotificationManager,
             applicationBadgeManager: applicationBadgeManager
         )
-        let seedStartUptime = ProcessInfo.processInfo.systemUptime
-        try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
-        logger.info("ChatStoreProvider demo seed checked elapsed=\(AppLogger.elapsedMilliseconds(since: seedStartUptime))")
+        if shouldSeedDemoData {
+            let seedStartUptime = ProcessInfo.processInfo.systemUptime
+            try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
+            logger.info("ChatStoreProvider demo seed checked elapsed=\(AppLogger.elapsedMilliseconds(since: seedStartUptime))")
+        }
         logger.info("ChatStoreProvider repository create completed elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))")
         return repository
     }

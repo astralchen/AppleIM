@@ -68,6 +68,8 @@ final class ChatViewController: UIViewController {
     private var lastRenderedRowIDs: [String] = []
     /// 消息列表快照 apply 门控，防止 diffable data source 重入。
     private let snapshotRenderCoordinator = ChatSnapshotRenderCoordinator<ChatViewState>()
+    /// 聊天 UI 耗时日志。
+    private let logger = AppLogger(category: .chat)
     /// 语音按钮触摸是否仍处于按下状态
     private var isVoiceTouchActive = false
     /// 用户是否仍处于贴底阅读状态；composer 高度变化时用它维持最新消息可见
@@ -145,6 +147,7 @@ final class ChatViewController: UIViewController {
         configureVoiceRecorder()
         configureVoicePlayback()
         observeKeyboard()
+        bindConversationStoreNotifications()
         bindViewModel()
         viewModel.load()
     }
@@ -399,6 +402,19 @@ final class ChatViewController: UIViewController {
             name: UIResponder.keyboardWillChangeFrameNotification,
             object: nil
         )
+    }
+
+    /// 监听仓储层会话变更，当前聊天命中时刷新消息列表。
+    private func bindConversationStoreNotifications() {
+        NotificationCenter.default.publisher(for: .chatStoreConversationsDidChange)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                guard let self, view.window != nil else { return }
+                let userID = notification.userInfo?[ChatStoreConversationChangeNotification.userIDKey] as? String
+                let conversationIDs = notification.userInfo?[ChatStoreConversationChangeNotification.conversationIDsKey] as? [String] ?? []
+                viewModel.refreshAfterStoreChange(userID: userID, conversationIDs: conversationIDs)
+            }
+            .store(in: &cancellables)
     }
 
     /// 键盘 frame 变化时同步布局，并在用户原本贴底阅读时维持最新消息可见。
@@ -851,6 +867,9 @@ final class ChatViewController: UIViewController {
     /// 这个方法集中处理状态到界面的单向同步：先刷新导航标题、空态和输入栏，
     /// 再计算消息列表的增量快照，最后根据消息插入位置决定是否保持当前位置或滚动到底部。
     private func render(_ state: ChatViewState) {
+        let renderStartUptime = ProcessInfo.processInfo.systemUptime
+        logger.debug("ChatViewController render started rows=\(state.rows.count)")
+
         // 同步不依赖 collection view diff 的轻量 UI 状态。
         title = state.title
         emptyLabel.text = state.emptyMessage
@@ -865,7 +884,12 @@ final class ChatViewController: UIViewController {
         }
 
         snapshotRenderCoordinator.apply(state) { [weak self] state, completion in
-            self?.renderMessageSnapshot(state, completion: completion) ?? completion()
+            self?.renderMessageSnapshot(state) { [weak self] in
+                self?.logger.debug(
+                    "ChatViewController render completed rows=\(state.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                )
+                completion()
+            } ?? completion()
         }
     }
 
@@ -889,6 +913,7 @@ final class ChatViewController: UIViewController {
             let id = row.id.rawValue
             return previousRowsByID[id] == row ? nil : id
         }
+        let appendedCount = max(0, newRowIDs.count - previousRowIDs.count)
 
         // 缓存最新 row 内容，供 cell registration 和下一次 render diff 对比使用。
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
@@ -899,6 +924,10 @@ final class ChatViewController: UIViewController {
             return
         }
 
+        let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
+        logger.debug(
+            "ChatViewController snapshot apply started rows=\(newRowIDs.count) appended=\(appendedCount) changed=\(changedRowIDs.count) initial=\(isInitialMessageRender) prepending=\(isPrependingOlderMessages) didAppend=\(didAppendNewMessage)"
+        )
         let snapshot = makeIncrementalSnapshot(
             dataSource: dataSource,
             previousRowIDs: previousRowIDs,
@@ -924,6 +953,9 @@ final class ChatViewController: UIViewController {
                 self.scrollToBottom(animated: !isInitialMessageRender)
             }
 
+            self.logger.debug(
+                "ChatViewController snapshot apply completed rows=\(newRowIDs.count) appended=\(appendedCount) changed=\(changedRowIDs.count) elapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime))"
+            )
             completion()
         }
     }

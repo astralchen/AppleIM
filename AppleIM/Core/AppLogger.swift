@@ -25,6 +25,10 @@ nonisolated struct AppLogger: Sendable {
     enum Category: String, Sendable {
         /// 会话列表
         case conversationList = "ConversationList"
+        /// 聊天页
+        case chat = "Chat"
+        /// 模拟后台推送
+        case simulatedPush = "SimulatedPush"
         /// 存储层
         case store = "Store"
     }

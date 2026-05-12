@@ -15,6 +15,8 @@ import UIKit
 final class AppDependencyContainer {
     /// 聊天存储提供者
     private let storeProvider: ChatStoreProvider
+    /// 统一模拟后台推送服务
+    private let simulatedIncomingPushService: SimulatedIncomingPushService
     /// 消息发送服务
     private let messageSendService: any MessageSendService
     /// 媒体文件存储
@@ -88,6 +90,10 @@ final class AppDependencyContainer {
             databaseKeyStore: resolvedDatabaseKeyStore,
             localNotificationManager: localNotificationManager,
             applicationBadgeManager: applicationBadgeManager
+        )
+        self.simulatedIncomingPushService = SimulatedIncomingPushService(
+            userID: accountID,
+            storeProvider: storeProvider
         )
         self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
             userID: accountID,
@@ -209,7 +215,8 @@ final class AppDependencyContainer {
     ) -> ConversationListViewController {
         let useCase = LocalConversationListUseCase(
             userID: accountID,
-            storeProvider: storeProvider
+            storeProvider: storeProvider,
+            simulatedIncomingPushService: simulatedIncomingPushService
         )
         let searchUseCase = LocalSearchUseCase(
             userID: accountID,
@@ -267,10 +274,13 @@ final class AppDependencyContainer {
             storeProvider: storeProvider,
             sendService: messageSendService,
             mediaFileStore: mediaFileStore,
-            mediaUploadService: mediaUploadService
+            mediaUploadService: mediaUploadService,
+            simulatedIncomingPushService: simulatedIncomingPushService
         )
         let viewModel = ChatViewModel(useCase: useCase, title: conversation.title)
-        return ChatViewController(viewModel: viewModel)
+        let viewController = ChatViewController(viewModel: viewModel)
+        viewController.hidesBottomBarWhenPushed = true
+        return viewController
     }
 
     func prepareCurrentAccountStorage() async throws -> AccountStoragePaths {

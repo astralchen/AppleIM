@@ -666,6 +666,36 @@ struct AppleIMTests {
         }
     }
 
+    @MainActor
+    @Test func appDependencyContainerHidesTabBarWhenPushingChat() throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let container = try AppDependencyContainer(
+            accountID: "hide_tab_bar_user",
+            storageService: TrackingAccountStorageService(rootDirectory: rootDirectory),
+            database: DatabaseActor(),
+            databaseKeyStore: InMemoryAccountDatabaseKeyStore(),
+            applicationBadgeManager: CapturingApplicationBadgeManager()
+        )
+        let chatViewController = container.makeChatViewController(
+            conversation: ConversationListRowState(
+                id: "hide_tab_bar_conversation",
+                title: "Hide Tab",
+                avatarURL: nil,
+                subtitle: "Open chat",
+                timeText: "Now",
+                unreadText: nil,
+                isPinned: false,
+                isMuted: false
+            )
+        )
+
+        #expect(chatViewController.hidesBottomBarWhenPushed)
+    }
+
     @Test func serverMessageSendConfigurationRequiresExplicitBaseURL() async throws {
         let missingConfiguration = ServerMessageSendService.Configuration.fromEnvironment([:], token: "secret_token")
         let missingTokenConfiguration = ServerMessageSendService.Configuration.fromEnvironment(
@@ -3275,6 +3305,219 @@ struct AppleIMTests {
         #expect(result == nil)
     }
 
+    @Test func simulatedIncomingPushServiceWritesFixedConversationBatchThroughSyncStore() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "push_service_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "push_service_conversation",
+                userID: "push_service_user",
+                title: "Push Service",
+                targetID: "push_service_peer",
+                unreadCount: 1,
+                sortTimestamp: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "push_service_user",
+                conversationID: "push_service_conversation",
+                senderID: "push_service_user",
+                text: "Before push",
+                localTime: 100,
+                messageID: "push_service_existing",
+                clientMessageID: "push_service_existing_client",
+                sortSequence: 100
+            )
+        )
+        let service = SimulatedIncomingPushService(userID: "push_service_user", storeProvider: storeProvider)
+
+        let result = try #require(try await service.simulateIncomingPush(
+            SimulatedIncomingPushRequest(target: .conversation("push_service_conversation"), messageCount: 2)
+        ))
+        let conversations = try await repository.listConversations(for: "push_service_user")
+        let storedConversation = try #require(conversations.first { $0.id == "push_service_conversation" })
+        let storedMessages = try await repository.listMessages(
+            conversationID: "push_service_conversation",
+            limit: 3,
+            beforeSortSeq: nil
+        )
+
+        #expect(result.conversationID == "push_service_conversation")
+        #expect(result.insertedCount == 2)
+        #expect(result.messages.count == 2)
+        #expect(result.messages.allSatisfy { $0.senderID == "push_service_peer" })
+        #expect(result.finalConversation.unreadCount == 3)
+        #expect(result.finalConversation.lastMessageDigest == result.messages.last?.text)
+        #expect(storedConversation.unreadCount == 3)
+        #expect(storedConversation.lastMessageDigest == result.messages.last?.text)
+        #expect(storedMessages.prefix(2).map(\.id) == result.messages.reversed().map(\.messageID))
+        #expect(storedMessages.prefix(2).allSatisfy { $0.senderID == "push_service_peer" })
+    }
+
+    @Test func simulatedIncomingPushServiceAssignsDistinctSequencesForConcurrentPushes() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "push_concurrent_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "push_concurrent_conversation",
+                userID: "push_concurrent_user",
+                title: "Push Concurrent",
+                sortTimestamp: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "push_concurrent_user",
+                conversationID: "push_concurrent_conversation",
+                senderID: "push_concurrent_user",
+                text: "Before concurrent push",
+                localTime: 100,
+                messageID: "push_concurrent_existing",
+                clientMessageID: "push_concurrent_existing_client",
+                sortSequence: 100
+            )
+        )
+        let service = SimulatedIncomingPushService(userID: "push_concurrent_user", storeProvider: storeProvider)
+        let request = SimulatedIncomingPushRequest(target: .conversation("push_concurrent_conversation"), messageCount: 2)
+
+        async let first = service.simulateIncomingPush(request)
+        async let second = service.simulateIncomingPush(request)
+        let results = try await [first, second].compactMap { $0 }
+        let sequences = results.flatMap(\.messages).map(\.sequence).sorted()
+
+        #expect(results.count == 2)
+        #expect(sequences.count == 4)
+        #expect(Set(sequences).count == 4)
+        #expect(sequences == Array(sequences[0]...(sequences[0] + 3)))
+    }
+
+    @Test func simulatedIncomingPushServiceReturnsNilWhenNoConversationExists() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "push_empty_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let service = SimulatedIncomingPushService(userID: "push_empty_user", storeProvider: storeProvider)
+
+        let result = try await service.simulateIncomingPush()
+
+        #expect(result == nil)
+    }
+
+    @MainActor
+    @Test func conversationListSimulatedPushIsVisibleAfterEnteringChat() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "push_enter_chat_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "push_enter_chat_conversation",
+                userID: "push_enter_chat_user",
+                title: "Push Enter Chat",
+                sortTimestamp: 100
+            )
+        )
+        let pushService = SimulatedIncomingPushService(userID: "push_enter_chat_user", storeProvider: storeProvider)
+
+        let pushResult = try #require(try await pushService.simulateIncomingPush(
+            SimulatedIncomingPushRequest(target: .conversation("push_enter_chat_conversation"), messageCount: 2)
+        ))
+        let useCase = StoreBackedChatUseCase(
+            userID: "push_enter_chat_user",
+            conversationID: pushResult.conversationID,
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: AccountMediaFileStore(accountID: "push_enter_chat_user", storageService: storageService)
+        )
+
+        let page = try await useCase.loadInitialMessages()
+
+        #expect(page.rows.map(\.id) == pushResult.messages.map(\.messageID))
+        #expect(page.rows.allSatisfy { $0.isOutgoing == false })
+    }
+
+    @MainActor
+    @Test func chatViewModelLoadsMessagesAfterConversationListSimulatedPush() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "push_enter_view_model_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "push_enter_view_model_conversation",
+                userID: "push_enter_view_model_user",
+                title: "Push Enter View Model",
+                sortTimestamp: 100
+            )
+        )
+        let pushService = SimulatedIncomingPushService(userID: "push_enter_view_model_user", storeProvider: storeProvider)
+        let pushResult = try #require(try await pushService.simulateIncomingPush(
+            SimulatedIncomingPushRequest(target: .conversation("push_enter_view_model_conversation"), messageCount: 2)
+        ))
+        let useCase = StoreBackedChatUseCase(
+            userID: "push_enter_view_model_user",
+            conversationID: pushResult.conversationID,
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: AccountMediaFileStore(accountID: "push_enter_view_model_user", storageService: storageService)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Push Enter View Model")
+
+        viewModel.load()
+
+        try await waitForCondition {
+            viewModel.currentState.rows.map(\.id) == pushResult.messages.map(\.messageID)
+        }
+        #expect(viewModel.currentState.phase == .loaded)
+    }
+
     @Test func localChatRepositoryStoresGroupMembersAndAnnouncementPermissions() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -3484,7 +3727,8 @@ struct AppleIMTests {
         let storeProvider = ChatStoreProvider(
             accountID: "simulated_store_user",
             storageService: storageService,
-            database: DatabaseActor()
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
         )
         let repository = try await storeProvider.repository()
         try await repository.upsertConversation(
@@ -3515,13 +3759,13 @@ struct AppleIMTests {
             mediaFileStore: AccountMediaFileStore(accountID: "simulated_store_user", storageService: storageService)
         )
 
-        let row = try #require(try await useCase.simulateIncomingTextMessage())
-        let secondRow = try #require(try await useCase.simulateIncomingTextMessage())
+        let row = try #require(try await useCase.simulateIncomingMessages().first)
+        let secondRow = try #require(try await useCase.simulateIncomingMessages().first)
         let storedMessage = try #require(try await repository.message(messageID: row.id))
         let secondStoredMessage = try #require(try await repository.message(messageID: secondRow.id))
         let page = try await useCase.loadInitialMessages()
 
-        #expect(row.id.rawValue.hasPrefix("simulated_incoming_"))
+        #expect(row.id.rawValue.hasPrefix("simulated_push_incoming_"))
         #expect(row.isOutgoing == false)
         #expect(storedMessage.direction == .incoming)
         #expect(secondStoredMessage.direction == .incoming)
@@ -3535,6 +3779,64 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func storeBackedChatUseCaseAssignsDistinctSequencesForConcurrentSimulatedIncomingMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "simulated_concurrent_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "simulated_concurrent_conversation",
+                userID: "simulated_concurrent_user",
+                title: "Simulated Concurrent",
+                sortTimestamp: 100
+            )
+        )
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "simulated_concurrent_user",
+                conversationID: "simulated_concurrent_conversation",
+                senderID: "simulated_concurrent_user",
+                text: "Before concurrent simulated incoming",
+                localTime: 100,
+                messageID: "simulated_concurrent_existing",
+                clientMessageID: "simulated_concurrent_existing_client",
+                sortSequence: 100
+            )
+        )
+        let useCase = StoreBackedChatUseCase(
+            userID: "simulated_concurrent_user",
+            conversationID: "simulated_concurrent_conversation",
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: AccountMediaFileStore(accountID: "simulated_concurrent_user", storageService: storageService)
+        )
+
+        async let first = useCase.simulateIncomingMessages()
+        async let second = useCase.simulateIncomingMessages()
+        let rows = try await [first, second].flatMap { $0 }
+        var storedMessages: [StoredMessage] = []
+        for row in rows {
+            storedMessages.append(try #require(try await repository.message(messageID: row.id)))
+        }
+        let sortedSequences = storedMessages.map(\.sortSequence).sorted()
+
+        #expect(rows.count >= 2)
+        #expect(Set(rows.map(\.id)).count == rows.count)
+        #expect(Set(storedMessages.map(\.sortSequence)).count == storedMessages.count)
+        #expect(sortedSequences[1] > sortedSequences[0])
+    }
+
+    @MainActor
     @Test func storeBackedChatUseCaseKeepsSimulatedIncomingMessageReadWhenChatIsOpen() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -3545,7 +3847,8 @@ struct AppleIMTests {
         let storeProvider = ChatStoreProvider(
             accountID: "simulated_read_user",
             storageService: storageService,
-            database: DatabaseActor()
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
         )
         let repository = try await storeProvider.repository()
         try await repository.upsertConversation(
@@ -3566,8 +3869,14 @@ struct AppleIMTests {
         )
 
         _ = try await useCase.loadInitialMessages()
-        let row = try #require(try await useCase.simulateIncomingTextMessage())
+        let row = try #require(try await useCase.simulateIncomingMessages().first)
 
+        try await waitForCondition {
+            let conversations = try await repository.listConversations(for: "simulated_read_user")
+            let storedMessage = try await repository.message(messageID: row.id)
+            let conversation = conversations.first { $0.id == "simulated_read_conversation" }
+            return conversation?.unreadCount == 0 && storedMessage?.readStatus == .read
+        }
         let conversations = try await repository.listConversations(for: "simulated_read_user")
         let storedMessage = try #require(try await repository.message(messageID: row.id))
         let conversation = try #require(conversations.first { $0.id == "simulated_read_conversation" })
@@ -3786,6 +4095,7 @@ struct AppleIMTests {
         #expect(olderPlan.contains("idx_message_conversation_visible_sort"))
     }
 
+    @MainActor
     @Test func chatUseCaseSendTextYieldsSendingThenSuccess() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -3796,6 +4106,7 @@ struct AppleIMTests {
         try await repository.upsertConversation(
             makeConversationRecord(id: "chat_send_conversation", userID: "chat_send_user", title: "Send", sortTimestamp: 1)
         )
+        try await repository.saveDraft(conversationID: "chat_send_conversation", userID: "chat_send_user", text: "draft before send")
 
         let useCase = LocalChatUseCase(
             userID: "chat_send_user",
@@ -3803,12 +4114,17 @@ struct AppleIMTests {
             repository: repository,
             sendService: MockMessageSendService(delayNanoseconds: 0)
         )
-        let rows = try await collectRows(from: useCase.sendText("Hello mock ack"))
-        let storedMessage = try await repository.message(messageID: rows[0].id)
+        var iterator = useCase.sendText("Hello mock ack").makeAsyncIterator()
+        let sendingRow = try #require(try await iterator.next())
+        let draftAfterFirstRow = try await repository.draft(conversationID: "chat_send_conversation", userID: "chat_send_user")
+        let successRow = try #require(try await iterator.next())
+        let storedMessage = try await repository.message(messageID: sendingRow.id)
 
-        #expect(rows.count == 2)
-        #expect(rows[0].statusText == "Sending")
-        #expect(rows[1].statusText == nil)
+        #expect(sendingRow.statusText == "Sending")
+        #expect(successRow.statusText == nil)
+        #expect(draftAfterFirstRow == "draft before send")
+        #expect(try await iterator.next() == nil)
+        #expect(try await repository.draft(conversationID: "chat_send_conversation", userID: "chat_send_user") == nil)
         #expect(storedMessage?.sendStatus == .success)
     }
 
@@ -5236,7 +5552,7 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func chatViewModelAppendsSimulatedIncomingMessageWithoutClearingDraft() async throws {
+    @Test func chatViewModelAppendsSimulatedIncomingMessagesWithoutClearingDraft() async throws {
         let useCase = SimulatedIncomingStubChatUseCase()
         let viewModel = ChatViewModel(useCase: useCase, title: "Simulated")
 
@@ -5250,15 +5566,35 @@ struct AppleIMTests {
         viewModel.simulateIncomingMessage()
         try await waitForCondition {
             await MainActor.run {
-                viewModel.currentState.rows.count == 1
+                viewModel.currentState.rows.count == 2
             }
         }
 
         #expect(viewModel.currentState.draftText == "draft text")
-        let row = try #require(viewModel.currentState.rows.first)
-        #expect(row.isOutgoing == false)
-        #expect(rowText(row) == "模拟收到一条来自对方的消息")
+        #expect(viewModel.currentState.rows.count == 2)
+        #expect(viewModel.currentState.rows.allSatisfy { $0.isOutgoing == false })
+        #expect(viewModel.currentState.rows.map(rowText) == ["模拟收到第 1 条后台推送", "模拟收到第 2 条后台推送"])
         #expect(useCase.simulateIncomingCallCount == 1)
+    }
+
+    @MainActor
+    @Test func chatViewModelLeavesRowsUnchangedWhenSimulatedPushMissesCurrentConversation() async throws {
+        let useCase = MissedSimulatedIncomingStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Missed Simulated")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+
+        viewModel.simulateIncomingMessage()
+        try await waitForCondition {
+            useCase.simulateIncomingCallCount == 1
+        }
+
+        #expect(viewModel.currentState.rows.isEmpty)
     }
 
     @MainActor
@@ -5283,6 +5619,85 @@ struct AppleIMTests {
 
         #expect(viewModel.currentState.rows.map(rowText) == ["模拟收到第 1 条消息", "模拟收到第 2 条消息"])
         #expect(useCase.simulateIncomingCallCount == 2)
+    }
+
+    @MainActor
+    @Test func chatViewModelRefreshesVisibleMessagesForCurrentConversationStoreChange() async throws {
+        let useCase = StoreRefreshingChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Store Refresh")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        #expect(viewModel.currentState.rows.isEmpty)
+
+        useCase.replaceRows([
+            makeChatRow(id: "store_refresh_message", text: "Store refreshed message", sortSequence: 10)
+        ])
+        viewModel.refreshAfterStoreChange(
+            userID: "store_refresh_user",
+            conversationIDs: ["store_refresh_conversation"]
+        )
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.map(\.id) == ["store_refresh_message"]
+            }
+        }
+
+        #expect(useCase.loadInitialMessagesCallCount == 2)
+        #expect(viewModel.currentState.rows.map(rowText) == ["Store refreshed message"])
+    }
+
+    @MainActor
+    @Test func chatViewModelIgnoresOtherConversationStoreChange() async throws {
+        let useCase = StoreRefreshingChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Store Refresh")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        useCase.replaceRows([
+            makeChatRow(id: "ignored_store_refresh_message", text: "Ignored store refresh", sortSequence: 10)
+        ])
+
+        viewModel.refreshAfterStoreChange(
+            userID: "store_refresh_user",
+            conversationIDs: ["other_conversation"]
+        )
+        try await Task.sleep(nanoseconds: 40_000_000)
+
+        #expect(useCase.loadInitialMessagesCallCount == 1)
+        #expect(viewModel.currentState.rows.isEmpty)
+    }
+
+    @MainActor
+    @Test func chatViewModelKeepsConcurrentTextSendsAlive() async throws {
+        let useCase = DelayedTextSendingStubChatUseCase()
+        let viewModel = ChatViewModel(useCase: useCase, title: "Concurrent Sends")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+
+        viewModel.sendText("First")
+        viewModel.sendText("Second")
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+
+        #expect(viewModel.currentState.rows.map(rowText) == ["First", "Second"])
+        #expect(useCase.sentTexts == ["First", "Second"])
     }
 
     @MainActor
@@ -6415,12 +6830,12 @@ struct AppleIMTests {
         )
         try await waitForCondition {
             await MainActor.run {
-                viewModel.currentState.rows.count == 1
+                viewModel.currentState.rows.count == 2
             }
         }
 
         #expect(useCase.simulateIncomingCallCount == 1)
-        #expect(viewModel.currentState.rows.first?.isOutgoing == false)
+        #expect(viewModel.currentState.rows.allSatisfy { $0.isOutgoing == false })
     }
 
     @MainActor
@@ -8875,6 +9290,64 @@ private struct SlowChatUseCase: ChatUseCase {
     func revoke(messageID: MessageID) async throws {}
 }
 
+private final class StoreRefreshingChatUseCase: @unchecked Sendable, ChatUseCase {
+    let observedUserID: UserID? = "store_refresh_user"
+    let observedConversationID: ConversationID? = "store_refresh_conversation"
+    private var rows: [ChatMessageRowState] = []
+    private(set) var loadInitialMessagesCallCount = 0
+
+    func replaceRows(_ rows: [ChatMessageRowState]) {
+        self.rows = rows
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        loadInitialMessagesCallCount += 1
+        return ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: rows.first?.sortSequence)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
 private final class SimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private(set) var simulateIncomingCallCount = 0
 
@@ -8914,20 +9387,89 @@ private final class SimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatU
         nil
     }
 
-    func simulateIncomingTextMessage() async throws -> ChatMessageRowState? {
+    func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
         simulateIncomingCallCount += 1
-        return ChatMessageRowState(
-            id: "simulated_incoming_stub",
-            content: .text("模拟收到一条来自对方的消息"),
-            sortSequence: 1,
-            timeText: "Now",
-            statusText: nil,
-            uploadProgress: nil,
-            isOutgoing: false,
-            canRetry: false,
-            canDelete: true,
-            canRevoke: false
-        )
+        return [
+            ChatMessageRowState(
+                id: "simulated_incoming_stub_1",
+                content: .text("模拟收到第 1 条后台推送"),
+                sortSequence: 1,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            ChatMessageRowState(
+                id: "simulated_incoming_stub_2",
+                content: .text("模拟收到第 2 条后台推送"),
+                sortSequence: 2,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            )
+        ]
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class MissedSimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private(set) var simulateIncomingCallCount = 0
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
+        simulateIncomingCallCount += 1
+        return []
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -8980,11 +9522,11 @@ private final class DelayedSimulatedIncomingStubChatUseCase: @unchecked Sendable
         nil
     }
 
-    func simulateIncomingTextMessage() async throws -> ChatMessageRowState? {
+    func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
         simulateIncomingCallCount += 1
         let callCount = simulateIncomingCallCount
         try await Task.sleep(nanoseconds: 30_000_000)
-        return ChatMessageRowState(
+        return [ChatMessageRowState(
             id: MessageID(rawValue: "simulated_incoming_delayed_\(callCount)"),
             content: .text("模拟收到第 \(callCount) 条消息"),
             sortSequence: Int64(callCount),
@@ -8995,7 +9537,76 @@ private final class DelayedSimulatedIncomingStubChatUseCase: @unchecked Sendable
             canRetry: false,
             canDelete: true,
             canRevoke: false
-        )
+        )]
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class DelayedTextSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private(set) var sentTexts: [String] = []
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sentTexts.append(text)
+        let sortSequence = Int64(sentTexts.count)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    try await Task.sleep(nanoseconds: 30_000_000)
+                    continuation.yield(
+                        makeChatRow(
+                            id: MessageID(rawValue: "delayed_text_send_\(sortSequence)"),
+                            text: text,
+                            sortSequence: sortSequence
+                        )
+                    )
+                    continuation.finish()
+                } catch {
+                    continuation.finish()
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {

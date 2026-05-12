@@ -37,14 +37,16 @@ final class ChatViewModel {
     private let stateSubject: CurrentValueSubject<ChatViewState, Never>
     /// 加载任务
     private var loadTask: Task<Void, Never>?
-    /// 发送任务
-    private var sendTask: Task<Void, Never>?
+    /// 发送任务。按发送操作独立保留，避免快速连续发送时互相取消。
+    private var sendTasks: [UUID: Task<Void, Never>] = [:]
     /// 草稿保存任务
     private var draftTask: Task<Void, Never>?
     /// 消息操作任务（重发、删除、撤回）
     private var mutationTask: Task<Void, Never>?
     /// 模拟接收消息任务
     private var simulatedIncomingTasks: [UUID: Task<Void, Never>] = [:]
+    /// 仓储变更触发的轻量刷新任务
+    private var storeRefreshTask: Task<Void, Never>?
     /// 语音播放状态回写任务
     private var voicePlaybackTask: Task<Void, Never>?
     /// 分页加载任务
@@ -59,6 +61,8 @@ final class ChatViewModel {
     private var selectedMentionsAll = false
     /// 每页加载的消息数量
     private let pageSize = 50
+    /// 聊天链路耗时日志
+    private let logger = AppLogger(category: .chat)
     /// 微信式时间分隔阈值：相邻消息间隔达到 5 分钟时显示时间
     private static let timeSeparatorInterval: Int64 = 5 * 60
 
@@ -198,9 +202,15 @@ final class ChatViewModel {
         let mentionedUserIDs = selectedMentionUserIDs
         let mentionsAll = selectedMentionsAll
 
-        sendTask?.cancel()
-        sendTask = Task { [weak self] in
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel sendText started taskID=\(Self.shortLogID(taskID.uuidString))")
+        sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                sendTasks[taskID] = nil
+                logger.info("ChatViewModel sendText completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+            }
 
             do {
                 publish { state in
@@ -209,6 +219,7 @@ final class ChatViewModel {
 
                 for try await row in useCase.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                     guard !Task.isCancelled else { return }
+                    logger.info("ChatViewModel sendText rowReceived taskID=\(Self.shortLogID(taskID.uuidString)) messageID=\(Self.shortLogID(row.id.rawValue)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
                     upsert(row)
                 }
                 selectedMentionUserIDs = []
@@ -235,9 +246,15 @@ final class ChatViewModel {
     ///   - data: 图片数据
     ///   - preferredFileExtension: 首选文件扩展名
     func sendImage(data: Data, preferredFileExtension: String?) {
-        sendTask?.cancel()
-        sendTask = Task { [weak self] in
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel sendImage started taskID=\(Self.shortLogID(taskID.uuidString))")
+        sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                sendTasks[taskID] = nil
+                logger.info("ChatViewModel sendImage completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+            }
 
             do {
                 publish { state in
@@ -310,9 +327,15 @@ final class ChatViewModel {
 
     /// 发送表情消息。
     func sendEmoji(_ emoji: EmojiAssetRecord) {
-        sendTask?.cancel()
-        sendTask = Task { [weak self] in
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel sendEmoji started taskID=\(Self.shortLogID(taskID.uuidString))")
+        sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                sendTasks[taskID] = nil
+                logger.info("ChatViewModel sendEmoji completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+            }
 
             do {
                 publish { state in
@@ -338,9 +361,15 @@ final class ChatViewModel {
     ///
     /// - Parameter recording: 已完成的本地录音文件
     func sendVoice(recording: VoiceRecordingFile) {
-        sendTask?.cancel()
-        sendTask = Task { [weak self] in
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel sendVoice started taskID=\(Self.shortLogID(taskID.uuidString))")
+        sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                sendTasks[taskID] = nil
+                logger.info("ChatViewModel sendVoice completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+            }
 
             do {
                 publish { state in
@@ -367,9 +396,15 @@ final class ChatViewModel {
     ///   - fileURL: PHPicker 或文件提供方返回的临时视频文件
     ///   - preferredFileExtension: 首选文件扩展名
     func sendVideo(fileURL: URL, preferredFileExtension: String?) {
-        sendTask?.cancel()
-        sendTask = Task { [weak self] in
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel sendVideo started taskID=\(Self.shortLogID(taskID.uuidString))")
+        sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                sendTasks[taskID] = nil
+                logger.info("ChatViewModel sendVideo completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+            }
 
             do {
                 publish { state in
@@ -408,9 +443,15 @@ final class ChatViewModel {
         let mentionedUserIDs = selectedMentionUserIDs
         let mentionsAll = selectedMentionsAll
 
-        sendTask?.cancel()
-        sendTask = Task { [weak self] in
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel sendComposer started taskID=\(Self.shortLogID(taskID.uuidString)) mediaCount=\(media.count) hasText=\(!trimmedText.isEmpty)")
+        sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
+            defer {
+                sendTasks[taskID] = nil
+                logger.info("ChatViewModel sendComposer completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+            }
 
             do {
                 publish { state in
@@ -594,11 +635,13 @@ final class ChatViewModel {
         }
     }
 
-    /// 模拟接收一条对方文本消息。
+    /// 触发统一模拟后台推送。
     ///
     /// 每次点击都保留独立任务，避免连续点击时互相取消。
     func simulateIncomingMessage() {
         let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("ChatViewModel simulatedPush tapped taskID=\(Self.shortLogID(taskID.uuidString))")
         simulatedIncomingTasks[taskID] = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -606,17 +649,59 @@ final class ChatViewModel {
             }
 
             do {
-                guard let row = try await useCase.simulateIncomingTextMessage() else {
-                    return
-                }
+                let rows = try await useCase.simulateIncomingMessages()
                 guard !Task.isCancelled else { return }
-                upsert(row)
+                for row in rows {
+                    upsert(row)
+                }
+                logger.info(
+                    "ChatViewModel simulatedPush optimisticPublished taskID=\(Self.shortLogID(taskID.uuidString)) rows=\(rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                )
             } catch is CancellationError {
                 return
             } catch {
                 publish { state in
                     state.phase = .failed("Unable to receive simulated message")
                 }
+            }
+        }
+    }
+
+    /// 仓储层报告当前会话发生变化时，后台刷新可见消息。
+    func refreshAfterStoreChange(userID rawUserID: String?, conversationIDs rawConversationIDs: [String]) {
+        guard shouldRefreshAfterStoreChange(userID: rawUserID, conversationIDs: rawConversationIDs) else {
+            return
+        }
+
+        let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        storeRefreshTask?.cancel()
+        logger.info("ChatViewModel storeRefresh started taskID=\(Self.shortLogID(taskID.uuidString))")
+        storeRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                storeRefreshTask = nil
+            }
+
+            do {
+                let page = try await useCase.loadInitialMessages()
+                guard !Task.isCancelled else { return }
+                publish { state in
+                    state.rows = Self.rowsWithTimeSeparators(page.rows)
+                    state.hasMoreOlderMessages = page.hasMore
+                    state.isLoadingOlderMessages = false
+                    state.paginationErrorMessage = nil
+                    state.phase = .loaded
+                }
+                logger.info(
+                    "ChatViewModel storeRefresh completed taskID=\(Self.shortLogID(taskID.uuidString)) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                logger.error(
+                    "ChatViewModel storeRefresh failed taskID=\(Self.shortLogID(taskID.uuidString)) error=\(String(describing: type(of: error)))"
+                )
             }
         }
     }
@@ -752,20 +837,22 @@ final class ChatViewModel {
     /// 页面消失时调用，释放资源
     func cancel() {
         loadTask?.cancel()
-        sendTask?.cancel()
+        sendTasks.values.forEach { $0.cancel() }
         draftTask?.cancel()
         mutationTask?.cancel()
         paginationTask?.cancel()
         voicePlaybackTask?.cancel()
         emojiPanelTask?.cancel()
+        storeRefreshTask?.cancel()
         simulatedIncomingTasks.values.forEach { $0.cancel() }
         loadTask = nil
-        sendTask = nil
+        sendTasks.removeAll()
         draftTask = nil
         mutationTask = nil
         paginationTask = nil
         voicePlaybackTask = nil
         emojiPanelTask = nil
+        storeRefreshTask = nil
         simulatedIncomingTasks.removeAll()
     }
 
@@ -800,6 +887,10 @@ final class ChatViewModel {
             let reachesInterval = row.sentAt - previousRow.sentAt >= Self.timeSeparatorInterval
             return row.withTimeSeparator(crossesDay || reachesInterval)
         }
+    }
+
+    private static func shortLogID(_ rawValue: String) -> String {
+        String(rawValue.prefix(8))
     }
 
     private static func announcementState(from context: GroupChatContext?) -> ChatGroupAnnouncementState? {
@@ -842,5 +933,17 @@ final class ChatViewModel {
         var state = stateSubject.value
         update(&state)
         stateSubject.send(state)
+    }
+
+    private func shouldRefreshAfterStoreChange(userID rawUserID: String?, conversationIDs rawConversationIDs: [String]) -> Bool {
+        if let observedUserID = useCase.observedUserID, let rawUserID, observedUserID.rawValue != rawUserID {
+            return false
+        }
+
+        guard let observedConversationID = useCase.observedConversationID else {
+            return false
+        }
+
+        return rawConversationIDs.isEmpty || rawConversationIDs.contains(observedConversationID.rawValue)
     }
 }

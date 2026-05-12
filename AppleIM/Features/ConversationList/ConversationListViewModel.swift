@@ -133,6 +133,11 @@ final class ConversationListViewModel {
                 diagnostics.log(
                     "ConversationList initial load completed generation=\(currentGeneration) rows=\(page.rows.count) hasMore=\(page.hasMore) elapsed=\(elapsed)"
                 )
+                if !showLoading {
+                    diagnostics.log(
+                        "ConversationList background refresh completed generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(elapsed)"
+                    )
+                }
             } catch is CancellationError {
                 guard loadGeneration == currentGeneration else { return }
                 loadTask = nil
@@ -245,6 +250,8 @@ final class ConversationListViewModel {
 
     func simulateIncomingMessages() {
         let taskID = UUID()
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        diagnostics.log("ConversationList simulatedPush tapped taskID=\(Self.shortLogID(taskID.uuidString))")
         simulationTasks[taskID] = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -256,6 +263,9 @@ final class ConversationListViewModel {
                 guard !Task.isCancelled else { return }
                 if let result {
                     publishSimulationResult(result)
+                    diagnostics.log(
+                        "ConversationList simulatedPush optimisticPublished taskID=\(Self.shortLogID(taskID.uuidString)) conversationID=\(Self.shortLogID(result.conversationID.rawValue)) count=\(result.messageCount) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                    )
                     refreshFirstPageKeepingCurrentRows()
                 }
             } catch is CancellationError {
@@ -319,6 +329,10 @@ final class ConversationListViewModel {
                 }
             }
         }
+    }
+
+    private static func shortLogID(_ rawValue: String) -> String {
+        String(rawValue.prefix(8))
     }
 }
 

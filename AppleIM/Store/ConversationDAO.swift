@@ -231,6 +231,42 @@ nonisolated struct ConversationDAO: Sendable {
         return try rows.first.map(Self.record(from:))
     }
 
+    /// 根据账号和会话 ID 查询会话记录。
+    func conversation(conversationID: ConversationID, userID: UserID) async throws -> ConversationRecord? {
+        let rows = try await database.query(
+            """
+            SELECT
+                conversation_id,
+                user_id,
+                biz_type,
+                target_id,
+                title,
+                avatar_url,
+                last_message_id,
+                last_message_time,
+                last_message_digest,
+                unread_count,
+                draft_text,
+                is_pinned,
+                is_muted,
+                is_hidden,
+                sort_ts,
+                updated_at,
+                created_at
+            FROM conversation
+            WHERE conversation_id = ? AND user_id = ? AND is_hidden = 0
+            LIMIT 1;
+            """,
+            parameters: [
+                .text(conversationID.rawValue),
+                .text(userID.rawValue)
+            ],
+            paths: paths
+        )
+
+        return try rows.first.map(Self.record(from:))
+    }
+
     /// 标记会话已读
     ///
     /// 将未读数清零

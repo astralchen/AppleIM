@@ -450,4 +450,26 @@ final class AppleIMUITests: XCTestCase {
             "Expected cancelled action to keep message visible"
         )
     }
+
+    @MainActor
+    func testSimulatedIncomingFromConversationListAppearsAfterOpeningConversation() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+
+        app.buttons["conversationList.simulateIncomingButton"].tap()
+        let simulatedConversation = app.cells
+            .matching(NSPredicate(format: "label CONTAINS %@", "#"))
+            .firstMatch
+        XCTAssertTrue(
+            simulatedConversation.waitForExistence(timeout: 15),
+            "Expected simulated push to update a conversation cell"
+        )
+        simulatedConversation.tap()
+
+        XCTAssertTrue(
+            messageCell(containing: "#", in: app).waitForExistence(timeout: 15),
+            "Expected simulated push message to appear after opening the conversation"
+        )
+    }
 }

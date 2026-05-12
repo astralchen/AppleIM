@@ -71,22 +71,12 @@ extension ConversationListUseCase {
 
 /// 本地会话列表用例实现
 nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
-    /// 模拟接收消息使用的固定发送者 ID
-    private static let simulatedIncomingSenderID = UserID(rawValue: "__chatbridge_simulated_list_peer__")
-    /// 单次模拟最少消息数
-    private static let simulatedIncomingMessageCountRange = 1...5
-    /// 模拟接收消息候选文本
-    private static let simulatedIncomingTextSamples = [
-        "模拟收到一条会话列表消息",
-        "对方发来新的列表测试消息",
-        "这是一条列表入口生成的同步消息",
-        "收到随机会话的新消息",
-        "会话列表应立即刷新这条模拟消息"
-    ]
     /// 用户 ID
     private let userID: UserID
     /// 存储提供者
     private let storeProvider: ChatStoreProvider
+    /// 统一模拟后台推送服务
+    private let simulatedIncomingPushService: SimulatedIncomingPushService
     /// 日志
     private let logger: AppLogger
 
@@ -99,10 +89,13 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     init(
         userID: UserID,
         storeProvider: ChatStoreProvider,
+        simulatedIncomingPushService: SimulatedIncomingPushService? = nil,
         logger: AppLogger = AppLogger(category: .conversationList)
     ) {
         self.userID = userID
         self.storeProvider = storeProvider
+        self.simulatedIncomingPushService = simulatedIncomingPushService
+            ?? SimulatedIncomingPushService(userID: userID, storeProvider: storeProvider)
         self.logger = logger
     }
 
@@ -186,55 +179,29 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         try await repository.updateConversationMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
     }
 
-    /// 从当前会话中随机选择一个，模拟同步写入 1...5 条 incoming 文本消息。
+    /// 从统一模拟后台推送入口随机写入 1...5 条 incoming 文本消息。
     func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
-        let repository = try await storeProvider.repository()
-        let conversations = try await repository.listConversations(for: userID)
-        guard let selectedConversation = conversations.randomElement() else {
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        guard let pushResult = try await simulatedIncomingPushService.simulateIncomingPush() else {
             return nil
         }
-
-        let latestMessage = try await repository.listMessages(
-            conversationID: selectedConversation.id,
-            limit: 1,
-            beforeSortSeq: nil
-        ).first
-        let messageCount = Int.random(in: Self.simulatedIncomingMessageCountRange)
-        let baseSequence = max((latestMessage?.sortSequence ?? 0) + 1, Self.currentTimestamp())
-        let batchToken = UUID().uuidString
-        let messages = (0..<messageCount).map { index in
-            let sequence = baseSequence + Int64(index)
-            let messageToken = "\(batchToken)_\(index)"
-            let messageID = MessageID(rawValue: "simulated_list_incoming_\(messageToken)")
-
-            return IncomingSyncMessage(
-                messageID: messageID,
-                conversationID: selectedConversation.id,
-                senderID: Self.simulatedIncomingSenderID,
-                serverMessageID: "server_\(messageID.rawValue)",
-                sequence: sequence,
-                text: Self.simulatedIncomingText(messageToken: messageToken),
-                serverTime: sequence,
-                direction: .incoming,
-                conversationTitle: selectedConversation.title,
-                conversationType: selectedConversation.type
+        let finalRow = Self.rowStates(from: [pushResult.finalConversation]).first
+            ?? ConversationListRowState(
+                id: pushResult.conversationID,
+                title: pushResult.finalConversation.title,
+                subtitle: pushResult.finalConversation.lastMessageDigest,
+                timeText: pushResult.finalConversation.lastMessageTimeText,
+                unreadText: pushResult.finalConversation.unreadCount > 0 ? "\(pushResult.finalConversation.unreadCount)" : nil,
+                isPinned: pushResult.finalConversation.isPinned,
+                isMuted: pushResult.finalConversation.isMuted
             )
-        }
-
-        _ = try await repository.applyIncomingSyncBatch(
-            SyncBatch(messages: messages, nextCursor: nil, nextSequence: messages.last?.sequence),
-            userID: userID
-        )
-
-        let finalRow = Self.simulatedFinalRow(
-            from: selectedConversation,
-            latestMessage: messages[messages.count - 1],
-            unreadIncrement: messageCount
+        logger.info(
+            "ConversationList simulateIncomingMessages completed conversationID=\(Self.shortLogID(pushResult.conversationID.rawValue)) count=\(pushResult.insertedCount) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
 
         return ConversationListSimulationResult(
-            conversationID: selectedConversation.id,
-            messageCount: messageCount,
+            conversationID: pushResult.conversationID,
+            messageCount: pushResult.insertedCount,
             finalRow: finalRow
         )
     }
@@ -263,44 +230,16 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         }
     }
 
-    private static func simulatedIncomingText(messageToken: String) -> String {
-        let sample = simulatedIncomingTextSamples.randomElement() ?? "模拟收到一条会话列表消息"
-        return "\(sample) #\(messageToken.prefix(6).lowercased())"
-    }
-
-    private static func simulatedFinalRow(
-        from conversation: Conversation,
-        latestMessage: IncomingSyncMessage,
-        unreadIncrement: Int
-    ) -> ConversationListRowState {
-        let mentionIndicatorText = conversation.hasUnreadMention ? "[有人@我]" : nil
-        let baseSubtitle = conversation.draftText.map { "Draft: \($0)" } ?? latestMessage.text
-        let subtitle = mentionIndicatorText.map { "\($0) \(baseSubtitle)" } ?? baseSubtitle
-        let unreadCount = conversation.unreadCount + unreadIncrement
-
-        return ConversationListRowState(
-            id: conversation.id,
-            title: conversation.title,
-            avatarURL: conversation.avatarURL,
-            subtitle: subtitle,
-            mentionIndicatorText: mentionIndicatorText,
-            timeText: timeText(from: latestMessage.serverTime),
-            unreadText: unreadCount > 0 ? "\(unreadCount)" : nil,
-            isPinned: conversation.isPinned,
-            isMuted: conversation.isMuted
-        )
-    }
-
-    private static func currentTimestamp() -> Int64 {
-        Int64(Date().timeIntervalSince1970)
-    }
-
     private static func timeText(from timestamp: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+
+    private static func shortLogID(_ rawValue: String) -> String {
+        String(rawValue.prefix(8))
     }
 }
 

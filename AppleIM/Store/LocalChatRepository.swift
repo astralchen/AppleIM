@@ -166,6 +166,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         _ = try await refreshApplicationBadge(userID: record.userID)
     }
 
+    /// 查询指定账号下的完整会话记录，用于需要 targetID 等存储字段的 store/service 层逻辑。
+    func conversationRecord(conversationID: ConversationID, userID: UserID) async throws -> ConversationRecord? {
+        try await conversationDAO.conversation(conversationID: conversationID, userID: userID)
+    }
+
     /// 批量插入初始会话
     ///
     /// 用于首次同步或数据恢复场景，批量写入会话记录
