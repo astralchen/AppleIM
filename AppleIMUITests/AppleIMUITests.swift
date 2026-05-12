@@ -28,6 +28,7 @@ final class AppleIMUITests: XCTestCase {
         waitForConversationList(in: app)
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
         XCTAssertTrue(app.navigationBars["Messages"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Account"].exists)
     }
 
     @MainActor
@@ -98,6 +99,7 @@ final class AppleIMUITests: XCTestCase {
 
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
         XCTAssertTrue(app.navigationBars["Messages"].exists)
+        XCTAssertTrue(app.tabBars.buttons["Account"].exists)
     }
 
     @MainActor
