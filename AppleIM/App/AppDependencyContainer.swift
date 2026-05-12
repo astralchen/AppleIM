@@ -205,7 +205,7 @@ final class AppDependencyContainer {
     }
 
     func makeConversationListViewController(
-        onAccountAction: @escaping (ConversationListAccountAction) -> Void = { _ in }
+        onSelectConversation: @escaping (ConversationListRowState) -> Void
     ) -> ConversationListViewController {
         let useCase = LocalConversationListUseCase(
             userID: accountID,
@@ -220,20 +220,20 @@ final class AppDependencyContainer {
         return ConversationListViewController(
             viewModel: viewModel,
             searchViewModel: searchViewModel,
-            onSelectConversation: { conversation in
-                let chatViewController = self.makeChatViewController(conversation: conversation)
-                UIApplication.shared.connectedScenes
-                    .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-                    .first?
-                    .rootViewController?
-                    .topVisibleViewController
-                    .navigationController?
-                    .pushViewController(chatViewController, animated: true)
-            },
+            onSelectConversation: onSelectConversation,
             onInitialLoadFinished: { [weak self] in
                 self?.finishInitialConversationListLoadIfNeeded()
-            },
-            onAccountAction: onAccountAction
+            }
+        )
+    }
+
+    func makeAccountViewController(
+        session: AccountSession,
+        onAction: @escaping (AccountAction) -> Void
+    ) -> AccountViewController {
+        AccountViewController(
+            state: AccountViewState(session: session),
+            onAction: onAction
         )
     }
 
@@ -259,19 +259,5 @@ final class AppDependencyContainer {
 
     func deleteCurrentAccountStorage() async throws {
         try await storeProvider.deleteAccountStorage()
-    }
-}
-
-private extension UIViewController {
-    var topVisibleViewController: UIViewController {
-        if let navigationController = self as? UINavigationController {
-            return navigationController.visibleViewController?.topVisibleViewController ?? navigationController
-        }
-
-        if let presentedViewController {
-            return presentedViewController.topVisibleViewController
-        }
-
-        return self
     }
 }

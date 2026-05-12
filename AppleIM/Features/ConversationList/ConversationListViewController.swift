@@ -19,16 +19,6 @@ private let searchMessagesSection = "search_messages"
 /// 会话列表导航标题
 private let conversationListNavigationTitle = "Messages"
 
-/// 会话列表账号操作
-nonisolated enum ConversationListAccountAction: Sendable {
-    /// 切换当前账号
-    case switchAccount
-    /// 退出当前账号
-    case logOut
-    /// 删除当前账号本地数据
-    case deleteLocalData
-}
-
 /// 会话列表页面控制器
 @MainActor
 final class ConversationListViewController: UIViewController {
@@ -40,8 +30,6 @@ final class ConversationListViewController: UIViewController {
     private let onSelectConversation: (ConversationListRowState) -> Void
     /// 首次加载结束回调
     private let onInitialLoadFinished: () -> Void
-    /// 账号操作回调
-    private let onAccountAction: (ConversationListAccountAction) -> Void
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
     /// 列表 diffable 数据源
@@ -77,14 +65,12 @@ final class ConversationListViewController: UIViewController {
         viewModel: ConversationListViewModel,
         searchViewModel: SearchViewModel,
         onSelectConversation: @escaping (ConversationListRowState) -> Void,
-        onInitialLoadFinished: @escaping () -> Void = {},
-        onAccountAction: @escaping (ConversationListAccountAction) -> Void = { _ in }
+        onInitialLoadFinished: @escaping () -> Void = {}
     ) {
         self.viewModel = viewModel
         self.searchViewModel = searchViewModel
         self.onSelectConversation = onSelectConversation
         self.onInitialLoadFinished = onInitialLoadFinished
-        self.onAccountAction = onAccountAction
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -130,18 +116,6 @@ final class ConversationListViewController: UIViewController {
         searchController.searchBar.searchTextField.accessibilityIdentifier = "conversationList.searchField"
         searchController.searchBar.searchTextField.backgroundColor = .secondarySystemBackground
         definesPresentationContext = true
-
-        let accountButton = UIButton(type: .system)
-        var accountConfiguration = UIButton.Configuration.plain()
-        accountConfiguration.image = UIImage(systemName: "person.crop.circle")
-        accountConfiguration.baseForegroundColor = .systemBlue
-        accountConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
-        accountButton.configuration = accountConfiguration
-        accountButton.accessibilityIdentifier = "conversationList.accountButton"
-        accountButton.accessibilityLabel = "Account"
-        accountButton.addTarget(self, action: #selector(accountButtonTapped), for: .touchUpInside)
-        accountButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
-        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: accountButton)
 
         let composeButton = UIButton(type: .system)
         var composeConfiguration = UIButton.Configuration.plain()
@@ -496,77 +470,6 @@ final class ConversationListViewController: UIViewController {
             isPinned: false,
             isMuted: false
         )
-    }
-
-    /// 打开账号操作菜单
-    @objc private func accountButtonTapped() {
-        let alertController = UIAlertController(
-            title: "Account",
-            message: "Manage your local session",
-            preferredStyle: .actionSheet
-        )
-
-        let switchAction = UIAlertAction(title: "Switch Account", style: .default) { [weak self] _ in
-            self?.onAccountAction(.switchAccount)
-        }
-        switchAction.setValue("accountAction.switchAccount", forKey: "accessibilityIdentifier")
-
-        let logOutAction = UIAlertAction(title: "Log Out", style: .destructive) { [weak self] _ in
-            self?.onAccountAction(.logOut)
-        }
-        logOutAction.setValue("accountAction.logOut", forKey: "accessibilityIdentifier")
-
-        let deleteLocalDataAction = UIAlertAction(title: "Delete Local Data", style: .destructive) { [weak self] _ in
-            self?.presentDeleteLocalDataConfirmation()
-        }
-        deleteLocalDataAction.setValue("accountAction.deleteLocalData", forKey: "accessibilityIdentifier")
-
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
-
-        alertController.addAction(switchAction)
-        alertController.addAction(logOutAction)
-        alertController.addAction(deleteLocalDataAction)
-        alertController.addAction(cancelAction)
-
-        if let popover = alertController.popoverPresentationController {
-            popover.barButtonItem = navigationItem.leftBarButtonItem
-        }
-
-        present(alertController, animated: true)
-    }
-
-    /// 二次确认当前账号本地数据删除。
-    private func presentDeleteLocalDataConfirmation() {
-        let presentConfirmation = { [weak self] in
-            guard let self else { return }
-            self.present(self.makeDeleteLocalDataConfirmationController(), animated: true)
-        }
-
-        if presentedViewController != nil {
-            dismiss(animated: true) {
-                presentConfirmation()
-            }
-        } else {
-            presentConfirmation()
-        }
-    }
-
-    /// 构造当前账号本地数据删除确认弹窗。
-    func makeDeleteLocalDataConfirmationController() -> UIAlertController {
-        let alertController = UIAlertController(
-            title: "Delete Local Data?",
-            message: "This deletes the current account's local database, search index, media files, cache, and database key from this device. Other accounts and mock account records are not affected.",
-            preferredStyle: .alert
-        )
-
-        let confirmAction = UIAlertAction(title: "Delete Local Data", style: .destructive) { [weak self] _ in
-            self?.onAccountAction(.deleteLocalData)
-        }
-        confirmAction.setValue("accountAction.confirmDeleteLocalData", forKey: "accessibilityIdentifier")
-
-        alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alertController.addAction(confirmAction)
-        return alertController
     }
 }
 

@@ -379,7 +379,7 @@ struct AppleIMTests {
 
         #expect(await storageService.prepareCallCount == 0)
 
-        let viewController = container.makeConversationListViewController()
+        let viewController = container.makeConversationListViewController(onSelectConversation: { _ in })
         viewController.loadViewIfNeeded()
         viewController.viewWillAppear(false)
         try await waitForCondition {
@@ -5098,15 +5098,15 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func conversationListAccountMenuConfirmsBeforeDeletingLocalData() async throws {
-        var actions: [ConversationListAccountAction] = []
-        let viewModel = ConversationListViewModel(useCase: StubConversationListUseCase())
-        let searchViewModel = SearchViewModel(useCase: EmptySearchUseCase())
-        let viewController = ConversationListViewController(
-            viewModel: viewModel,
-            searchViewModel: searchViewModel,
-            onSelectConversation: { _ in },
-            onAccountAction: { actions.append($0) }
+    @Test func accountViewControllerShowsProfileAndDispatchesActions() async throws {
+        var actions: [AccountAction] = []
+        let viewController = AccountViewController(
+            state: AccountViewState(
+                displayName: "Session User",
+                userID: "session_user",
+                avatarURL: nil
+            ),
+            onAction: { actions.append($0) }
         )
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         let navigationController = UINavigationController(rootViewController: viewController)
@@ -5118,15 +5118,46 @@ struct AppleIMTests {
         }
 
         viewController.loadViewIfNeeded()
-        let accountButton = try #require(viewController.navigationItem.leftBarButtonItem?.customView as? UIButton)
-        #expect(accountButton.accessibilityIdentifier == "conversationList.accountButton")
-        accountButton.sendActions(for: .touchUpInside)
+        viewController.view.layoutIfNeeded()
 
-        let accountAlert = try #require(navigationController.presentedViewController as? UIAlertController)
-        let deleteAction = try #require(accountAlert.actions.first { $0.title == "Delete Local Data" })
-        #expect(deleteAction.value(forKey: "accessibilityIdentifier") as? String == "accountAction.deleteLocalData")
+        #expect(viewController.title == "Account")
+        #expect(viewController.tabBarItem.accessibilityIdentifier == "mainTab.account")
+        #expect(findView(in: viewController.view, identifier: "account.profileHeader") != nil)
+        #expect(findLabel(withText: "Session User", in: viewController.view) != nil)
+        #expect(findLabel(withText: "session_user", in: viewController.view) != nil)
 
-        let confirmAlert = viewController.makeDeleteLocalDataConfirmationController()
+        let tableView = try #require(findView(in: viewController.view, identifier: "account.tableView") as? UITableView)
+        tableView.delegate?.tableView?(tableView, didSelectRowAt: IndexPath(row: 0, section: 1))
+        tableView.delegate?.tableView?(tableView, didSelectRowAt: IndexPath(row: 1, section: 1))
+
+        #expect(actions == [.switchAccount, .logOut])
+    }
+
+    @MainActor
+    @Test func accountViewControllerConfirmsBeforeDeletingLocalData() async throws {
+        var actions: [AccountAction] = []
+        let viewController = AccountViewController(
+            state: AccountViewState(
+                displayName: "Session User",
+                userID: "session_user",
+                avatarURL: nil
+            ),
+            onAction: { actions.append($0) }
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let navigationController = UINavigationController(rootViewController: viewController)
+        window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let tableView = try #require(findView(in: viewController.view, identifier: "account.tableView") as? UITableView)
+        tableView.delegate?.tableView?(tableView, didSelectRowAt: IndexPath(row: 2, section: 1))
+
+        let confirmAlert = try #require(navigationController.presentedViewController as? UIAlertController)
         #expect(confirmAlert.title == "Delete Local Data?")
         #expect(confirmAlert.message?.contains("database") == true)
         #expect(confirmAlert.message?.contains("media") == true)

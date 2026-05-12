@@ -181,7 +181,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 3. 启动网络恢复（非 UI 测试）
     /// 4. 刷新应用角标
     /// 5. 运行启动数据修复
-    /// 6. 创建会话列表导航控制器
+    /// 6. 创建主 Tab 界面
     ///
     /// - Parameters:
     ///   - session: 账号会话
@@ -201,20 +201,57 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             dependencies.refreshApplicationBadge()
             dependencies.runStartupDataRepair()
-            let rootViewController = UINavigationController(
-                rootViewController: dependencies.makeConversationListViewController { [weak self] action in
-                    switch action {
-                    case .switchAccount, .logOut:
-                        self?.endCurrentSession()
-                    case .deleteLocalData:
-                        self?.deleteCurrentAccountLocalData()
-                    }
-                }
+            let rootViewController = makeMainTabController(
+                session: session,
+                dependencies: dependencies
             )
             window.rootViewController = rootViewController
         } catch {
             window.rootViewController = makeStartupErrorViewController()
         }
+    }
+
+    /// 创建登录后的主 Tab 界面。
+    private func makeMainTabController(
+        session: AccountSession,
+        dependencies: AppDependencyContainer
+    ) -> UITabBarController {
+        let messagesNavigationController = UINavigationController()
+        let conversationListViewController = dependencies.makeConversationListViewController { [weak messagesNavigationController, weak dependencies] conversation in
+            guard let chatViewController = dependencies?.makeChatViewController(conversation: conversation) else {
+                return
+            }
+
+            messagesNavigationController?.pushViewController(chatViewController, animated: true)
+        }
+        let messagesTabBarItem = UITabBarItem(
+            title: "Messages",
+            image: UIImage(systemName: "message"),
+            selectedImage: UIImage(systemName: "message.fill")
+        )
+        messagesTabBarItem.accessibilityIdentifier = "mainTab.messages"
+        conversationListViewController.tabBarItem = messagesTabBarItem
+        messagesNavigationController.tabBarItem = messagesTabBarItem
+        messagesNavigationController.viewControllers = [conversationListViewController]
+
+        let accountViewController = dependencies.makeAccountViewController(session: session) { [weak self] action in
+            switch action {
+            case .switchAccount, .logOut:
+                self?.endCurrentSession()
+            case .deleteLocalData:
+                self?.deleteCurrentAccountLocalData()
+            }
+        }
+        let accountNavigationController = UINavigationController(rootViewController: accountViewController)
+        accountNavigationController.tabBarItem = accountViewController.tabBarItem
+
+        let tabBarController = UITabBarController()
+        tabBarController.viewControllers = [
+            messagesNavigationController,
+            accountNavigationController
+        ]
+        tabBarController.selectedIndex = 0
+        return tabBarController
     }
 
     private func makeServerMessageSendConfiguration(for session: AccountSession) -> ServerMessageSendService.Configuration? {
@@ -278,6 +315,10 @@ private func makeStartupErrorViewController() -> UIViewController {
 
 private extension UIViewController {
     var topVisibleViewController: UIViewController {
+        if let tabBarController = self as? UITabBarController {
+            return tabBarController.selectedViewController?.topVisibleViewController ?? tabBarController
+        }
+
         if let navigationController = self as? UINavigationController {
             return navigationController.visibleViewController?.topVisibleViewController ?? navigationController
         }
