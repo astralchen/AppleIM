@@ -5708,6 +5708,22 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarShowsVoicePreviewPlaybackElapsedAndTotalDuration() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+
+        inputBar.setPendingVoicePreview(
+            durationMilliseconds: 4_200,
+            isPlaying: true,
+            playbackProgress: 0.25,
+            playbackElapsedMilliseconds: 1_000,
+            animated: false
+        )
+        inputBar.layoutIfNeeded()
+
+        #expect(findLabel(withText: "0:01/0:04", in: inputBar) != nil)
+    }
+
+    @MainActor
     @Test func chatInputBarPreviewSendDoesNotTriggerTextSend() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         var textSendCount = 0
@@ -6256,6 +6272,85 @@ struct AppleIMTests {
         #expect(viewModel.currentState.rows.first { $0.id == "voice_a" }.map(isPlayingVoiceContent) == false)
     }
 
+    @MainActor
+    @Test func chatViewModelUpdatesOnlyActiveVoicePlaybackProgress() async throws {
+        let voiceA = makeVoiceRow(id: "voice_a", sortSequence: 1, isUnplayed: true)
+        let voiceB = makeVoiceRow(id: "voice_b", sortSequence: 2, isUnplayed: true)
+        let useCase = VoicePlaybackStubChatUseCase(rows: [voiceA, voiceB])
+        let viewModel = ChatViewModel(useCase: useCase, title: "Voice")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 2
+            }
+        }
+        viewModel.voicePlaybackStarted(messageID: "voice_a")
+        viewModel.voicePlaybackProgress(
+            messageID: "voice_a",
+            progress: VoicePlaybackProgress(
+                elapsedMilliseconds: 1_000,
+                durationMilliseconds: 2_000,
+                fraction: 0.5
+            )
+        )
+
+        let rowsAfterProgress = viewModel.currentState.rows
+        let playingVoice = try #require(rowsAfterProgress.first { $0.id == "voice_a" }?.voiceContent)
+        let idleVoice = try #require(rowsAfterProgress.first { $0.id == "voice_b" }?.voiceContent)
+        #expect(playingVoice.isPlaying)
+        #expect(playingVoice.playbackElapsedMilliseconds == 1_000)
+        #expect(playingVoice.playbackProgress == 0.5)
+        #expect(idleVoice.isPlaying == false)
+        #expect(idleVoice.playbackElapsedMilliseconds == 0)
+        #expect(idleVoice.playbackProgress == 0)
+
+        viewModel.voicePlaybackStopped(messageID: "voice_a")
+
+        let stoppedVoice = try #require(viewModel.currentState.rows.first { $0.id == "voice_a" }?.voiceContent)
+        #expect(stoppedVoice.isPlaying == false)
+        #expect(stoppedVoice.playbackElapsedMilliseconds == 0)
+        #expect(stoppedVoice.playbackProgress == 0)
+    }
+
+    @MainActor
+    @Test func chatViewModelShowsOutgoingVoiceRowImmediatelyWhenSendStarts() async throws {
+        let row = ChatMessageRowState(
+            id: "sent_voice",
+            content: .voice(
+                ChatMessageRowContent.VoiceContent(
+                    localPath: "/tmp/sent_voice.m4a",
+                    durationMilliseconds: 4_200,
+                    isUnplayed: false,
+                    isPlaying: false
+                )
+            ),
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: "Sending",
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+        let useCase = ImmediateVoiceSendStubChatUseCase(row: row)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Voice")
+        let recording = VoiceRecordingFile(fileURL: URL(fileURLWithPath: "/tmp/sent_voice_recording.m4a"), durationMilliseconds: 4_200)
+
+        viewModel.sendVoice(recording: recording)
+
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.contains { $0.id == "sent_voice" }
+            }
+        }
+        let insertedRow = try #require(viewModel.currentState.rows.first { $0.id == "sent_voice" })
+        #expect(insertedRow.isOutgoing)
+        #expect(insertedRow.statusText == "Sending")
+        #expect(insertedRow.voiceContent?.durationMilliseconds == 4_200)
+    }
+
     @Test func chatMessageContentKindClassifiesExistingRows() {
         #expect(ChatMessageContentKind(row: makeChatRow(id: "text_kind", text: "Hello", sortSequence: 1)) == .text)
         #expect(ChatMessageContentKind(row: makeImageRow(id: "image_kind", sortSequence: 2)) == .image)
@@ -6263,6 +6358,13 @@ struct AppleIMTests {
         #expect(ChatMessageContentKind(row: makeVoiceRow(id: "voice_kind", sortSequence: 4, isUnplayed: true)) == .voice)
         #expect(ChatMessageContentKind(row: makeFileRow(id: "file_kind", sortSequence: 5)) == .file)
         #expect(ChatMessageContentKind(row: makeRevokedRow(id: "revoked_kind", sortSequence: 6)) == .revoked)
+    }
+
+    @Test func chatMessageContentFormatsVoiceDurationWithoutUnits() {
+        #expect(ChatMessageRowContent.voiceDurationDisplayText(milliseconds: 999) == "0:01")
+        #expect(ChatMessageRowContent.voiceDurationDisplayText(milliseconds: 4_200) == "0:04")
+        #expect(ChatMessageRowContent.voiceDurationDisplayText(milliseconds: 65_000) == "1:05")
+        #expect(ChatMessageRowContent.voiceElapsedDisplayText(milliseconds: 0) == "0:00")
     }
 
     @MainActor
@@ -6459,7 +6561,9 @@ struct AppleIMTests {
                     localPath: "/tmp/cell_voice.m4a",
                     durationMilliseconds: 2_000,
                     isUnplayed: false,
-                    isPlaying: true
+                    isPlaying: true,
+                    playbackProgress: 0.5,
+                    playbackElapsedMilliseconds: 1_000
                 )
             ),
             sortSequence: 1,
@@ -6476,10 +6580,10 @@ struct AppleIMTests {
 
         #expect(cell.contentConfiguration is ChatMessageCellContentConfiguration)
         #expect(cell.accessibilityIdentifier == "chat.messageCell.cell_voice")
-        #expect(cell.accessibilityLabel == "Voice 2s, Failed")
+        #expect(cell.accessibilityLabel == "Voice 0:02, Failed")
         #expect(findView(in: cell, identifier: "chat.retryButton.cell_voice") != nil)
         #expect(findLabel(withText: "Now · Failed", in: cell) != nil)
-        #expect(findLabel(withText: "2s", in: cell) != nil)
+        #expect(findLabel(withText: "0:01/0:02", in: cell) != nil)
 
         let voiceButton = try #require(button(in: cell, accessibilityLabel: "Stop Voice"))
         #expect(voiceButton.image(for: .normal) == UIImage(systemName: "pause.fill"))
@@ -6620,7 +6724,7 @@ struct AppleIMTests {
         )
 
         #expect(findLabel(withText: "First text", in: cell) == nil)
-        #expect(findLabel(withText: "3s", in: cell) != nil)
+        #expect(findLabel(withText: "0:03", in: cell) != nil)
         #expect(button(in: cell, accessibilityLabel: "Play Voice") != nil)
     }
 
@@ -9101,6 +9205,61 @@ private final class VoicePlaybackStubChatUseCase: @unchecked Sendable, ChatUseCa
     func revoke(messageID: MessageID) async throws {}
 }
 
+private final class ImmediateVoiceSendStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let row: ChatMessageRowState
+
+    init(row: ChatMessageRowState) {
+        self.row = row
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(row)
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
 private enum TestChatError: Error {
     case paginationFailed
     case messageActionFailed
@@ -9403,8 +9562,7 @@ private func largestLoadedImageView(in view: UIView) -> UIImageView? {
 }
 
 private func durationText(milliseconds: Int) -> String {
-    let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
-    return "\(seconds)s"
+    ChatMessageRowContent.voiceDurationDisplayText(milliseconds: milliseconds)
 }
 
 private func temporaryDirectory() -> URL {

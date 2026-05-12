@@ -150,6 +150,10 @@ final class ChatInputBarView: UIView {
     private var isPendingVoicePreviewPlaying = false
     /// 待发送语音预览时长
     private var pendingVoicePreviewDurationMilliseconds = 0
+    /// 待发送语音预览播放进度
+    private var pendingVoicePreviewPlaybackProgress: Double = 0
+    /// 待发送语音预览已播放时长
+    private var pendingVoicePreviewElapsedMilliseconds = 0
     /// 是否正在展示相册输入视图
     private var isShowingPhotoLibraryInput = false
     /// 是否正在等待控制器完成相册面板到系统键盘的切换
@@ -350,10 +354,18 @@ final class ChatInputBarView: UIView {
     /// 展示待发送语音预览。
     ///
     /// 录音完成后先进入预览态，用户可以取消、播放确认或手动发送。
-    func setPendingVoicePreview(durationMilliseconds: Int, isPlaying: Bool, animated: Bool) {
+    func setPendingVoicePreview(
+        durationMilliseconds: Int,
+        isPlaying: Bool,
+        playbackProgress: Double = 0,
+        playbackElapsedMilliseconds: Int = 0,
+        animated: Bool
+    ) {
         hasPendingVoicePreview = true
         isPendingVoicePreviewPlaying = isPlaying
         pendingVoicePreviewDurationMilliseconds = durationMilliseconds
+        pendingVoicePreviewPlaybackProgress = isPlaying ? min(1, max(0, playbackProgress)) : 0
+        pendingVoicePreviewElapsedMilliseconds = isPlaying ? max(0, playbackElapsedMilliseconds) : 0
         textView.isEditable = false
         moreButton.isHidden = true
         renderVoicePreviewCapsule()
@@ -367,6 +379,8 @@ final class ChatInputBarView: UIView {
         hasPendingVoicePreview = false
         isPendingVoicePreviewPlaying = false
         pendingVoicePreviewDurationMilliseconds = 0
+        pendingVoicePreviewPlaybackProgress = 0
+        pendingVoicePreviewElapsedMilliseconds = 0
         textView.isEditable = true
         moreButton.isHidden = false
         setVoicePreviewHidden(true, animated: animated)
@@ -942,7 +956,12 @@ final class ChatInputBarView: UIView {
 
     /// 渲染待发送语音预览
     private func renderVoicePreviewCapsule() {
-        voicePreviewDurationLabel.text = Self.voiceDurationText(milliseconds: pendingVoicePreviewDurationMilliseconds)
+        voicePreviewDurationLabel.text = Self.voicePlaybackDurationText(
+            elapsedMilliseconds: pendingVoicePreviewElapsedMilliseconds,
+            durationMilliseconds: pendingVoicePreviewDurationMilliseconds,
+            isPlaying: isPendingVoicePreviewPlaying
+        )
+        voicePreviewWaveformView.playbackProgress = pendingVoicePreviewPlaybackProgress
         let playImageName = isPendingVoicePreviewPlaying ? "pause.fill" : "play.fill"
         let playLabel = isPendingVoicePreviewPlaying ? "Pause Voice Preview" : "Play Voice Preview"
         configureCircleButton(
@@ -1029,6 +1048,21 @@ final class ChatInputBarView: UIView {
     private static func voiceDurationText(milliseconds: Int) -> String {
         let seconds = max(0, milliseconds / 1_000)
         return "0:\(String(format: "%02d", seconds))"
+    }
+
+    /// 格式化语音播放时长文本
+    private static func voicePlaybackDurationText(
+        elapsedMilliseconds: Int,
+        durationMilliseconds: Int,
+        isPlaying: Bool
+    ) -> String {
+        let totalText = ChatMessageRowContent.voiceDurationDisplayText(milliseconds: durationMilliseconds)
+        guard isPlaying else {
+            return totalText
+        }
+
+        let elapsedText = ChatMessageRowContent.voiceElapsedDisplayText(milliseconds: elapsedMilliseconds)
+        return "\(elapsedText)/\(totalText)"
     }
 
     /// 创建更多操作菜单
@@ -1225,12 +1259,25 @@ private final class VoiceLevelMeterView: UIView {
     private static let maximumSampleCount = 42
     /// 波形高度样本，数组尾部是最新样本
     private var samples: [Double] = []
+    /// 已裁剪的播放进度。
+    private var playbackProgressValue: Double?
+    /// 播放进度。录音电平视图为 nil，预览播放视图为 0...1。
+    var playbackProgress: Double? {
+        get {
+            playbackProgressValue
+        }
+        set {
+            playbackProgressValue = newValue.map { min(1, max(0, $0)) }
+            setNeedsDisplay()
+        }
+    }
 
     /// 归一化音量值，范围 0...1
     var powerLevel: Double = 0 {
         didSet {
             powerLevel = max(0, min(1, powerLevel))
             samples = [powerLevel]
+            playbackProgress = nil
             setNeedsDisplay()
         }
     }
@@ -1251,6 +1298,7 @@ private final class VoiceLevelMeterView: UIView {
 
     /// 追加新的实时音量样本，视觉上从右侧进入、旧样本向左移动。
     func appendPowerLevel(_ level: Double) {
+        playbackProgress = nil
         let clampedLevel = max(0, min(1, level))
         samples.append(clampedLevel)
         if samples.count > Self.maximumSampleCount {
@@ -1265,6 +1313,7 @@ private final class VoiceLevelMeterView: UIView {
             let phase = Double(index) / Double(max(Self.maximumSampleCount - 1, 1))
             return 0.18 + 0.66 * abs(sin(phase * .pi * 2.4))
         }
+        playbackProgress = 0
         setNeedsDisplay()
     }
 
@@ -1290,7 +1339,13 @@ private final class VoiceLevelMeterView: UIView {
                 roundedRect: CGRect(x: x, y: y, width: barWidth, height: barHeight),
                 cornerRadius: barWidth / 2
             )
-            let ageAlpha = 0.3 + 0.62 * CGFloat(index + 1) / CGFloat(barCount)
+            let ageAlpha: CGFloat
+            if let playbackProgress {
+                let activeSamples = Int(ceil(CGFloat(barCount) * CGFloat(playbackProgress)))
+                ageAlpha = index < activeSamples ? 0.92 : 0.3
+            } else {
+                ageAlpha = 0.3 + 0.62 * CGFloat(index + 1) / CGFloat(barCount)
+            }
             let color = tintColor.withAlphaComponent(ageAlpha)
             color.setFill()
             path.fill()

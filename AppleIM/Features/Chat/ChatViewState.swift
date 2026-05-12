@@ -29,6 +29,24 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
         let durationMilliseconds: Int
         let isUnplayed: Bool
         let isPlaying: Bool
+        let playbackProgress: Double
+        let playbackElapsedMilliseconds: Int
+
+        init(
+            localPath: String,
+            durationMilliseconds: Int,
+            isUnplayed: Bool,
+            isPlaying: Bool,
+            playbackProgress: Double = 0,
+            playbackElapsedMilliseconds: Int = 0
+        ) {
+            self.localPath = localPath
+            self.durationMilliseconds = durationMilliseconds
+            self.isUnplayed = isUnplayed
+            self.isPlaying = isPlaying
+            self.playbackProgress = min(1, max(0, playbackProgress))
+            self.playbackElapsedMilliseconds = max(0, playbackElapsedMilliseconds)
+        }
     }
 
     nonisolated struct VideoContent: Hashable, Sendable {
@@ -75,7 +93,7 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
         case .image:
             return "Image"
         case let .voice(voice):
-            return "Voice \(Self.durationText(milliseconds: voice.durationMilliseconds))"
+            return "Voice \(Self.voiceDurationDisplayText(milliseconds: voice.durationMilliseconds))"
         case .video:
             return "Video"
         case let .file(file):
@@ -84,8 +102,21 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
     }
 
     static func durationText(milliseconds: Int) -> String {
+        voiceDurationDisplayText(milliseconds: milliseconds)
+    }
+
+    static func voiceDurationDisplayText(milliseconds: Int) -> String {
         let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
-        return "\(seconds)s"
+        return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
+    }
+
+    static func voiceElapsedDisplayText(milliseconds: Int) -> String {
+        guard milliseconds > 0 else {
+            return "0:00"
+        }
+
+        let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
+        return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
     }
 }
 
@@ -159,7 +190,43 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             localPath: voice.localPath,
             durationMilliseconds: voice.durationMilliseconds,
             isUnplayed: isUnplayed ?? voice.isUnplayed,
-            isPlaying: isPlaying
+            isPlaying: isPlaying,
+            playbackProgress: isPlaying ? voice.playbackProgress : 0,
+            playbackElapsedMilliseconds: isPlaying ? voice.playbackElapsedMilliseconds : 0
+        )
+
+        return ChatMessageRowState(
+            id: id,
+            content: .voice(updatedVoice),
+            sortSequence: sortSequence,
+            sentAt: sentAt,
+            timeText: timeText,
+            showsTimeSeparator: showsTimeSeparator,
+            statusText: statusText,
+            uploadProgress: uploadProgress,
+            senderAvatarURL: senderAvatarURL,
+            isOutgoing: isOutgoing,
+            canRetry: canRetry,
+            canDelete: canDelete,
+            canRevoke: canRevoke
+        )
+    }
+
+    func withVoicePlaybackProgress(_ progress: VoicePlaybackProgress) -> ChatMessageRowState {
+        guard let voice = voiceContent else {
+            return self
+        }
+
+        let durationMilliseconds = progress.durationMilliseconds > 0
+            ? progress.durationMilliseconds
+            : voice.durationMilliseconds
+        let updatedVoice = ChatMessageRowContent.VoiceContent(
+            localPath: voice.localPath,
+            durationMilliseconds: durationMilliseconds,
+            isUnplayed: voice.isUnplayed,
+            isPlaying: true,
+            playbackProgress: progress.fraction,
+            playbackElapsedMilliseconds: progress.elapsedMilliseconds
         )
 
         return ChatMessageRowState(

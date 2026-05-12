@@ -15,7 +15,14 @@ private let pendingVoicePreviewMessageID = MessageID(rawValue: "__pending_voice_
 /// 串行化 diffable data source 快照 apply，避免 UIKit apply 队列重入。
 @MainActor
 final class ChatSnapshotRenderCoordinator<State> {
-    private var pendingState: State?
+    private typealias Render = (_ state: State, _ completion: @escaping () -> Void) -> Void
+
+    private struct PendingApply {
+        let state: State
+        let render: Render
+    }
+
+    private var pendingApply: PendingApply?
     private(set) var isApplying = false
 
     func apply(
@@ -23,27 +30,25 @@ final class ChatSnapshotRenderCoordinator<State> {
         render: @escaping (_ state: State, _ completion: @escaping () -> Void) -> Void
     ) {
         if isApplying {
-            pendingState = state
+            pendingApply = PendingApply(state: state, render: render)
             return
         }
 
         isApplying = true
         render(state) { [weak self] in
-            self?.complete(render: render)
+            self?.complete()
         }
     }
 
-    private func complete(
-        render: @escaping (_ state: State, _ completion: @escaping () -> Void) -> Void
-    ) {
-        guard let pendingState else {
+    private func complete() {
+        guard let pendingApply else {
             isApplying = false
             return
         }
 
-        self.pendingState = nil
-        render(pendingState) { [weak self] in
-            self?.complete(render: render)
+        self.pendingApply = nil
+        pendingApply.render(pendingApply.state) { [weak self] in
+            self?.complete()
         }
     }
 }
@@ -607,26 +612,33 @@ final class ChatViewController: UIViewController {
     private func configureVoicePlayback() {
         voicePlaybackController.onStarted = { [weak self] messageID in
             if messageID == pendingVoicePreviewMessageID {
-                self?.renderPendingVoicePreview(isPlaying: true)
+                self?.renderPendingVoicePreview(isPlaying: true, progress: nil)
                 return
             }
             self?.viewModel.voicePlaybackStarted(messageID: messageID)
         }
         voicePlaybackController.onStopped = { [weak self] messageID in
             if messageID == pendingVoicePreviewMessageID {
-                self?.renderPendingVoicePreview(isPlaying: false)
+                self?.renderPendingVoicePreview(isPlaying: false, progress: nil)
                 return
             }
             self?.viewModel.voicePlaybackStopped(messageID: messageID)
         }
         voicePlaybackController.onFailed = { [weak self] messageID in
             if messageID == pendingVoicePreviewMessageID {
-                self?.renderPendingVoicePreview(isPlaying: false)
+                self?.renderPendingVoicePreview(isPlaying: false, progress: nil)
                 self?.showTransientRecordingMessage("Unable to play voice")
                 return
             }
             self?.viewModel.voicePlaybackStopped(messageID: messageID)
             self?.showTransientRecordingMessage("Unable to play voice")
+        }
+        voicePlaybackController.onProgress = { [weak self] messageID, progress in
+            if messageID == pendingVoicePreviewMessageID {
+                self?.renderPendingVoicePreview(isPlaying: true, progress: progress)
+                return
+            }
+            self?.viewModel.voicePlaybackProgress(messageID: messageID, progress: progress)
         }
     }
 
@@ -1045,11 +1057,13 @@ final class ChatViewController: UIViewController {
     }
 
     /// 重新渲染待发送语音预览播放态
-    private func renderPendingVoicePreview(isPlaying: Bool) {
+    private func renderPendingVoicePreview(isPlaying: Bool, progress: VoicePlaybackProgress?) {
         guard let pendingVoiceRecording else { return }
         inputBarView.setPendingVoicePreview(
             durationMilliseconds: pendingVoiceRecording.durationMilliseconds,
             isPlaying: isPlaying,
+            playbackProgress: progress?.fraction ?? 0,
+            playbackElapsedMilliseconds: progress?.elapsedMilliseconds ?? 0,
             animated: false
         )
     }

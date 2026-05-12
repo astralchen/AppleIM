@@ -6,6 +6,22 @@
 import AVFoundation
 import Foundation
 
+/// 语音播放进度
+nonisolated struct VoicePlaybackProgress: Equatable, Sendable {
+    /// 已播放时长（毫秒）
+    let elapsedMilliseconds: Int
+    /// 总时长（毫秒）
+    let durationMilliseconds: Int
+    /// 播放进度，范围 0...1
+    let fraction: Double
+
+    init(elapsedMilliseconds: Int, durationMilliseconds: Int, fraction: Double) {
+        self.elapsedMilliseconds = max(0, elapsedMilliseconds)
+        self.durationMilliseconds = max(0, durationMilliseconds)
+        self.fraction = min(1, max(0, fraction))
+    }
+}
+
 /// AVFoundation 语音播放控制器
 ///
 /// ## 职责
@@ -29,9 +45,11 @@ final class VoicePlaybackController: NSObject {
     var onStarted: ((MessageID) -> Void)?
     var onStopped: ((MessageID) -> Void)?
     var onFailed: ((MessageID) -> Void)?
+    var onProgress: ((MessageID, VoicePlaybackProgress) -> Void)?
 
     private var player: AVAudioPlayer?
     private var playingMessageID: MessageID?
+    private var progressTimer: Timer?
 
     /// 检查指定消息是否正在播放
     ///
@@ -85,8 +103,10 @@ final class VoicePlaybackController: NSObject {
             self.player = player
             playingMessageID = messageID
             onStarted?(messageID)
+            startProgressTimer()
             return true
         } catch {
+            invalidateProgressTimer()
             player = nil
             playingMessageID = nil
             onFailed?(messageID)
@@ -103,6 +123,7 @@ final class VoicePlaybackController: NSObject {
         }
 
         player?.stop()
+        invalidateProgressTimer()
         player = nil
         playingMessageID = nil
         deactivateSession()
@@ -114,6 +135,7 @@ final class VoicePlaybackController: NSObject {
             return
         }
 
+        invalidateProgressTimer()
         player = nil
         playingMessageID = nil
         deactivateSession()
@@ -123,6 +145,41 @@ final class VoicePlaybackController: NSObject {
         } else {
             onFailed?(messageID)
         }
+    }
+
+    private func startProgressTimer() {
+        invalidateProgressTimer()
+        publishProgress()
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.publishProgress()
+            }
+        }
+    }
+
+    private func invalidateProgressTimer() {
+        progressTimer?.invalidate()
+        progressTimer = nil
+    }
+
+    private func publishProgress() {
+        guard let player, let playingMessageID else {
+            return
+        }
+
+        let duration = max(0, player.duration)
+        let elapsed = min(max(0, player.currentTime), duration)
+        let durationMilliseconds = Int((duration * 1_000).rounded())
+        let elapsedMilliseconds = Int((elapsed * 1_000).rounded())
+        let fraction = duration > 0 ? elapsed / duration : 0
+        onProgress?(
+            playingMessageID,
+            VoicePlaybackProgress(
+                elapsedMilliseconds: elapsedMilliseconds,
+                durationMilliseconds: durationMilliseconds,
+                fraction: fraction
+            )
+        )
     }
 
     private func deactivateSession() {

@@ -483,6 +483,23 @@ final class ChatViewModel {
         }
     }
 
+    /// 更新语音播放进度
+    ///
+    /// - Parameters:
+    ///   - messageID: 正在播放的语音消息 ID
+    ///   - progress: 播放进度
+    func voicePlaybackProgress(messageID: MessageID, progress: VoicePlaybackProgress) {
+        publish { state in
+            state.rows = state.rows.map { row in
+                guard row.id == messageID, row.content.kind == .voice else {
+                    return row
+                }
+                return row.withVoicePlaybackProgress(progress)
+            }
+            state.phase = .loaded
+        }
+    }
+
     /// 标记语音停止播放
     ///
     /// - Parameter messageID: 停止播放的语音消息 ID；为空时清理全部播放态

@@ -516,7 +516,8 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
         voicePlaybackButton.accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
         waveformView.tintColor = style.tintColor
         waveformView.isPlaying = isPlaying
-        voiceDurationLabel.text = Self.durationText(milliseconds: voice?.durationMilliseconds ?? 0)
+        waveformView.playbackProgress = voice?.playbackProgress ?? 0
+        voiceDurationLabel.text = Self.durationText(for: voice)
         voiceDurationLabel.textColor = style.textColor
         voiceUnreadDotView.isHidden = !(voice?.isUnplayed == true)
     }
@@ -536,6 +537,8 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
 
         voiceDurationLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .medium)
         voiceDurationLabel.adjustsFontForContentSizeCategory = true
+        voiceDurationLabel.adjustsFontSizeToFitWidth = true
+        voiceDurationLabel.minimumScaleFactor = 0.78
 
         voiceUnreadDotView.translatesAutoresizingMaskIntoConstraints = false
         voiceUnreadDotView.backgroundColor = ChatBridgeDesignSystem.ColorToken.coral
@@ -568,17 +571,40 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
         actions.onPlayVoice(row)
     }
 
-    private static func durationText(milliseconds: Int) -> String {
-        let seconds = max(1, Int((Double(milliseconds) / 1_000.0).rounded()))
-        return "\(seconds)s"
+    private static func durationText(for voice: ChatMessageRowContent.VoiceContent?) -> String {
+        guard let voice else {
+            return ChatMessageRowContent.voiceDurationDisplayText(milliseconds: 0)
+        }
+
+        let totalText = ChatMessageRowContent.voiceDurationDisplayText(milliseconds: voice.durationMilliseconds)
+        guard voice.isPlaying else {
+            return totalText
+        }
+
+        let elapsedText = ChatMessageRowContent.voiceElapsedDisplayText(
+            milliseconds: voice.playbackElapsedMilliseconds
+        )
+        return "\(elapsedText)/\(totalText)"
     }
 }
 
 /// Apple Messages 风格的简易语音波形
 @MainActor
 private final class MessageVoiceWaveformView: UIView {
+    private var playbackProgressValue: Double = 0
+
     var isPlaying = false {
         didSet {
+            setNeedsDisplay()
+        }
+    }
+
+    var playbackProgress: Double {
+        get {
+            playbackProgressValue
+        }
+        set {
+            playbackProgressValue = min(1, max(0, newValue))
             setNeedsDisplay()
         }
     }
@@ -601,22 +627,32 @@ private final class MessageVoiceWaveformView: UIView {
         let bars = 13
         let spacing: CGFloat = 3
         let barWidth = max(2, (rect.width - CGFloat(bars - 1) * spacing) / CGFloat(bars))
-        let activeBars = isPlaying ? bars : 0
-
-        for index in 0..<bars {
-            let progress = CGFloat(index) / CGFloat(max(bars - 1, 1))
-            let wave = 0.28 + 0.72 * abs(sin(progress * .pi * 1.35))
-            let barHeight = max(5, rect.height * wave)
-            let x = CGFloat(index) * (barWidth + spacing)
-            let y = (rect.height - barHeight) / 2
-            let path = UIBezierPath(
-                roundedRect: CGRect(x: x, y: y, width: barWidth, height: barHeight),
-                cornerRadius: barWidth / 2
-            )
-            let alpha: CGFloat = index < activeBars ? 0.95 : 0.34
-            tintColor.withAlphaComponent(alpha).setFill()
-            path.fill()
+        let drawBars: (CGFloat) -> Void = { alpha in
+            for index in 0..<bars {
+                let progress = CGFloat(index) / CGFloat(max(bars - 1, 1))
+                let wave = 0.28 + 0.72 * abs(sin(progress * .pi * 1.35))
+                let barHeight = max(5, rect.height * wave)
+                let x = CGFloat(index) * (barWidth + spacing)
+                let y = (rect.height - barHeight) / 2
+                let path = UIBezierPath(
+                    roundedRect: CGRect(x: x, y: y, width: barWidth, height: barHeight),
+                    cornerRadius: barWidth / 2
+                )
+                self.tintColor.withAlphaComponent(alpha).setFill()
+                path.fill()
+            }
         }
+
+        drawBars(0.34)
+
+        guard isPlaying, playbackProgressValue > 0, let context = UIGraphicsGetCurrentContext() else {
+            return
+        }
+
+        context.saveGState()
+        context.clip(to: CGRect(x: 0, y: 0, width: rect.width * CGFloat(playbackProgressValue), height: rect.height))
+        drawBars(0.95)
+        context.restoreGState()
     }
 }
 
