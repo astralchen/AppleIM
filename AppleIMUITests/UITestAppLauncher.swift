@@ -68,39 +68,32 @@ func login(
 
 @MainActor
 func openAccountActions(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-    func accountActionsAreVisible(timeout: TimeInterval) -> Bool {
-        app.alerts["Account"].waitForExistence(timeout: timeout)
-            || app.sheets["Account"].waitForExistence(timeout: timeout)
-    }
-
     let candidates = [
-        app.buttons["conversationList.accountButton"].firstMatch,
-        app.navigationBars["Messages"].buttons["Account"].firstMatch,
-        app.navigationBars["ChatBridge"].buttons["Account"].firstMatch,
+        app.tabBars.buttons["Account"].firstMatch,
+        app.buttons["mainTab.account"].firstMatch,
         app.buttons["Account"].firstMatch
     ]
 
     XCTAssertTrue(
         candidates.contains { $0.waitForExistence(timeout: 2) },
-        "Expected account button",
+        "Expected account tab",
         file: file,
         line: line
     )
 
-    for accountButton in candidates where accountButton.exists {
-        if accountButton.isHittable {
-            accountButton.tap()
+    for accountTab in candidates where accountTab.exists {
+        if accountTab.isHittable {
+            accountTab.tap()
         } else {
-            accountButton.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            accountTab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         }
 
-        if accountActionsAreVisible(timeout: 2) {
+        if app.tables["account.tableView"].waitForExistence(timeout: 2) {
             return
         }
     }
 
-    app.coordinate(withNormalizedOffset: CGVector(dx: 0.08, dy: 0.08)).tap()
-    XCTAssertTrue(accountActionsAreVisible(timeout: 5), "Expected account actions alert", file: file, line: line)
+    XCTAssertTrue(app.tables["account.tableView"].waitForExistence(timeout: 5), "Expected account screen", file: file, line: line)
 }
 
 @MainActor
@@ -111,6 +104,12 @@ func tapAccountAction(
     file: StaticString = #filePath,
     line: UInt = #line
 ) {
+    let identifiedCell = app.cells[identifier].firstMatch
+    if identifiedCell.waitForExistence(timeout: 2) {
+        identifiedCell.tap()
+        return
+    }
+
     let identifiedButton = app.buttons[identifier].firstMatch
     if identifiedButton.waitForExistence(timeout: 2) {
         identifiedButton.tap()
@@ -126,7 +125,7 @@ func tapAccountAction(
 func logOut(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
     openAccountActions(in: app, file: file, line: line)
     tapAccountAction(
-        identifier: "accountAction.logOut",
+        identifier: "account.action.logOut",
         fallbackTitle: "Log Out",
         in: app,
         file: file,
@@ -139,7 +138,7 @@ func logOut(in app: XCUIApplication, file: StaticString = #filePath, line: UInt 
 func deleteLocalData(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
     openAccountActions(in: app, file: file, line: line)
     tapAccountAction(
-        identifier: "accountAction.deleteLocalData",
+        identifier: "account.action.deleteLocalData",
         fallbackTitle: "Delete Local Data",
         in: app,
         file: file,
@@ -162,7 +161,7 @@ func deleteLocalData(in app: XCUIApplication, file: StaticString = #filePath, li
 func switchAccount(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
     openAccountActions(in: app, file: file, line: line)
     tapAccountAction(
-        identifier: "accountAction.switchAccount",
+        identifier: "account.action.switchAccount",
         fallbackTitle: "Switch Account",
         in: app,
         file: file,
