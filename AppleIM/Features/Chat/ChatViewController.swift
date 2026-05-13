@@ -74,6 +74,8 @@ final class ChatViewController: UIViewController {
     private var isVoiceTouchActive = false
     /// 用户是否仍处于贴底阅读状态；composer 高度变化时用它维持最新消息可见
     private var shouldMaintainBottomPosition = true
+    /// 用户正在拖拽或减速消息列表时，暂停自动贴底，避免底部反弹后抢回滚动位置。
+    private var isUserControllingMessageScroll = false
     /// 是否正在从相册面板切换到系统键盘。
     private var isSwitchingPhotoLibraryInputToKeyboard = false
     /// 是否正在从表情面板切换到系统键盘。
@@ -163,7 +165,7 @@ final class ChatViewController: UIViewController {
     /// 窗口、安全区或输入栏完成布局后，继续保持最新消息不被底部输入区遮挡。
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard shouldMaintainBottomPosition, !lastRenderedRowIDs.isEmpty else { return }
+        guard !isUserControllingMessageScroll, shouldMaintainBottomPosition, !lastRenderedRowIDs.isEmpty else { return }
         scrollToBottom(animated: false)
     }
 
@@ -1414,6 +1416,7 @@ final class ChatViewController: UIViewController {
 
     /// 判断本次布局变化是否应该保持贴底。
     private func shouldStickToBottomForLayoutChange() -> Bool {
+        guard !isUserControllingMessageScroll else { return false }
         let shouldStick = shouldMaintainBottomPosition || isNearBottom()
         if shouldStick {
             shouldMaintainBottomPosition = true
@@ -1483,13 +1486,14 @@ extension ChatViewController: UICollectionViewDelegate {
     /// 用户开始拖动时取消程序化贴底动画，避免新消息追加后的滚动动画抢回手势。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         collectionView.layer.removeAllAnimations()
-        shouldMaintainBottomPosition = isNearBottom()
+        isUserControllingMessageScroll = true
+        shouldMaintainBottomPosition = false
     }
 
     /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
-            shouldMaintainBottomPosition = isNearBottom()
+            shouldMaintainBottomPosition = false
         }
 
         guard !snapshotRenderCoordinator.isApplying else { return }
@@ -1499,6 +1503,23 @@ extension ChatViewController: UICollectionViewDelegate {
         if scrollView.contentOffset.y <= topThreshold {
             viewModel.loadOlderMessagesIfNeeded()
         }
+    }
+
+    /// 用户拖拽结束且不会继续减速时，根据最终位置恢复是否贴底。
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard !decelerate else { return }
+        finishUserMessageScrollInteraction()
+    }
+
+    /// 减速结束后，根据最终位置恢复是否贴底。
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        finishUserMessageScrollInteraction()
+    }
+
+    /// 结束用户滚动控制；只有最终仍接近底部时才重新启用自动贴底。
+    private func finishUserMessageScrollInteraction() {
+        isUserControllingMessageScroll = false
+        shouldMaintainBottomPosition = isNearBottom()
     }
 }
 

@@ -6564,6 +6564,67 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerAllowsManualScrollAwayFromBottomAfterBottomBounce() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Bottom Bounce",
+            rowPrefix: "bottom_bounce"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        try assertChatCollectionCanLeaveBottomAfterUserDrag(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+    }
+
+    @MainActor
+    @Test func chatViewControllerAllowsManualScrollAwayFromBottomAfterBottomBounceWithEmojiPanel() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Emoji Bounce",
+            rowPrefix: "emoji_bounce",
+            useEmojiUseCase: true
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        setup.inputBar.onEmojiTapped?()
+        setup.window.layoutIfNeeded()
+
+        try assertChatCollectionCanLeaveBottomAfterUserDrag(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+    }
+
+    @MainActor
+    @Test func chatViewControllerAllowsManualScrollAwayFromBottomAfterBottomBounceWithPhotoLibraryPanel() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Photo Bounce",
+            rowPrefix: "photo_bounce"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        setup.inputBar.onPhotoTapped?()
+        setup.window.layoutIfNeeded()
+
+        try assertChatCollectionCanLeaveBottomAfterUserDrag(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsBottomAnchoredWhilePhotoLibraryPanelIsDragged() async throws {
         let rows = (1...28).map { index in
             makeChatRow(
@@ -11223,6 +11284,87 @@ private func makeChatRow(
         canDelete: true,
         canRevoke: false
     )
+}
+
+@MainActor
+private func makeScrollableChatViewController(
+    title: String,
+    rowPrefix: String,
+    useEmojiUseCase: Bool = false
+) async throws -> (
+    window: UIWindow,
+    viewController: ChatViewController,
+    collectionView: UICollectionView,
+    inputBar: ChatInputBarView
+) {
+    let rows = (1...36).map { index in
+        makeChatRow(
+            id: MessageID(rawValue: "\(rowPrefix)_\(index)"),
+            text: "\(title) message \(index)",
+            sortSequence: Int64(index)
+        )
+    }
+    let viewModel: ChatViewModel
+    if useEmojiUseCase {
+        viewModel = ChatViewModel(
+            useCase: EmojiPanelStubChatUseCase(initialRows: rows),
+            title: title
+        )
+    } else {
+        viewModel = ChatViewModel(
+            useCase: PagingStubChatUseCase(
+                initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+                olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+            ),
+            title: title
+        )
+    }
+    let viewController = ChatViewController(viewModel: viewModel)
+    let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+    window.rootViewController = viewController
+    window.makeKeyAndVisible()
+
+    viewController.loadViewIfNeeded()
+    try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+        guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+            return false
+        }
+        return collectionView.numberOfItems(inSection: 0) == rows.count
+    }
+    window.layoutIfNeeded()
+
+    let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+    let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+    return (window, viewController, collectionView, inputBar)
+}
+
+@MainActor
+private func assertChatCollectionCanLeaveBottomAfterUserDrag(
+    viewController: ChatViewController,
+    collectionView: UICollectionView,
+    window: UIWindow
+) throws {
+    let lastItem = collectionView.numberOfItems(inSection: 0) - 1
+    try #require(lastItem > 0)
+
+    collectionView.scrollToItem(at: IndexPath(item: lastItem, section: 0), at: .bottom, animated: false)
+    window.layoutIfNeeded()
+    collectionView.layoutIfNeeded()
+
+    let bottomOffsetY = collectionView.contentOffset.y
+    let minOffsetY = -collectionView.adjustedContentInset.top
+    let targetOffsetY = max(minOffsetY, bottomOffsetY - 160)
+    try #require(targetOffsetY < bottomOffsetY - 1)
+
+    viewController.scrollViewWillBeginDragging(collectionView)
+    collectionView.setContentOffset(
+        CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+        animated: false
+    )
+    viewController.viewDidLayoutSubviews()
+    collectionView.layoutIfNeeded()
+
+    #expect(collectionView.contentOffset.y <= targetOffsetY + 1)
 }
 
 private func timestamp(
