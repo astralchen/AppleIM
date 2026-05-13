@@ -9,15 +9,21 @@ import UIKit
 
 /// 账号管理页
 @MainActor
-final class AccountViewController: UITableViewController {
+final class AccountViewController: UIViewController {
     /// 列表分区
-    private enum Section: Int, CaseIterable {
+    nonisolated private enum Section: Int, CaseIterable, Hashable, Sendable {
         case profile
         case actions
     }
 
+    /// 列表条目
+    nonisolated private enum Item: Hashable, Sendable {
+        case profile
+        case action(ActionRow)
+    }
+
     /// 操作行
-    private enum ActionRow: Int, CaseIterable {
+    nonisolated private enum ActionRow: Int, CaseIterable, Hashable, Sendable {
         case switchAccount
         case logOut
         case deleteLocalData
@@ -80,12 +86,16 @@ final class AccountViewController: UITableViewController {
     private let state: AccountViewState
     /// 账号操作回调
     private let onAction: (AccountAction) -> Void
+    /// 账号列表
+    private var collectionView: UICollectionView!
+    /// 列表数据源
+    private var dataSource: UICollectionViewDiffableDataSource<Section, Item>?
 
     /// 初始化账号页
     init(state: AccountViewState, onAction: @escaping (AccountAction) -> Void) {
         self.state = state
         self.onAction = onAction
-        super.init(style: .insetGrouped)
+        super.init(nibName: nil, bundle: nil)
         title = "Account"
         tabBarItem = UITabBarItem(
             title: "Account",
@@ -106,103 +116,70 @@ final class AccountViewController: UITableViewController {
         configureView()
     }
 
-    /// 分区数量
-    override func numberOfSections(in tableView: UITableView) -> Int {
-        Section.allCases.count
-    }
-
-    /// 行数量
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        guard let section = Section(rawValue: section) else {
-            return 0
-        }
-
-        switch section {
-        case .profile:
-            return 1
-        case .actions:
-            return ActionRow.allCases.count
-        }
-    }
-
-    /// 配置列表行
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        guard let section = Section(rawValue: indexPath.section) else {
-            return UITableViewCell()
-        }
-
-        switch section {
-        case .profile:
-            return makeProfileCell()
-        case .actions:
-            return makeActionCell(at: indexPath)
-        }
-    }
-
-    /// 处理列表选择
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
-
-        guard
-            Section(rawValue: indexPath.section) == .actions,
-            let row = ActionRow(rawValue: indexPath.row)
-        else {
-            return
-        }
-
-        switch row {
-        case .deleteLocalData:
-            present(makeDeleteLocalDataConfirmationController(), animated: true)
-        case .switchAccount, .logOut:
-            onAction(row.action)
-        }
-    }
-
     /// 配置基础视图属性
     private func configureView() {
         navigationItem.largeTitleDisplayMode = .always
-        tableView.accessibilityIdentifier = "account.tableView"
-        tableView.backgroundColor = .systemGroupedBackground
-        tableView.cellLayoutMarginsFollowReadableWidth = true
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "AccountCell")
+        view.backgroundColor = .systemGroupedBackground
+        configureCollectionView()
+        configureDataSource()
+        updateSnapshot()
     }
 
-    /// 构建账号资料行
-    private func makeProfileCell() -> UITableViewCell {
-        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
-        cell.selectionStyle = .none
-        cell.accessibilityIdentifier = "account.profileHeader"
-
-        let profileView = AccountProfileHeaderView(state: state)
-        profileView.translatesAutoresizingMaskIntoConstraints = false
-        cell.contentView.addSubview(profileView)
+    /// 配置账号列表
+    private func configureCollectionView() {
+        var configuration = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
+        configuration.backgroundColor = .clear
+        let layout = UICollectionViewCompositionalLayout.list(using: configuration)
+        let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.backgroundColor = .clear
+        collectionView.delegate = self
+        collectionView.accessibilityIdentifier = "account.collectionView"
+        view.addSubview(collectionView)
+        self.collectionView = collectionView
 
         NSLayoutConstraint.activate([
-            profileView.topAnchor.constraint(equalTo: cell.contentView.topAnchor, constant: 16),
-            profileView.leadingAnchor.constraint(equalTo: cell.contentView.layoutMarginsGuide.leadingAnchor),
-            profileView.trailingAnchor.constraint(equalTo: cell.contentView.layoutMarginsGuide.trailingAnchor),
-            profileView.bottomAnchor.constraint(equalTo: cell.contentView.bottomAnchor, constant: -16)
+            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            collectionView.topAnchor.constraint(equalTo: view.topAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
-
-        return cell
     }
 
-    /// 构建账号操作行
-    private func makeActionCell(at indexPath: IndexPath) -> UITableViewCell {
-        guard let row = ActionRow(rawValue: indexPath.row) else {
-            return UITableViewCell()
+    /// 配置 diffable data source
+    private func configureDataSource() {
+        let profileRegistration = UICollectionView.CellRegistration<AccountProfileCell, Item> { [state] cell, _, _ in
+            cell.configure(state: state)
+        }
+        let actionRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { cell, _, item in
+            guard case .action(let row) = item else { return }
+            var content = cell.defaultContentConfiguration()
+            content.text = row.title
+            content.image = UIImage(systemName: row.imageName)
+            content.imageProperties.tintColor = row.isDestructive ? .systemRed : .systemBlue
+            content.textProperties.color = row.isDestructive ? .systemRed : .label
+            cell.contentConfiguration = content
+            cell.accessories = [.disclosureIndicator()]
+            cell.accessibilityIdentifier = row.accessibilityIdentifier
         }
 
-        let cell = tableView.dequeueReusableCell(withIdentifier: "AccountCell", for: indexPath)
-        var content = cell.defaultContentConfiguration()
-        content.text = row.title
-        content.image = UIImage(systemName: row.imageName)
-        content.imageProperties.tintColor = row.isDestructive ? .systemRed : .systemBlue
-        content.textProperties.color = row.isDestructive ? .systemRed : .label
-        cell.contentConfiguration = content
-        cell.accessoryType = .disclosureIndicator
-        cell.accessibilityIdentifier = row.accessibilityIdentifier
-        return cell
+        dataSource = UICollectionViewDiffableDataSource<Section, Item>(collectionView: collectionView) { collectionView, indexPath, item in
+            switch item {
+            case .profile:
+                collectionView.dequeueConfiguredReusableCell(using: profileRegistration, for: indexPath, item: item)
+            case .action:
+                collectionView.dequeueConfiguredReusableCell(using: actionRegistration, for: indexPath, item: item)
+            }
+        }
+    }
+
+    /// 更新列表快照
+    private func updateSnapshot() {
+        var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
+        snapshot.appendSections(Section.allCases)
+        snapshot.appendItems([Item.profile], toSection: Section.profile)
+        snapshot.appendItems(ActionRow.allCases.map(Item.action), toSection: Section.actions)
+        dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
     /// 构造当前账号本地数据删除确认弹窗。
@@ -221,6 +198,66 @@ final class AccountViewController: UITableViewController {
         alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         alertController.addAction(confirmAction)
         return alertController
+    }
+}
+
+extension AccountViewController: UICollectionViewDelegate {
+    /// 只允许选择账号操作行
+    func collectionView(_ collectionView: UICollectionView, shouldSelectItemAt indexPath: IndexPath) -> Bool {
+        guard case .action = dataSource?.itemIdentifier(for: indexPath) else {
+            return false
+        }
+        return true
+    }
+
+    /// 处理账号操作选择
+    func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        collectionView.deselectItem(at: indexPath, animated: true)
+
+        guard case .action(let row) = dataSource?.itemIdentifier(for: indexPath) else {
+            return
+        }
+
+        switch row {
+        case .deleteLocalData:
+            present(makeDeleteLocalDataConfirmationController(), animated: true)
+        case .switchAccount, .logOut:
+            onAction(row.action)
+        }
+    }
+}
+
+/// 账号资料列表单元
+@MainActor
+private final class AccountProfileCell: UICollectionViewListCell {
+    /// 当前挂载的资料视图
+    private var profileView: AccountProfileHeaderView?
+
+    /// 配置资料内容
+    func configure(state: AccountViewState) {
+        contentConfiguration = nil
+        profileView?.removeFromSuperview()
+
+        let profileView = AccountProfileHeaderView(state: state)
+        profileView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(profileView)
+        self.profileView = profileView
+        accessibilityIdentifier = "account.profileHeader"
+        isAccessibilityElement = false
+
+        NSLayoutConstraint.activate([
+            profileView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            profileView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            profileView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            profileView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
+        ])
+    }
+
+    /// 清理复用状态
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        profileView?.removeFromSuperview()
+        profileView = nil
     }
 }
 

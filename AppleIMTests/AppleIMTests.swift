@@ -6910,9 +6910,11 @@ struct AppleIMTests {
         #expect(findLabel(withText: "Session User", in: viewController.view) != nil)
         #expect(findLabel(withText: "session_user", in: viewController.view) != nil)
 
-        let tableView = try #require(findView(in: viewController.view, identifier: "account.tableView") as? UITableView)
-        tableView.delegate?.tableView?(tableView, didSelectRowAt: IndexPath(row: 0, section: 1))
-        tableView.delegate?.tableView?(tableView, didSelectRowAt: IndexPath(row: 1, section: 1))
+        #expect(findView(ofType: UITableView.self, in: viewController.view) == nil)
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "account.collectionView") as? UICollectionView)
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 0, section: 1))
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 1, section: 1))
 
         #expect(actions == [.switchAccount, .logOut])
     }
@@ -6938,8 +6940,10 @@ struct AppleIMTests {
         }
 
         viewController.loadViewIfNeeded()
-        let tableView = try #require(findView(in: viewController.view, identifier: "account.tableView") as? UITableView)
-        tableView.delegate?.tableView?(tableView, didSelectRowAt: IndexPath(row: 2, section: 1))
+        #expect(findView(ofType: UITableView.self, in: viewController.view) == nil)
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "account.collectionView") as? UICollectionView)
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 2, section: 1))
 
         let confirmAlert = try #require(navigationController.presentedViewController as? UIAlertController)
         #expect(confirmAlert.title == "Delete Local Data?")
