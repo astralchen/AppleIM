@@ -42,8 +42,8 @@ Ink:               #111827
 消息气泡：
 
 ```text
-Outgoing bubble:   secondarySystemBackground
-Incoming bubble:   systemBackground / system material
+Outgoing bubble:   systemBlue / #007AFF，内容白色
+Incoming bubble:   systemGray6 / system material，内容使用系统主文字色
 Unread badge:      #FF5A7A
 ```
 
@@ -113,8 +113,8 @@ iOS 15-25：
 - 消息行整体配色参照会话列表：低饱和系统背景、系统蓝轻强调、文字使用系统主次文字色。
 - 所有非撤回消息都显示发送者头像：对方消息头像在左侧，自己发送消息头像在右侧。
 - 撤回消息不显示头像，不保留头像占位，使用中性提示样式。
-- 对方消息使用 systemBackground / system material 卡片。
-- 自己消息使用 secondarySystemBackground 中性气泡，不使用强品牌渐变。
+- 对方消息使用 systemGray6 / system material 灰色气泡，内容使用系统主文字色。
+- 自己消息使用 Apple Messages 默认 iMessage 蓝色气泡，内容使用白色，不使用品牌渐变。
 - 图片 / 视频消息使用大圆角预览。
 - 语音消息使用播放图标、时长和轻量状态标识，强化娱乐感。
 - 底部输入栏采用 Apple Messages 风格：
@@ -235,6 +235,7 @@ iPhone 15/16 Pro portrait
 - 输入栏 1-5 行增长平滑，超过 5 行内部滚动。
 - 录音中波形从右往左滚动，停止按钮和时长不挤压波形。
 - 语音预览态的取消、播放、发送按钮保持 44pt 可点击区域，绿色发送按钮不会触发文本发送。
+- 浅色 / 深色模式下蓝色发送气泡白字、灰色接收气泡系统文字对比正常。
 - 深色模式下玻璃、渐变、文本对比正常。
 
 ### 8.2 兼容验收

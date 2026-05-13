@@ -55,18 +55,14 @@ enum ChatBridgeDesignSystem {
             }
         }
 
-        /// 参照会话列表的发出消息中性背景
+        /// Apple Messages 风格的发出消息蓝色气泡
         static let appleMessageOutgoing = UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor.secondarySystemGroupedBackground
-                : UIColor.secondarySystemBackground
+            UIColor.systemBlue.resolvedColor(with: traits)
         }
 
-        /// 参照会话列表的收到消息卡片背景
+        /// Apple Messages 风格的收到消息灰色气泡
         static let appleMessageIncoming = UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor.tertiarySystemGroupedBackground
-                : UIColor.systemBackground
+            UIColor.systemGray6.resolvedColor(with: traits)
         }
 
         /// Apple Messages 风格的附件卡片背景

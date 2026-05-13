@@ -7872,12 +7872,64 @@ struct AppleIMTests {
         let outgoing = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing.resolvedColor(with: traits)
         let incoming = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming.resolvedColor(with: traits)
 
-        #expect(outgoing == UIColor.secondarySystemBackground.resolvedColor(with: traits))
-        #expect(incoming == UIColor.systemBackground.resolvedColor(with: traits))
-        #expect(outgoing != UIColor.systemBlue.resolvedColor(with: traits))
+        #expect(outgoing == UIColor.systemBlue.resolvedColor(with: traits))
+        #expect(incoming == UIColor.systemGray6.resolvedColor(with: traits))
         #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageBubble == 18)
         #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageMedia == 20)
         #expect(ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment == 16)
+    }
+
+    @MainActor
+    @Test func chatMessageCellAppliesAppleMessagesTextColors() throws {
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        let outgoingCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        outgoingCell.configure(
+            row: makeChatRow(id: "blue_bubble", text: "蓝色发送气泡", sortSequence: 1, isOutgoing: true),
+            actions: .empty
+        )
+
+        let incomingCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        incomingCell.configure(
+            row: makeChatRow(id: "gray_bubble", text: "灰色接收气泡", sortSequence: 2, isOutgoing: false),
+            actions: .empty
+        )
+
+        let outgoingLabel = try #require(findLabel(withText: "蓝色发送气泡", in: outgoingCell))
+        let incomingLabel = try #require(findLabel(withText: "灰色接收气泡", in: incomingCell))
+        let outgoingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: outgoingCell))
+        let incomingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: incomingCell))
+
+        #expect(outgoingBubble.style == .outgoing)
+        #expect(incomingBubble.style == .incoming)
+        #expect(outgoingLabel.textColor.resolvedColor(with: traits) == UIColor.white.resolvedColor(with: traits))
+        #expect(incomingLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
+    }
+
+    @MainActor
+    @Test func outgoingMediaFallbackKeepsReadableSystemTextColor() throws {
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 260))
+        cell.configure(
+            row: ChatMessageRowState(
+                id: "outgoing_media_fallback",
+                content: .image(.init(thumbnailPath: "/tmp/missing-outgoing-media.jpg")),
+                sortSequence: 1,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: true,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
+
+        let fallbackLabel = try #require(findLabel(withText: "Image unavailable", in: cell))
+        let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+
+        #expect(bubbleView.style == .media)
+        #expect(fallbackLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
     }
 
     @MainActor

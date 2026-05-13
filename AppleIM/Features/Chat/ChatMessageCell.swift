@@ -928,14 +928,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
             : (isMedia ? .media : (row.isOutgoing ? .outgoing : .incoming))
         bubbleView.apply(style: bubbleStyle)
 
-        let foregroundColor: UIColor = isRevoked ? .secondaryLabel : .label
-        let secondaryColor: UIColor = .secondaryLabel
-        let tintColor: UIColor = .systemBlue
-        let contentStyle = ChatMessageContentStyle(
-            textColor: foregroundColor,
-            secondaryTextColor: secondaryColor,
-            tintColor: tintColor
-        )
+        let contentStyle = contentStyle(for: bubbleStyle)
         configureContent(row: row, style: contentStyle, actions: actions)
         configureBubblePadding(style: bubbleStyle)
 
@@ -965,6 +958,29 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         outgoingBubbleTrailingToAvatarConstraint?.isActive = showsAvatar && row.isOutgoing
         outgoingBubbleTrailingConstraint?.isActive = !showsAvatar && row.isOutgoing
         neutralBubbleCenterXConstraint?.isActive = !showsAvatar && !row.isOutgoing
+    }
+
+    private func contentStyle(for bubbleStyle: ChatBubbleBackgroundView.Style) -> ChatMessageContentStyle {
+        switch bubbleStyle {
+        case .outgoing:
+            return ChatMessageContentStyle(
+                textColor: .white,
+                secondaryTextColor: UIColor.white.withAlphaComponent(0.72),
+                tintColor: .white
+            )
+        case .revoked:
+            return ChatMessageContentStyle(
+                textColor: .secondaryLabel,
+                secondaryTextColor: .secondaryLabel,
+                tintColor: .systemBlue
+            )
+        case .incoming, .media:
+            return ChatMessageContentStyle(
+                textColor: .label,
+                secondaryTextColor: .secondaryLabel,
+                tintColor: .systemBlue
+            )
+        }
     }
 
     private func configureContent(
