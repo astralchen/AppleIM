@@ -139,6 +139,12 @@ final class AppleIMUITests: XCTestCase {
             messageCell(containing: message, in: app).waitForExistence(timeout: 5),
             "Expected sent message to appear in chat"
         )
+        let sentMessage = messageCell(containing: message, in: app)
+        XCTAssertLessThanOrEqual(
+            sentMessage.frame.maxY,
+            input.frame.minY,
+            "Expected sent message to stay above the input bar"
+        )
         XCTAssertTrue(app.buttons["chat.voiceButton"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["chat.sendButton"].exists)
     }
@@ -168,7 +174,17 @@ final class AppleIMUITests: XCTestCase {
         XCTAssertTrue(emoji.waitForExistence(timeout: 5), "Expected seeded favorite emoji")
         emoji.tap()
 
-        XCTAssertTrue(app.staticTexts["Smile"].waitForExistence(timeout: 5), "Expected sent emoji message")
+        let sentEmoji = app.collectionViews["chat.collection"]
+            .cells
+            .matching(NSPredicate(format: "label CONTAINS %@", "Smile"))
+            .firstMatch
+        XCTAssertTrue(sentEmoji.waitForExistence(timeout: 5), "Expected sent emoji message")
+        let input = app.textViews["chat.messageInput"]
+        XCTAssertLessThanOrEqual(
+            sentEmoji.frame.maxY,
+            input.frame.minY,
+            "Expected sent emoji message to stay above the input bar"
+        )
     }
 
     @MainActor

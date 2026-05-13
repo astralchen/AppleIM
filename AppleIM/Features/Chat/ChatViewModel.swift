@@ -651,9 +651,7 @@ final class ChatViewModel {
             do {
                 let rows = try await useCase.simulateIncomingMessages()
                 guard !Task.isCancelled else { return }
-                for row in rows {
-                    upsert(row)
-                }
+                upsert(rows)
                 logger.info(
                     "ChatViewModel simulatedPush optimisticPublished taskID=\(Self.shortLogID(taskID.uuidString)) rows=\(rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
                 )
@@ -867,6 +865,24 @@ final class ChatViewModel {
                 state.rows[index] = row
             } else {
                 state.rows.append(row)
+            }
+
+            state.rows = Self.rowsWithTimeSeparators(state.rows)
+            state.phase = .loaded
+        }
+    }
+
+    /// 批量更新或插入消息行，避免同一批后台推送触发多次列表快照。
+    private func upsert(_ rows: [ChatMessageRowState]) {
+        guard !rows.isEmpty else { return }
+
+        publish { state in
+            for row in rows {
+                if let index = state.rows.firstIndex(where: { $0.id == row.id }) {
+                    state.rows[index] = row
+                } else {
+                    state.rows.append(row)
+                }
             }
 
             state.rows = Self.rowsWithTimeSeparators(state.rows)

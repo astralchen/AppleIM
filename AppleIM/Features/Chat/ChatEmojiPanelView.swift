@@ -14,13 +14,17 @@ final class ChatEmojiPanelView: UIView {
     var onFavoriteToggled: ((EmojiAssetRecord, Bool) -> Void)?
 
     private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
-    private let segmentedControl = UISegmentedControl()
+    private let sectionButtonStackView = UIStackView()
     private let scrollView = UIScrollView()
     private let contentStackView = UIStackView()
     private let emptyLabel = UILabel()
 
     private var state = ChatEmojiPanelState.empty
     private var visibleSections: [Section] = []
+    private var selectedSectionID: Section.ID?
+    private var renderedSectionIDs: [Section.ID] = []
+    private var sectionButtonsByID: [Section.ID: UIButton] = [:]
+    private var renderedGridSignature: GridSignature?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -35,8 +39,11 @@ final class ChatEmojiPanelView: UIView {
     func render(_ state: ChatEmojiPanelState) {
         self.state = state
         rebuildSections()
-        rebuildSegmentedControl()
+        reconcileSelectedSection()
+        rebuildSectionButtons()
         rebuildGrid()
+        setNeedsLayout()
+        layoutIfNeeded()
     }
 
     private func configureView() {
@@ -44,10 +51,15 @@ final class ChatEmojiPanelView: UIView {
         accessibilityIdentifier = "chat.emojiInputPanel"
 
         blurView.translatesAutoresizingMaskIntoConstraints = false
-        segmentedControl.translatesAutoresizingMaskIntoConstraints = false
+        sectionButtonStackView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         contentStackView.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        sectionButtonStackView.axis = .horizontal
+        sectionButtonStackView.alignment = .fill
+        sectionButtonStackView.distribution = .fillEqually
+        sectionButtonStackView.spacing = 8
 
         contentStackView.axis = .vertical
         contentStackView.spacing = 10
@@ -64,10 +76,8 @@ final class ChatEmojiPanelView: UIView {
         emptyLabel.numberOfLines = 0
         emptyLabel.text = "No emoji"
 
-        segmentedControl.addTarget(self, action: #selector(selectedSectionChanged), for: .valueChanged)
-
         addSubview(blurView)
-        addSubview(segmentedControl)
+        addSubview(sectionButtonStackView)
         addSubview(scrollView)
         scrollView.addSubview(contentStackView)
         addSubview(emptyLabel)
@@ -78,11 +88,12 @@ final class ChatEmojiPanelView: UIView {
             blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
             blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            segmentedControl.topAnchor.constraint(equalTo: topAnchor, constant: 12),
-            segmentedControl.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            segmentedControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            sectionButtonStackView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            sectionButtonStackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            sectionButtonStackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            sectionButtonStackView.heightAnchor.constraint(equalToConstant: 32),
 
-            scrollView.topAnchor.constraint(equalTo: segmentedControl.bottomAnchor, constant: 8),
+            scrollView.topAnchor.constraint(equalTo: sectionButtonStackView.bottomAnchor, constant: 8),
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -102,35 +113,112 @@ final class ChatEmojiPanelView: UIView {
 
     private func rebuildSections() {
         visibleSections = [
-            Section(title: "最近", emojis: state.recentEmojis),
-            Section(title: "收藏", emojis: state.favoriteEmojis)
+            Section(id: .recent, title: "最近", emojis: state.recentEmojis),
+            Section(id: .favorites, title: "收藏", emojis: state.favoriteEmojis)
         ] + state.packages.map { package in
             Section(
+                id: .package(package.packageID),
                 title: package.title,
                 emojis: state.packageEmojisByPackageID[package.packageID] ?? []
             )
         }
     }
 
-    private func rebuildSegmentedControl() {
-        let selectedTitle = selectedSection?.title
-        segmentedControl.removeAllSegments()
-        for (index, section) in visibleSections.enumerated() {
-            segmentedControl.insertSegment(withTitle: section.title, at: index, animated: false)
+    private func reconcileSelectedSection() {
+        if let selectedSectionID, visibleSections.contains(where: { $0.id == selectedSectionID }) {
+            return
         }
-        segmentedControl.isHidden = visibleSections.isEmpty
-        segmentedControl.selectedSegmentIndex = max(0, visibleSections.firstIndex { $0.title == selectedTitle } ?? 0)
+
+        selectedSectionID = visibleSections.first { !$0.emojis.isEmpty }?.id
+            ?? visibleSections.first?.id
     }
 
-    private func rebuildGrid() {
+    private func rebuildSectionButtons() {
+        sectionButtonStackView.isHidden = visibleSections.isEmpty
+        let sectionIDs = visibleSections.map(\.id)
+
+        if sectionIDs != renderedSectionIDs {
+            sectionButtonStackView.arrangedSubviews.forEach { view in
+                sectionButtonStackView.removeArrangedSubview(view)
+                view.removeFromSuperview()
+            }
+            sectionButtonsByID.removeAll()
+            renderedSectionIDs = sectionIDs
+
+            for section in visibleSections {
+                let button = makeSectionButton(for: section)
+                sectionButtonsByID[section.id] = button
+                sectionButtonStackView.addArrangedSubview(button)
+            }
+        }
+
+        for section in visibleSections {
+            if let button = sectionButtonsByID[section.id] {
+                updateSectionButton(button, for: section)
+            }
+        }
+    }
+
+    private func makeSectionButton(for section: Section) -> UIButton {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.accessibilityLabel = section.title
+        button.accessibilityIdentifier = "chat.emojiSection.\(section.id.accessibilitySuffix)"
+        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        updateSectionButton(button, for: section)
+        button.addAction(UIAction { [weak self] _ in
+            self?.selectedSectionID = section.id
+            self?.updateSectionButtonStyles()
+            self?.rebuildGrid(force: true)
+        }, for: .touchUpInside)
+        return button
+    }
+
+    private func updateSectionButton(_ button: UIButton, for section: Section) {
+        button.accessibilityLabel = section.title
+        button.accessibilityIdentifier = "chat.emojiSection.\(section.id.accessibilitySuffix)"
+        var configuration = UIButton.Configuration.filled()
+        configuration.title = section.title
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+        configuration.baseForegroundColor = section.id == selectedSectionID ? .white : .label
+        configuration.baseBackgroundColor = section.id == selectedSectionID
+            ? .systemBlue
+            : UIColor.secondarySystemGroupedBackground.withAlphaComponent(0.75)
+        button.configuration = configuration
+        button.titleLabel?.font = .preferredFont(forTextStyle: .subheadline)
+        button.titleLabel?.adjustsFontForContentSizeCategory = true
+        button.titleLabel?.lineBreakMode = .byTruncatingTail
+    }
+
+    private func updateSectionButtonStyles() {
+        for section in visibleSections {
+            if let button = sectionButtonsByID[section.id] {
+                updateSectionButton(button, for: section)
+            }
+        }
+    }
+
+    private func rebuildGrid(force: Bool = false) {
+        let emojis = selectedSection?.emojis ?? []
+        let gridSignature = GridSignature(
+            sectionID: selectedSection?.id,
+            emojiIDs: emojis.map(\.emojiID),
+            names: emojis.map(\.name),
+            localPaths: emojis.map(\.localPath),
+            thumbPaths: emojis.map(\.thumbPath),
+            favoriteStates: emojis.map(\.isFavorite)
+        )
+        emptyLabel.isHidden = !emojis.isEmpty
+        emptyLabel.text = state.isLoading ? "Loading emoji..." : (state.errorMessage ?? "No emoji")
+        guard force || gridSignature != renderedGridSignature else { return }
+        renderedGridSignature = gridSignature
+
         contentStackView.arrangedSubviews.forEach { view in
             contentStackView.removeArrangedSubview(view)
             view.removeFromSuperview()
         }
 
-        let emojis = selectedSection?.emojis ?? []
-        emptyLabel.isHidden = !emojis.isEmpty
-        emptyLabel.text = state.isLoading ? "Loading emoji..." : (state.errorMessage ?? "No emoji")
         guard !emojis.isEmpty else { return }
 
         let columns = 4
@@ -213,19 +301,43 @@ final class ChatEmojiPanelView: UIView {
         return container
     }
 
-    @objc private func selectedSectionChanged() {
-        rebuildGrid()
-    }
-
     private var selectedSection: Section? {
-        guard visibleSections.indices.contains(segmentedControl.selectedSegmentIndex) else {
-            return visibleSections.first
+        if let selectedSectionID,
+           let selectedSection = visibleSections.first(where: { $0.id == selectedSectionID }) {
+            return selectedSection
         }
-        return visibleSections[segmentedControl.selectedSegmentIndex]
+        return visibleSections.first
     }
 
     private struct Section {
+        let id: ID
         let title: String
         let emojis: [EmojiAssetRecord]
+
+        enum ID: Hashable {
+            case recent
+            case favorites
+            case package(String)
+
+            var accessibilitySuffix: String {
+                switch self {
+                case .recent:
+                    return "recent"
+                case .favorites:
+                    return "favorites"
+                case let .package(packageID):
+                    return "package.\(packageID)"
+                }
+            }
+        }
+    }
+
+    private struct GridSignature: Equatable {
+        let sectionID: Section.ID?
+        let emojiIDs: [String]
+        let names: [String?]
+        let localPaths: [String?]
+        let thumbPaths: [String?]
+        let favoriteStates: [Bool]
     }
 }

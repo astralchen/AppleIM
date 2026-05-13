@@ -293,6 +293,8 @@ final class ChatViewController: UIViewController {
 
     /// 配置聊天页导航栏操作。
     private func configureNavigationItem() {
+        navigationItem.largeTitleDisplayMode = .never
+
         let simulateIncomingButton = UIBarButtonItem(
             image: UIImage(systemName: "message.fill"),
             style: .plain,
@@ -1267,9 +1269,8 @@ final class ChatViewController: UIViewController {
 
     /// 判断消息列表是否接近底部
     private func isNearBottom() -> Bool {
-        let visibleHeight = collectionView.bounds.height - collectionView.adjustedContentInset.top - collectionView.adjustedContentInset.bottom
-        let maxOffsetY = collectionView.contentSize.height - visibleHeight + collectionView.adjustedContentInset.bottom
-        return collectionView.contentOffset.y >= maxOffsetY - 80
+        let contentBottomY = collectionView.contentSize.height - collectionView.adjustedContentInset.bottom
+        return messageVisibleBottomY() >= contentBottomY - 80
     }
 
     /// 判断本次布局变化是否应该保持贴底。
@@ -1287,19 +1288,72 @@ final class ChatViewController: UIViewController {
         guard !lastRenderedRowIDs.isEmpty else { return }
         collectionView.layoutIfNeeded()
         let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
-        collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
+        guard let attributes = collectionView.layoutAttributesForItem(at: lastIndexPath) else {
+            collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
+            return
+        }
+
+        let proposedOffsetY = collectionView.contentOffset.y
+            + attributes.frame.maxY
+            - messageVisibleBottomY()
+        let targetOffsetY = clampedContentOffsetY(
+            proposedOffsetY,
+            visibleMessageHeight: messageVisibleHeight()
+        )
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+            animated: animated
+        )
+    }
+
+    /// 最新消息可见下边界，使用 content 坐标便于和 layout attributes 对齐。
+    private func messageVisibleBottomY() -> CGFloat {
+        let collectionVisibleBottomY = collectionView.contentOffset.y
+            + collectionView.bounds.height
+            - collectionView.adjustedContentInset.bottom
+        let inputBarVisibleTopY = collectionView.convert(
+            CGPoint(x: inputBarView.bounds.minX, y: inputBarView.bounds.minY),
+            from: inputBarView
+        ).y - 8
+        return min(collectionVisibleBottomY, inputBarVisibleTopY)
+    }
+
+    /// 当前消息可见区域高度；输入栏覆盖列表时，合法最大偏移需要用这个高度计算。
+    private func messageVisibleHeight() -> CGFloat {
+        max(1, messageVisibleBottomY() - collectionView.contentOffset.y)
+    }
+
+    /// 将目标滚动位置限制在 scroll view 合法范围内，避免短列表出现无效偏移。
+    private func clampedContentOffsetY(
+        _ proposedOffsetY: CGFloat,
+        visibleMessageHeight: CGFloat
+    ) -> CGFloat {
+        let minOffsetY = -collectionView.adjustedContentInset.top
+        let maxOffsetY = max(
+            minOffsetY,
+            collectionView.contentSize.height
+                - visibleMessageHeight
+                + collectionView.adjustedContentInset.bottom
+        )
+        return min(max(proposedOffsetY, minOffsetY), maxOffsetY)
     }
 }
 
 /// 聊天消息列表滚动回调
 extension ChatViewController: UICollectionViewDelegate {
+    /// 用户开始拖动时取消程序化贴底动画，避免新消息追加后的滚动动画抢回手势。
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        collectionView.layer.removeAllAnimations()
+        shouldMaintainBottomPosition = isNearBottom()
+    }
+
     /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !snapshotRenderCoordinator.isApplying else { return }
-
         if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
             shouldMaintainBottomPosition = isNearBottom()
         }
+
+        guard !snapshotRenderCoordinator.isApplying else { return }
 
         let topThreshold = -scrollView.adjustedContentInset.top + 120
 

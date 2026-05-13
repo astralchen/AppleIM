@@ -698,6 +698,16 @@ struct AppleIMTests {
         #expect(chatViewController.hidesBottomBarWhenPushed)
     }
 
+    @MainActor
+    @Test func chatViewControllerUsesInlineNavigationTitle() throws {
+        let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Sondra")
+        let viewController = ChatViewController(viewModel: viewModel)
+
+        viewController.loadViewIfNeeded()
+
+        #expect(viewController.navigationItem.largeTitleDisplayMode == .never)
+    }
+
     @Test func serverMessageSendConfigurationRequiresExplicitBaseURL() async throws {
         let missingConfiguration = ServerMessageSendService.Configuration.fromEnvironment([:], token: "secret_token")
         let missingTokenConfiguration = ServerMessageSendService.Configuration.fromEnvironment(
@@ -6444,6 +6454,49 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsInitialLatestMessageAboveInputBarAfterFirstLayout() async throws {
+        let rows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "initial_visible_\(index)"),
+                text: "Initial visible message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Initial Visible")
+        let viewController = ChatViewController(viewModel: viewModel)
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsBottomAnchoredWhilePhotoLibraryPanelIsDragged() async throws {
         let rows = (1...28).map { index in
             makeChatRow(
@@ -6930,6 +6983,177 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarDefersSystemKeyboardWhileLeavingEmojiInput() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        var keyboardInputRequestCount = 0
+        inputBar.onKeyboardInputRequested = {
+            keyboardInputRequestCount += 1
+        }
+
+        inputBar.showEmojiInput()
+
+        #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(keyboardInputRequestCount == 1)
+        #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(keyboardInputRequestCount == 1)
+
+        inputBar.showKeyboardInput()
+
+        #expect(inputBar.textViewShouldBeginEditing(textView) == true)
+    }
+
+    @MainActor
+    @Test func chatEmojiPanelDefaultsToFirstNonEmptySection() throws {
+        let panelView = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
+        let state = makeEmojiPanelState(
+            recentEmojis: [],
+            favoriteEmojis: [makeEmojiAsset(emojiID: "favorite_stub", name: "Favorite Stub", isFavorite: true)],
+            packageEmojis: [makeEmojiAsset(emojiID: "package_stub", name: "Package Stub")]
+        )
+
+        panelView.render(state)
+        panelView.layoutIfNeeded()
+
+        #expect(findView(in: panelView, identifier: "chat.emojiItem.favorite_stub") != nil)
+        #expect(findView(in: panelView, identifier: "chat.emojiItem.package_stub") == nil)
+    }
+
+    @MainActor
+    @Test func chatEmojiPanelSwitchesToFavoritesSection() throws {
+        let panelView = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
+        let state = makeEmojiPanelState(
+            recentEmojis: [],
+            favoriteEmojis: [makeEmojiAsset(emojiID: "favorite_stub", name: "Favorite Stub", isFavorite: true)],
+            packageEmojis: [makeEmojiAsset(emojiID: "package_stub", name: "Package Stub")]
+        )
+
+        panelView.render(state)
+        let favoritesButton = try #require(button(in: panelView, accessibilityLabel: "收藏"))
+
+        favoritesButton.sendActions(for: .touchUpInside)
+        panelView.layoutIfNeeded()
+
+        #expect(findView(in: panelView, identifier: "chat.emojiItem.favorite_stub") != nil)
+        #expect(findView(in: panelView, identifier: "chat.emojiItem.package_stub") == nil)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsSentEmojiAboveInputBarWhileEmojiPanelVisible() async throws {
+        let rows = (1...32).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "emoji_visibility_\(index)"),
+                text: "Emoji visibility message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = EmojiPanelStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Emoji Visibility")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+
+        inputBar.onEmojiTapped?()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub") != nil
+        }
+        window.layoutIfNeeded()
+
+        let emojiButton = try #require(button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub"))
+        emojiButton.sendActions(for: .touchUpInside)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count + 1
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= collectionFrame.maxY + 1)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerScrollsSentEmojiAboveOverlappingInputBar() async throws {
+        let rows = (1...32).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "emoji_overlap_visibility_\(index)"),
+                text: "Emoji overlap visibility message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = EmojiPanelStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Emoji Overlap Visibility")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+        for constraint in viewController.view.constraints where
+            ((constraint.firstItem as? UIView) === collectionView && constraint.firstAttribute == .bottom)
+                || ((constraint.secondItem as? UIView) === collectionView && constraint.secondAttribute == .bottom) {
+            constraint.isActive = false
+        }
+        collectionView.bottomAnchor.constraint(equalTo: viewController.view.bottomAnchor).isActive = true
+        window.layoutIfNeeded()
+
+        inputBar.onEmojiTapped?()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub") != nil
+        }
+        window.layoutIfNeeded()
+
+        let emojiButton = try #require(button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub"))
+        emojiButton.sendActions(for: .touchUpInside)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count + 1
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
     @Test func chatViewControllerSimulateIncomingButtonTriggersMessageAppend() async throws {
         let useCase = SimulatedIncomingStubChatUseCase()
         let viewModel = ChatViewModel(useCase: useCase, title: "Simulated Button")
@@ -6965,6 +7189,72 @@ struct AppleIMTests {
 
         #expect(useCase.simulateIncomingCallCount == 1)
         #expect(viewModel.currentState.rows.allSatisfy { $0.isOutgoing == false })
+    }
+
+    @MainActor
+    @Test func chatViewControllerAllowsScrollingAfterSimulatedIncomingButtonAppend() async throws {
+        let initialRows = (1...40).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "simulated_scroll_initial_\(index)"),
+                text: "Simulated scroll initial \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let simulatedRows = (41...42).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "simulated_scroll_push_\(index)"),
+                text: "Simulated scroll push \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = SimulatedIncomingStubChatUseCase(
+            initialRows: initialRows,
+            simulatedRows: simulatedRows
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Simulated Scroll")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let buttonItem = try #require(viewController.navigationItem.rightBarButtonItem)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+
+        UIApplication.shared.sendAction(
+            try #require(buttonItem.action),
+            to: buttonItem.target,
+            from: buttonItem,
+            for: nil
+        )
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + simulatedRows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let targetOffsetY = max(
+            -collectionView.adjustedContentInset.top,
+            collectionView.contentOffset.y - 240
+        )
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+            animated: false
+        )
+        try await Task.sleep(nanoseconds: 400_000_000)
+
+        #expect(collectionView.contentOffset.y <= targetOffsetY + 1)
     }
 
     @MainActor
@@ -9478,10 +9768,45 @@ private final class StoreRefreshingChatUseCase: @unchecked Sendable, ChatUseCase
 }
 
 private final class SimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialRows: [ChatMessageRowState]
+    private let simulatedRows: [ChatMessageRowState]
     private(set) var simulateIncomingCallCount = 0
 
+    init(
+        initialRows: [ChatMessageRowState] = [],
+        simulatedRows: [ChatMessageRowState]? = nil
+    ) {
+        self.initialRows = initialRows
+        self.simulatedRows = simulatedRows ?? [
+            ChatMessageRowState(
+                id: "simulated_incoming_stub_1",
+                content: .text("模拟收到第 1 条后台推送"),
+                sortSequence: 1,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            ChatMessageRowState(
+                id: "simulated_incoming_stub_2",
+                content: .text("模拟收到第 2 条后台推送"),
+                sortSequence: 2,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: false,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            )
+        ]
+    }
+
     func loadInitialMessages() async throws -> ChatMessagePage {
-        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        ChatMessagePage(rows: initialRows, hasMore: false, nextBeforeSortSequence: nil)
     }
 
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
@@ -9518,32 +9843,7 @@ private final class SimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatU
 
     func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
         simulateIncomingCallCount += 1
-        return [
-            ChatMessageRowState(
-                id: "simulated_incoming_stub_1",
-                content: .text("模拟收到第 1 条后台推送"),
-                sortSequence: 1,
-                timeText: "Now",
-                statusText: nil,
-                uploadProgress: nil,
-                isOutgoing: false,
-                canRetry: false,
-                canDelete: true,
-                canRevoke: false
-            ),
-            ChatMessageRowState(
-                id: "simulated_incoming_stub_2",
-                content: .text("模拟收到第 2 条后台推送"),
-                sortSequence: 2,
-                timeText: "Now",
-                statusText: nil,
-                uploadProgress: nil,
-                isOutgoing: false,
-                canRetry: false,
-                canDelete: true,
-                canRevoke: false
-            )
-        ]
+        return simulatedRows
     }
 
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
@@ -10172,6 +10472,7 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
 
 @MainActor
 private final class EmojiPanelStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialRows: [ChatMessageRowState]
     let packageEmoji = EmojiAssetRecord(
         emojiID: "package_stub",
         userID: "emoji_panel_user",
@@ -10196,8 +10497,12 @@ private final class EmojiPanelStubChatUseCase: @unchecked Sendable, ChatUseCase 
     private(set) var favoriteUpdates: [String] = []
     private(set) var sentEmojiIDs: [String] = []
 
+    init(initialRows: [ChatMessageRowState] = []) {
+        self.initialRows = initialRows
+    }
+
     func loadInitialMessages() async throws -> ChatMessagePage {
-        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        ChatMessagePage(rows: initialRows, hasMore: false, nextBeforeSortSequence: nil)
     }
 
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
@@ -11293,6 +11598,61 @@ private func makeContactRecord(
         extraJSON: extraJSON,
         updatedAt: timestamp,
         createdAt: timestamp
+    )
+}
+
+private func makeEmojiPanelState(
+    recentEmojis: [EmojiAssetRecord],
+    favoriteEmojis: [EmojiAssetRecord],
+    packageEmojis: [EmojiAssetRecord]
+) -> ChatEmojiPanelState {
+    let package = EmojiPackageRecord(
+        packageID: "pkg_stub",
+        userID: "emoji_panel_user",
+        title: "ChatBridge",
+        author: "Tests",
+        coverURL: nil,
+        localCoverPath: nil,
+        version: 1,
+        status: .downloaded,
+        sortOrder: 1,
+        createdAt: 1,
+        updatedAt: 1
+    )
+    return ChatEmojiPanelState(
+        packages: [package],
+        recentEmojis: recentEmojis,
+        favoriteEmojis: favoriteEmojis,
+        packageEmojisByPackageID: [package.packageID: packageEmojis]
+    )
+}
+
+private func makeEmojiAsset(
+    emojiID: String,
+    name: String,
+    packageID: String? = "pkg_stub",
+    isFavorite: Bool = false
+) -> EmojiAssetRecord {
+    EmojiAssetRecord(
+        emojiID: emojiID,
+        userID: "emoji_panel_user",
+        packageID: packageID,
+        emojiType: .package,
+        name: name,
+        md5: nil,
+        localPath: nil,
+        thumbPath: nil,
+        cdnURL: nil,
+        width: 128,
+        height: 128,
+        sizeBytes: 1024,
+        useCount: 0,
+        lastUsedAt: nil,
+        isFavorite: isFavorite,
+        isDeleted: false,
+        extraJSON: nil,
+        createdAt: 1,
+        updatedAt: 1
     )
 }
 

@@ -159,6 +159,8 @@ final class ChatInputBarView: UIView {
     private var pendingVoicePreviewElapsedMilliseconds = 0
     /// 是否正在展示相册输入视图
     private var isShowingPhotoLibraryInput = false
+    /// 是否正在展示表情输入视图
+    private var isShowingEmojiInput = false
     /// 是否正在等待控制器完成相册面板到系统键盘的切换
     private var isWaitingForKeyboardInputTransition = false
     /// 是否存在待发送附件
@@ -292,6 +294,7 @@ final class ChatInputBarView: UIView {
     /// 切换到相册输入面板
     func showPhotoLibraryInput() {
         isShowingPhotoLibraryInput = true
+        isShowingEmojiInput = false
         isWaitingForKeyboardInputTransition = false
         textView.inputView = nil
         textView.resignFirstResponder()
@@ -300,6 +303,7 @@ final class ChatInputBarView: UIView {
     /// 切换到表情输入面板
     func showEmojiInput() {
         isShowingPhotoLibraryInput = false
+        isShowingEmojiInput = true
         isWaitingForKeyboardInputTransition = false
         textView.inputView = nil
         textView.resignFirstResponder()
@@ -308,6 +312,7 @@ final class ChatInputBarView: UIView {
     /// 切换回系统键盘输入
     func showKeyboardInput() {
         isShowingPhotoLibraryInput = false
+        isShowingEmojiInput = false
         isWaitingForKeyboardInputTransition = false
         textView.inputView = nil
         textView.reloadInputViews()
@@ -1101,9 +1106,9 @@ final class ChatInputBarView: UIView {
 
 /// 文本输入代理
 extension ChatInputBarView: UITextViewDelegate {
-    /// 开始编辑时从相册输入切回键盘
+    /// 开始编辑时从自定义输入面板切回键盘
     func textViewShouldBeginEditing(_ textView: UITextView) -> Bool {
-        if isShowingPhotoLibraryInput {
+        if isShowingPhotoLibraryInput || isShowingEmojiInput {
             if !isWaitingForKeyboardInputTransition {
                 isWaitingForKeyboardInputTransition = true
                 onKeyboardInputRequested?()
