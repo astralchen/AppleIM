@@ -1092,7 +1092,7 @@ final class ChatInputBarView: UIView {
             }
         }
         let photoAction = UIAction(
-            title: "Choose Photo or Video",
+            title: "相册",
             image: UIImage(systemName: "photo.on.rectangle")
         ) { [weak self] _ in
             Task { @MainActor in

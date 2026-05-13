@@ -76,7 +76,9 @@ final class ChatViewController: UIViewController {
     private var shouldMaintainBottomPosition = true
     /// 是否正在从相册面板切换到系统键盘。
     private var isSwitchingPhotoLibraryInputToKeyboard = false
-    /// 相册面板切换到系统键盘期间是否需要保持列表贴底。
+    /// 是否正在从表情面板切换到系统键盘。
+    private var isSwitchingEmojiInputToKeyboard = false
+    /// 自定义输入面板切换到系统键盘期间是否需要保持列表贴底。
     private var shouldStickToBottomDuringKeyboardInputSwitch = false
 
     /// 渐变背景
@@ -423,7 +425,11 @@ final class ChatViewController: UIViewController {
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
         let isCompletingPhotoLibraryKeyboardSwitch = isSwitchingPhotoLibraryInputToKeyboard
             && !photoLibraryInputView.isHidden
-        let shouldStickToBottom = isCompletingPhotoLibraryKeyboardSwitch
+        let isCompletingEmojiKeyboardSwitch = isSwitchingEmojiInputToKeyboard
+            && !emojiPanelView.isHidden
+        let isCompletingCustomInputKeyboardSwitch = isCompletingPhotoLibraryKeyboardSwitch
+            || isCompletingEmojiKeyboardSwitch
+        let shouldStickToBottom = isCompletingCustomInputKeyboardSwitch
             ? shouldStickToBottomDuringKeyboardInputSwitch
             : shouldStickToBottomForLayoutChange()
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
@@ -431,16 +437,25 @@ final class ChatViewController: UIViewController {
             ?? UIView.AnimationOptions.curveEaseInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
 
-        if isCompletingPhotoLibraryKeyboardSwitch {
+        if isCompletingCustomInputKeyboardSwitch {
             inputBarKeyboardBottomConstraint?.isActive = true
             inputBarPhotoLibraryBottomConstraint?.isActive = false
+            inputBarEmojiBottomConstraint?.isActive = false
+        }
+        if isCompletingPhotoLibraryKeyboardSwitch {
             photoLibraryInputBottomConstraint?.constant = 0
+        }
+        if isCompletingEmojiKeyboardSwitch {
+            emojiPanelBottomConstraint?.constant = 0
         }
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
             if isCompletingPhotoLibraryKeyboardSwitch {
                 self.photoLibraryInputView.alpha = 0
+            }
+            if isCompletingEmojiKeyboardSwitch {
+                self.emojiPanelView.alpha = 0
             }
             self.view.layoutIfNeeded()
             if shouldStickToBottom {
@@ -453,6 +468,11 @@ final class ChatViewController: UIViewController {
                 self.photoLibraryInputView.isHidden = true
                 self.photoLibraryInputView.resetDismissGestureState()
                 self.isSwitchingPhotoLibraryInputToKeyboard = false
+                self.shouldStickToBottomDuringKeyboardInputSwitch = false
+            }
+            if isCompletingEmojiKeyboardSwitch {
+                self.emojiPanelView.isHidden = true
+                self.isSwitchingEmojiInputToKeyboard = false
                 self.shouldStickToBottomDuringKeyboardInputSwitch = false
             }
             if shouldStickToBottom {
@@ -534,6 +554,7 @@ final class ChatViewController: UIViewController {
     private func showPhotoLibraryInput() {
         let shouldStickToBottom = shouldStickToBottomForLayoutChange()
         isSwitchingPhotoLibraryInputToKeyboard = false
+        isSwitchingEmojiInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
         hideEmojiInput(animated: false)
         photoLibraryInputView.refreshAuthorization()
@@ -545,6 +566,7 @@ final class ChatViewController: UIViewController {
     private func showEmojiInput() {
         let shouldStickToBottom = shouldStickToBottomForLayoutChange()
         isSwitchingPhotoLibraryInputToKeyboard = false
+        isSwitchingEmojiInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
         hidePhotoLibraryInput(animated: false)
         viewModel.loadEmojiPanel()
@@ -552,16 +574,26 @@ final class ChatViewController: UIViewController {
         inputBarView.showEmojiInput()
     }
 
-    /// 从图片库输入面板切回系统键盘输入
+    /// 从自定义输入面板切回系统键盘输入。
     private func showKeyboardInput() {
-        hideEmojiInput(animated: false)
-        guard !photoLibraryInputView.isHidden else {
+        if !photoLibraryInputView.isHidden {
+            isSwitchingPhotoLibraryInputToKeyboard = true
+            isSwitchingEmojiInputToKeyboard = false
+            shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
+            inputBarView.showKeyboardInput()
+            return
+        }
+        if !emojiPanelView.isHidden {
+            isSwitchingPhotoLibraryInputToKeyboard = false
+            isSwitchingEmojiInputToKeyboard = true
+            shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
             inputBarView.showKeyboardInput()
             return
         }
 
-        isSwitchingPhotoLibraryInputToKeyboard = true
-        shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
+        isSwitchingPhotoLibraryInputToKeyboard = false
+        isSwitchingEmojiInputToKeyboard = false
+        shouldStickToBottomDuringKeyboardInputSwitch = false
         inputBarView.showKeyboardInput()
     }
 
