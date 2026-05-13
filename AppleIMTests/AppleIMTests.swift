@@ -6983,7 +6983,7 @@ struct AppleIMTests {
 
         let menuChildren = button(in: inputBar, identifier: "chat.moreButton")?.menu?.children ?? []
 
-        #expect(menuChildren.contains { $0.title == "Choose Photo or Video" })
+        #expect(menuChildren.contains { $0.title == "相册" })
     }
 
     @MainActor
@@ -7408,6 +7408,54 @@ struct AppleIMTests {
         let frameBeforeKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
 
         #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        window.layoutIfNeeded()
+
+        let frameAfterKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
+        #expect(abs(frameAfterKeyboardRequest.minY - frameBeforeKeyboardRequest.minY) <= 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsMoreButtonStationaryWhilePreparingKeyboardFromEmojiPanel() async throws {
+        let rows = (1...16).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "emoji_keyboard_transition_\(index)"),
+                text: "Emoji keyboard transition \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = EmojiPanelStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Emoji Keyboard")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+
+        inputBar.onEmojiTapped?()
+        window.layoutIfNeeded()
+        #expect(emojiPanel.isHidden == false)
+
+        let frameBeforeKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
+
+        #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(emojiPanel.isHidden == false)
         window.layoutIfNeeded()
 
         let frameAfterKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
