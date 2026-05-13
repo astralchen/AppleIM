@@ -641,35 +641,37 @@ struct AppleIMTests {
     }
 
     @MainActor
-    @Test func appDependencyContainerDefersStartupStorageWorkUntilConversationListLoads() async throws {
+    @Test func appDependencyContainerRefreshesBadgeWithoutConversationListGate() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
         }
 
         let storageService = TrackingAccountStorageService(rootDirectory: rootDirectory)
+        let badgeManager = CapturingApplicationBadgeManager()
         let container = try AppDependencyContainer(
-            accountID: "deferred_startup_user",
+            accountID: "direct_startup_user",
             storageService: storageService,
             database: DatabaseActor(),
             databaseKeyStore: InMemoryAccountDatabaseKeyStore(),
-            applicationBadgeManager: CapturingApplicationBadgeManager()
+            applicationBadgeManager: badgeManager
         )
 
-        container.startNetworkRecovery()
-        container.runDueJobsWhenNetworkIsReachable()
         container.refreshApplicationBadge()
-        container.runStartupDataRepair()
-        try await Task.sleep(nanoseconds: 1_000_000_000)
 
-        #expect(await storageService.prepareCallCount == 0)
+        var didCaptureBadgeRefresh = false
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        while DispatchTime.now().uptimeNanoseconds - startedAt < 5_000_000_000 {
+            if await badgeManager.values().isEmpty == false {
+                didCaptureBadgeRefresh = true
+                break
+            }
 
-        let viewController = container.makeConversationListViewController(onSelectConversation: { _ in })
-        viewController.loadViewIfNeeded()
-        viewController.viewWillAppear(false)
-        try await waitForCondition {
-            await storageService.prepareCallCount == 1
+            try await Task.sleep(nanoseconds: 10_000_000)
         }
+
+        #expect(didCaptureBadgeRefresh)
+        #expect(await storageService.prepareCallCount == 1)
     }
 
     @MainActor

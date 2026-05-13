@@ -39,11 +39,7 @@ final class AppDependencyContainer {
     let isUITesting: Bool
     /// 最近一次后台数据修复报告
     private(set) var lastDataRepairReport: DataRepairReport?
-    private var didFinishInitialConversationListLoad = false
-    private var shouldStartNetworkRecoveryAfterInitialLoad = false
-    private var shouldRunDueJobsAfterInitialLoad = false
-    private var shouldRefreshBadgeAfterInitialLoad = false
-    private var shouldRunDataRepairAfterInitialLoad = false
+    /// 网络恢复协调器启动幂等标记，避免重复订阅网络状态。
     private var didStartNetworkRecovery = false
 
     init(
@@ -104,11 +100,6 @@ final class AppDependencyContainer {
     }
 
     func startNetworkRecovery() {
-        guard didFinishInitialConversationListLoad else {
-            shouldStartNetworkRecoveryAfterInitialLoad = true
-            return
-        }
-
         startNetworkRecoveryNow()
     }
 
@@ -127,20 +118,10 @@ final class AppDependencyContainer {
     }
 
     func runDueJobsWhenNetworkIsReachable() {
-        guard didFinishInitialConversationListLoad else {
-            shouldRunDueJobsAfterInitialLoad = true
-            return
-        }
-
         networkRecoveryCoordinator.runDueJobsWhenReachable()
     }
 
     func refreshApplicationBadge() {
-        guard didFinishInitialConversationListLoad else {
-            shouldRefreshBadgeAfterInitialLoad = true
-            return
-        }
-
         refreshApplicationBadgeNow()
     }
 
@@ -157,11 +138,6 @@ final class AppDependencyContainer {
     }
 
     func runStartupDataRepair() {
-        guard didFinishInitialConversationListLoad else {
-            shouldRunDataRepairAfterInitialLoad = true
-            return
-        }
-
         runStartupDataRepairNow()
     }
 
@@ -182,34 +158,6 @@ final class AppDependencyContainer {
         }
     }
 
-    private func finishInitialConversationListLoadIfNeeded() {
-        guard !didFinishInitialConversationListLoad else {
-            return
-        }
-
-        didFinishInitialConversationListLoad = true
-
-        if shouldStartNetworkRecoveryAfterInitialLoad {
-            shouldStartNetworkRecoveryAfterInitialLoad = false
-            startNetworkRecoveryNow()
-        }
-
-        if shouldRunDueJobsAfterInitialLoad {
-            shouldRunDueJobsAfterInitialLoad = false
-            networkRecoveryCoordinator.runDueJobsWhenReachable()
-        }
-
-        if shouldRefreshBadgeAfterInitialLoad {
-            shouldRefreshBadgeAfterInitialLoad = false
-            refreshApplicationBadgeNow()
-        }
-
-        if shouldRunDataRepairAfterInitialLoad {
-            shouldRunDataRepairAfterInitialLoad = false
-            runStartupDataRepairNow()
-        }
-    }
-
     func makeConversationListViewController(
         onSelectConversation: @escaping (ConversationListRowState) -> Void
     ) -> ConversationListViewController {
@@ -227,10 +175,7 @@ final class AppDependencyContainer {
         return ConversationListViewController(
             viewModel: viewModel,
             searchViewModel: searchViewModel,
-            onSelectConversation: onSelectConversation,
-            onInitialLoadFinished: { [weak self] in
-                self?.finishInitialConversationListLoadIfNeeded()
-            }
+            onSelectConversation: onSelectConversation
         )
     }
 

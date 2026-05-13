@@ -168,17 +168,7 @@ final class ConversationListViewController: UIViewController {
         simulateIncomingButton.addTarget(self, action: #selector(simulateIncomingButtonTapped), for: .touchUpInside)
         simulateIncomingButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
 
-        let composeButton = UIButton(type: .system)
-        var composeConfiguration = UIButton.Configuration.plain()
-        composeConfiguration.image = UIImage(systemName: "square.and.pencil")
-        composeConfiguration.baseForegroundColor = .systemBlue
-        composeConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
-        composeButton.configuration = composeConfiguration
-        composeButton.accessibilityIdentifier = "conversationList.composeButton"
-        composeButton.accessibilityLabel = "New Message"
-        composeButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         navigationItem.rightBarButtonItems = [
-            UIBarButtonItem(customView: composeButton),
             UIBarButtonItem(customView: simulateIncomingButton)
         ]
 
