@@ -6564,6 +6564,58 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerDoesNotScrollInitialMessagesBeforeViewEntersWindow() async throws {
+        let rows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "initial_deferred_window_\(index)"),
+                text: "Initial deferred window message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = DeferredInitialPageStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Initial Deferred Window")
+        let viewController = ChatViewController(viewModel: viewModel)
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        useCase.releaseInitialPage()
+
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        collectionView.layoutIfNeeded()
+
+        let topOffsetY = -collectionView.adjustedContentInset.top
+        #expect(abs(collectionView.contentOffset.y - topOffsetY) <= 1)
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        collectionView.layoutIfNeeded()
+
+        let stableOffsetY = collectionView.contentOffset.y
+        viewController.viewDidLayoutSubviews()
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        #expect(abs(collectionView.contentOffset.y - stableOffsetY) <= 1)
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
     @Test func chatViewControllerAllowsManualScrollAwayFromBottomAfterBottomBounce() async throws {
         let setup = try await makeScrollableChatViewController(
             title: "Bottom Bounce",
@@ -10513,6 +10565,80 @@ private final class PagingStubChatUseCase: @unchecked Sendable, ChatUseCase {
         }
 
         return olderPage
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class DeferredInitialPageStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialPage: ChatMessagePage
+    private var initialContinuation: CheckedContinuation<ChatMessagePage, Error>?
+    private var isInitialPageReleased = false
+
+    init(initialPage: ChatMessagePage) {
+        self.initialPage = initialPage
+    }
+
+    func releaseInitialPage() {
+        isInitialPageReleased = true
+        let continuation = initialContinuation
+        initialContinuation = nil
+
+        continuation?.resume(returning: initialPage)
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        if isInitialPageReleased {
+            return initialPage
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            if isInitialPageReleased {
+                continuation.resume(returning: initialPage)
+            } else {
+                initialContinuation = continuation
+            }
+        }
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
     }
 
     func loadDraft() async throws -> String? {

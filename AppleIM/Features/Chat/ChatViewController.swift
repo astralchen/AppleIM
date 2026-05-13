@@ -72,6 +72,8 @@ final class ChatViewController: UIViewController {
     private let logger = AppLogger(category: .chat)
     /// 语音按钮触摸是否仍处于按下状态
     private var isVoiceTouchActive = false
+    /// 首屏消息已经渲染，但仍等待稳定布局后执行第一次贴底定位。
+    private var needsInitialBottomPositioning = false
     /// 用户是否仍处于贴底阅读状态；composer 高度变化时用它维持最新消息可见
     private var shouldMaintainBottomPosition = true
     /// 用户正在拖拽或减速消息列表时，暂停自动贴底，避免底部反弹后抢回滚动位置。
@@ -165,6 +167,10 @@ final class ChatViewController: UIViewController {
     /// 窗口、安全区或输入栏完成布局后，继续保持最新消息不被底部输入区遮挡。
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        if needsInitialBottomPositioning {
+            _ = resolveInitialBottomPositioningIfPossible()
+            return
+        }
         guard !isUserControllingMessageScroll, shouldMaintainBottomPosition, !lastRenderedRowIDs.isEmpty else { return }
         scrollToBottom(animated: false)
     }
@@ -1091,8 +1097,11 @@ final class ChatViewController: UIViewController {
                     CGPoint(x: self.collectionView.contentOffset.x, y: adjustedOffsetY),
                     animated: false
                 )
-            } else if isInitialMessageRender || didAppendNewMessage || wasNearBottom {
-                // 首屏、新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
+            } else if isInitialMessageRender {
+                self.needsInitialBottomPositioning = true
+                _ = self.resolveInitialBottomPositioningIfPossible()
+            } else if didAppendNewMessage || wasNearBottom {
+                // 新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: !isInitialMessageRender)
             }
 
@@ -1442,10 +1451,24 @@ final class ChatViewController: UIViewController {
             proposedOffsetY,
             visibleMessageHeight: messageVisibleHeight()
         )
+        guard abs(collectionView.contentOffset.y - targetOffsetY) > 1 else { return }
         collectionView.setContentOffset(
             CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
             animated: animated
         )
+    }
+
+    /// 首屏贴底只在视图已经入窗且输入栏完成布局后消费，避免入场阶段出现二次位移。
+    @discardableResult
+    private func resolveInitialBottomPositioningIfPossible() -> Bool {
+        guard needsInitialBottomPositioning, !lastRenderedRowIDs.isEmpty else { return false }
+        guard view.window != nil, collectionView.bounds.height > 0, inputBarView.bounds.height > 0 else {
+            return false
+        }
+
+        scrollToBottom(animated: false)
+        needsInitialBottomPositioning = false
+        return true
     }
 
     /// 最新消息可见下边界，使用 content 坐标便于和 layout attributes 对齐。
