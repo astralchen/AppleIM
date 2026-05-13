@@ -5913,6 +5913,55 @@ struct AppleIMTests {
         #expect(viewModel.currentState.rows.map(\.showsTimeSeparator) == [true, false, true])
     }
 
+    @Test func chatBridgeTimeFormatterUsesWeChatStyleMessageText() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(identifier: "Asia/Shanghai"))
+        calendar.firstWeekday = 2
+        let now = try #require(calendar.date(from: DateComponents(year: 2026, month: 5, day: 13, hour: 15, minute: 30)))
+        let todayMorning = try timestamp(year: 2026, month: 5, day: 13, hour: 9, minute: 5, calendar: calendar)
+        let yesterdayNight = try timestamp(year: 2026, month: 5, day: 12, hour: 23, minute: 10, calendar: calendar)
+        let mondayMorning = try timestamp(year: 2026, month: 5, day: 11, hour: 8, minute: 0, calendar: calendar)
+        let currentYearEarlier = try timestamp(year: 2026, month: 5, day: 1, hour: 21, minute: 2, calendar: calendar)
+        let previousYear = try timestamp(year: 2025, month: 12, day: 31, hour: 23, minute: 59, calendar: calendar)
+
+        #expect(
+            ChatBridgeTimeFormatter.messageTimeText(
+                from: todayMorning,
+                now: now,
+                calendar: calendar
+            ) == "09:05"
+        )
+        #expect(
+            ChatBridgeTimeFormatter.messageTimeText(
+                from: yesterdayNight,
+                now: now,
+                calendar: calendar
+            ) == "昨天 23:10"
+        )
+        #expect(
+            ChatBridgeTimeFormatter.messageTimeText(
+                from: mondayMorning,
+                now: now,
+                calendar: calendar
+            ) == "星期一 08:00"
+        )
+        #expect(
+            ChatBridgeTimeFormatter.messageTimeText(
+                from: currentYearEarlier,
+                now: now,
+                calendar: calendar
+            ) == "5月1日 21:02"
+        )
+        #expect(
+            ChatBridgeTimeFormatter.messageTimeText(
+                from: previousYear,
+                now: now,
+                calendar: calendar
+            ) == "2025年12月31日 23:59"
+        )
+        #expect(ChatBridgeTimeFormatter.messageTimeText(from: 0, now: now, calendar: calendar) == "")
+    }
+
     @MainActor
     @Test func chatViewModelShowsTimeSeparatorWhenMessagesCrossCalendarDay() async throws {
         let calendar = Calendar.current
@@ -6390,6 +6439,18 @@ struct AppleIMTests {
         try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             useCase.events == ["image:png", "video:mov", "image:heic", "text:Media batch"]
         }
+    }
+
+    @MainActor
+    @Test func chatViewControllerUsesConversationListBackground() throws {
+        let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Background")
+        let viewController = ChatViewController(viewModel: viewModel)
+
+        viewController.loadViewIfNeeded()
+
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        #expect(viewController.view.backgroundColor?.resolvedColor(with: traits) == UIColor.systemBackground.resolvedColor(with: traits))
+        #expect(findView(ofType: GradientBackgroundView.self, in: viewController.view) == nil)
     }
 
     @MainActor
@@ -7750,8 +7811,9 @@ struct AppleIMTests {
         let outgoing = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing.resolvedColor(with: traits)
         let incoming = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming.resolvedColor(with: traits)
 
-        #expect(outgoing == UIColor.systemBlue.resolvedColor(with: traits))
-        #expect(incoming == UIColor.systemGray5.resolvedColor(with: traits))
+        #expect(outgoing == UIColor.secondarySystemBackground.resolvedColor(with: traits))
+        #expect(incoming == UIColor.systemBackground.resolvedColor(with: traits))
+        #expect(outgoing != UIColor.systemBlue.resolvedColor(with: traits))
         #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageBubble == 18)
         #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageMedia == 20)
         #expect(ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment == 16)
@@ -7774,6 +7836,26 @@ struct AppleIMTests {
 
         #expect(bubbleView.layer.cornerRadius == 0)
         #expect(bubbleView.layer.masksToBounds == false)
+    }
+
+    @MainActor
+    @Test func chatBubbleTailOverlapsRoundedBodyAtConnection() {
+        let bounds = CGRect(x: 0, y: 0, width: 128, height: 46)
+        let outgoingPath = ChatBubbleBackgroundView.maskPath(in: bounds, style: .outgoing)
+        let incomingPath = ChatBubbleBackgroundView.maskPath(in: bounds, style: .incoming)
+
+        #expect(outgoingPath.contains(CGPoint(x: bounds.maxX - 6, y: bounds.maxY - 13)))
+        #expect(outgoingPath.contains(CGPoint(x: bounds.maxX - 6, y: bounds.maxY - 10)))
+        #expect(incomingPath.contains(CGPoint(x: bounds.minX + 6, y: bounds.maxY - 13)))
+        #expect(incomingPath.contains(CGPoint(x: bounds.minX + 6, y: bounds.maxY - 10)))
+    }
+
+    @MainActor
+    @Test func chatBubbleTailUsesContinuousMaskPath() {
+        let bounds = CGRect(x: 0, y: 0, width: 128, height: 46)
+
+        #expect(moveElementCount(in: ChatBubbleBackgroundView.maskPath(in: bounds, style: .outgoing)) == 1)
+        #expect(moveElementCount(in: ChatBubbleBackgroundView.maskPath(in: bounds, style: .incoming)) == 1)
     }
 
     @MainActor
@@ -7994,6 +8076,68 @@ struct AppleIMTests {
 
         #expect(abs(timeCenterX - cell.contentView.bounds.midX) < 1)
         #expect(timeFrame.maxY < bubbleFrame.minY)
+    }
+
+    @MainActor
+    @Test func chatMessageCellShowsOutgoingAvatarOnRight() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = makeChatRow(
+            id: "outgoing_avatar",
+            text: "发送者头像",
+            sortSequence: 1,
+            senderAvatarURL: "file:///tmp/current-avatar.png",
+            isOutgoing: true
+        )
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        let avatarView = try #require(findView(ofType: GradientBackgroundView.self, in: cell))
+        let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+        let avatarFrame = avatarView.convert(avatarView.bounds, to: cell.contentView)
+        let bubbleFrame = bubbleView.convert(bubbleView.bounds, to: cell.contentView)
+
+        #expect(avatarView.isHidden == false)
+        #expect(avatarFrame.minX > bubbleFrame.maxX)
+    }
+
+    @MainActor
+    @Test func chatMessageCellShowsIncomingAvatarOnLeft() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = makeChatRow(
+            id: "incoming_avatar",
+            text: "对方头像",
+            sortSequence: 1,
+            senderAvatarURL: "file:///tmp/friend-avatar.png",
+            isOutgoing: false
+        )
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        let avatarView = try #require(findView(ofType: GradientBackgroundView.self, in: cell))
+        let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+        let avatarFrame = avatarView.convert(avatarView.bounds, to: cell.contentView)
+        let bubbleFrame = bubbleView.convert(bubbleView.bounds, to: cell.contentView)
+
+        #expect(avatarView.isHidden == false)
+        #expect(avatarFrame.maxX < bubbleFrame.minX)
+    }
+
+    @MainActor
+    @Test func chatMessageCellHidesAvatarForRevokedMessage() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = makeRevokedRow(id: "revoked_avatar", sortSequence: 1)
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        let avatarView = try #require(findView(ofType: GradientBackgroundView.self, in: cell))
+
+        #expect(avatarView.isHidden)
     }
 
     @MainActor
@@ -11061,7 +11205,9 @@ private func makeChatRow(
     id: MessageID,
     text: String,
     sortSequence: Int64,
-    sentAt: Int64 = 0
+    sentAt: Int64 = 0,
+    senderAvatarURL: String? = nil,
+    isOutgoing: Bool = true
 ) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
@@ -11071,11 +11217,36 @@ private func makeChatRow(
         timeText: "Now",
         statusText: nil,
         uploadProgress: nil,
-        isOutgoing: true,
+        senderAvatarURL: senderAvatarURL,
+        isOutgoing: isOutgoing,
         canRetry: false,
         canDelete: true,
         canRevoke: false
     )
+}
+
+private func timestamp(
+    year: Int,
+    month: Int,
+    day: Int,
+    hour: Int,
+    minute: Int,
+    calendar: Calendar
+) throws -> Int64 {
+    let date = try #require(
+        calendar.date(
+            from: DateComponents(
+                calendar: calendar,
+                timeZone: calendar.timeZone,
+                year: year,
+                month: month,
+                day: day,
+                hour: hour,
+                minute: minute
+            )
+        )
+    )
+    return Int64(date.timeIntervalSince1970)
 }
 
 private func makeRevokedChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
@@ -11698,6 +11869,16 @@ private func databaseReadFails(using databaseActor: DatabaseActor, paths: Accoun
     } catch {
         return true
     }
+}
+
+private func moveElementCount(in path: UIBezierPath) -> Int {
+    var count = 0
+    path.cgPath.applyWithBlock { elementPointer in
+        if elementPointer.pointee.type == .moveToPoint {
+            count += 1
+        }
+    }
+    return count
 }
 
 private func waitForCondition(

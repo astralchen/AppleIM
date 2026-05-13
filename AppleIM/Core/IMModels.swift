@@ -7,6 +7,79 @@
 
 import Foundation
 
+/// ChatBridge 时间文案格式化工具。
+nonisolated enum ChatBridgeTimeFormatter {
+    /// 按微信式层级格式化消息或会话时间。
+    nonisolated static func messageTimeText(
+        from timestamp: Int64,
+        now: Date = Date(),
+        calendar inputCalendar: Calendar = .current
+    ) -> String {
+        guard timestamp > 0 else {
+            return ""
+        }
+
+        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
+        let calendar = inputCalendar
+        let clockText = timeText(from: date, calendar: calendar)
+
+        if calendar.isDate(date, inSameDayAs: now) {
+            return clockText
+        }
+
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: now)),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "昨天 \(clockText)"
+        }
+
+        if isDateInSameWeek(date, as: now, calendar: calendar) {
+            return "\(weekdayText(from: date, calendar: calendar)) \(clockText)"
+        }
+
+        let dateComponents = calendar.dateComponents([.year, .month, .day], from: date)
+        let nowComponents = calendar.dateComponents([.year], from: now)
+        let month = dateComponents.month ?? 1
+        let day = dateComponents.day ?? 1
+
+        if dateComponents.year == nowComponents.year {
+            return "\(month)月\(day)日 \(clockText)"
+        }
+
+        return "\((dateComponents.year ?? 0))年\(month)月\(day)日 \(clockText)"
+    }
+
+    nonisolated private static func timeText(from date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
+    }
+
+    nonisolated private static func isDateInSameWeek(_ date: Date, as now: Date, calendar: Calendar) -> Bool {
+        let dateComponents = calendar.dateComponents([.weekOfYear, .yearForWeekOfYear], from: date)
+        let nowComponents = calendar.dateComponents([.weekOfYear, .yearForWeekOfYear], from: now)
+        return dateComponents.weekOfYear == nowComponents.weekOfYear
+            && dateComponents.yearForWeekOfYear == nowComponents.yearForWeekOfYear
+    }
+
+    nonisolated private static func weekdayText(from date: Date, calendar: Calendar) -> String {
+        switch calendar.component(.weekday, from: date) {
+        case 1:
+            return "星期日"
+        case 2:
+            return "星期一"
+        case 3:
+            return "星期二"
+        case 4:
+            return "星期三"
+        case 5:
+            return "星期四"
+        case 6:
+            return "星期五"
+        default:
+            return "星期六"
+        }
+    }
+}
+
 /// 会话类型枚举
 ///
 /// 对应数据库 `conversation.biz_type` 字段

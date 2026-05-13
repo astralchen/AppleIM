@@ -55,14 +55,18 @@ enum ChatBridgeDesignSystem {
             }
         }
 
-        /// Apple Messages 风格的发出消息蓝色
-        static let appleMessageOutgoing = UIColor.systemBlue
+        /// 参照会话列表的发出消息中性背景
+        static let appleMessageOutgoing = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.secondarySystemGroupedBackground
+                : UIColor.secondarySystemBackground
+        }
 
-        /// Apple Messages 风格的收到消息灰色
+        /// 参照会话列表的收到消息卡片背景
         static let appleMessageIncoming = UIColor { traits in
             traits.userInterfaceStyle == .dark
-                ? UIColor.tertiarySystemFill
-                : UIColor.systemGray5
+                ? UIColor.tertiarySystemGroupedBackground
+                : UIColor.systemBackground
         }
 
         /// Apple Messages 风格的附件卡片背景
@@ -90,6 +94,11 @@ enum ChatBridgeDesignSystem {
         static let brandButton = [ColorToken.mint, ColorToken.sky]
         /// 默认头像渐变
         static let playfulAvatar = [ColorToken.coral, ColorToken.sky]
+        /// 会话列表同款低饱和默认头像
+        static var neutralAvatar: [UIColor] {
+            let color = UIColor.tertiarySystemFill
+            return [color, color]
+        }
     }
 
     /// 圆角令牌
@@ -453,53 +462,105 @@ final class ChatBubbleBackgroundView: UIView {
     static func maskPath(in bounds: CGRect, style: Style) -> UIBezierPath {
         let radius = ChatBridgeDesignSystem.RadiusToken.appleMessageBubble
         let tailWidth: CGFloat = 7
-        let rect: CGRect
 
         switch style {
         case .outgoing:
-            rect = bounds.inset(by: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: tailWidth))
+            let rect = bounds.inset(by: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: tailWidth))
+            return outgoingMaskPath(in: bounds, bodyRect: rect, radius: radius)
         case .incoming:
-            rect = bounds.inset(by: UIEdgeInsets(top: 0, left: tailWidth, bottom: 0, right: 0))
+            let rect = bounds.inset(by: UIEdgeInsets(top: 0, left: tailWidth, bottom: 0, right: 0))
+            return incomingMaskPath(in: bounds, bodyRect: rect, radius: radius)
         case .media, .revoked:
             return UIBezierPath(roundedRect: bounds, cornerRadius: radius)
         }
+    }
 
-        let path = UIBezierPath(roundedRect: rect, cornerRadius: radius)
+    private static func outgoingMaskPath(in bounds: CGRect, bodyRect rect: CGRect, radius: CGFloat) -> UIBezierPath {
+        let cornerRadius = min(radius, rect.width / 2, rect.height / 2)
         let maxY = rect.maxY
-        let tailTopY = maxY - min(16, rect.height * 0.42)
+        let tailTopY = maxY - min(18, rect.height * 0.40)
         let tailTipY = maxY - min(10, rect.height * 0.28)
-        let tailBottomY = maxY - min(6, rect.height * 0.18)
+        let tailBottomY = maxY - min(4, rect.height * 0.10)
+        let tailRootX = rect.maxX - cornerRadius * 0.38
 
-        switch style {
-        case .outgoing:
-            path.move(to: CGPoint(x: rect.maxX - 1, y: tailTopY))
-            path.addCurve(
-                to: CGPoint(x: bounds.maxX, y: tailTipY),
-                controlPoint1: CGPoint(x: rect.maxX + 3, y: tailTopY + 1),
-                controlPoint2: CGPoint(x: bounds.maxX - 1, y: tailTipY - 2)
-            )
-            path.addCurve(
-                to: CGPoint(x: rect.maxX - 3, y: tailBottomY),
-                controlPoint1: CGPoint(x: bounds.maxX - 1, y: tailTipY + 2),
-                controlPoint2: CGPoint(x: rect.maxX + 2, y: tailBottomY)
-            )
-            path.close()
-        case .incoming:
-            path.move(to: CGPoint(x: rect.minX + 1, y: tailTopY))
-            path.addCurve(
-                to: CGPoint(x: bounds.minX, y: tailTipY),
-                controlPoint1: CGPoint(x: rect.minX - 3, y: tailTopY + 1),
-                controlPoint2: CGPoint(x: bounds.minX + 1, y: tailTipY - 2)
-            )
-            path.addCurve(
-                to: CGPoint(x: rect.minX + 3, y: tailBottomY),
-                controlPoint1: CGPoint(x: bounds.minX + 1, y: tailTipY + 2),
-                controlPoint2: CGPoint(x: rect.minX - 2, y: tailBottomY)
-            )
-            path.close()
-        case .media, .revoked:
-            break
-        }
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + cornerRadius),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: tailTopY))
+        path.addCurve(
+            to: CGPoint(x: bounds.maxX, y: tailTipY),
+            controlPoint1: CGPoint(x: rect.maxX + 3, y: tailTopY + 2),
+            controlPoint2: CGPoint(x: bounds.maxX - 1, y: tailTipY - 3)
+        )
+        path.addCurve(
+            to: CGPoint(x: tailRootX, y: tailBottomY),
+            controlPoint1: CGPoint(x: bounds.maxX - 1, y: tailTipY + 3),
+            controlPoint2: CGPoint(x: rect.maxX - 3, y: tailBottomY)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY),
+            controlPoint: CGPoint(x: rect.maxX - cornerRadius * 0.45, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - cornerRadius),
+            controlPoint: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY),
+            controlPoint: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.close()
+
+        return path
+    }
+
+    private static func incomingMaskPath(in bounds: CGRect, bodyRect rect: CGRect, radius: CGFloat) -> UIBezierPath {
+        let cornerRadius = min(radius, rect.width / 2, rect.height / 2)
+        let maxY = rect.maxY
+        let tailTopY = maxY - min(18, rect.height * 0.40)
+        let tailTipY = maxY - min(10, rect.height * 0.28)
+        let tailBottomY = maxY - min(4, rect.height * 0.10)
+        let tailRootX = rect.minX + cornerRadius * 0.38
+
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius),
+            controlPoint: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: tailTopY))
+        path.addCurve(
+            to: CGPoint(x: bounds.minX, y: tailTipY),
+            controlPoint1: CGPoint(x: rect.minX - 3, y: tailTopY + 2),
+            controlPoint2: CGPoint(x: bounds.minX + 1, y: tailTipY - 3)
+        )
+        path.addCurve(
+            to: CGPoint(x: tailRootX, y: tailBottomY),
+            controlPoint1: CGPoint(x: bounds.minX + 1, y: tailTipY + 3),
+            controlPoint2: CGPoint(x: rect.minX + 3, y: tailBottomY)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY),
+            controlPoint: CGPoint(x: rect.minX + cornerRadius * 0.45, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - cornerRadius),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.close()
 
         return path
     }

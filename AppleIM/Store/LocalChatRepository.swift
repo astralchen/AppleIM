@@ -1856,11 +1856,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             return ""
         }
 
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return ChatBridgeTimeFormatter.messageTimeText(from: timestamp)
     }
 
     private func upsertBadgeSetting(userID: UserID, column: String, value: Bool) async throws {

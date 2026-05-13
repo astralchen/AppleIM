@@ -231,11 +231,7 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     }
 
     private static func timeText(from timestamp: Int64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(timestamp))
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
+        ChatBridgeTimeFormatter.messageTimeText(from: timestamp)
     }
 
     private static func shortLogID(_ rawValue: String) -> String {

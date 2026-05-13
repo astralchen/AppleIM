@@ -803,7 +803,10 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
 
     private var incomingAvatarLeadingConstraint: NSLayoutConstraint?
     private var incomingBubbleLeadingConstraint: NSLayoutConstraint?
+    private var outgoingAvatarTrailingConstraint: NSLayoutConstraint?
+    private var outgoingBubbleTrailingToAvatarConstraint: NSLayoutConstraint?
     private var outgoingBubbleTrailingConstraint: NSLayoutConstraint?
+    private var neutralBubbleCenterXConstraint: NSLayoutConstraint?
     private var metadataTopConstraint: NSLayoutConstraint?
     private var bubbleTopConstraint: NSLayoutConstraint?
     private var bubbleTopWithoutMetadataConstraint: NSLayoutConstraint?
@@ -925,9 +928,9 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
             : (isMedia ? .media : (row.isOutgoing ? .outgoing : .incoming))
         bubbleView.apply(style: bubbleStyle)
 
-        let foregroundColor: UIColor = row.isOutgoing && !isRevoked ? .white : .label
-        let secondaryColor: UIColor = row.isOutgoing && !isRevoked ? .white.withAlphaComponent(0.75) : .secondaryLabel
-        let tintColor: UIColor = row.isOutgoing && !isRevoked ? .white : ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
+        let foregroundColor: UIColor = isRevoked ? .secondaryLabel : .label
+        let secondaryColor: UIColor = .secondaryLabel
+        let tintColor: UIColor = .systemBlue
         let contentStyle = ChatMessageContentStyle(
             textColor: foregroundColor,
             secondaryTextColor: secondaryColor,
@@ -947,7 +950,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         metadataLabel.isHidden = !showsMetadataText
         metadataLabel.textColor = .secondaryLabel
         retryButton.isHidden = !row.canRetry
-        retryButton.tintColor = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing
+        retryButton.tintColor = .systemBlue
         retryButton.accessibilityIdentifier = "chat.retryButton.\(row.id.rawValue)"
         metadataStackView.isHidden = !showsMetadata
         metadataHiddenHeightConstraint?.isActive = !showsMetadata
@@ -955,9 +958,13 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         bubbleTopConstraint?.isActive = showsMetadata
         bubbleTopWithoutMetadataConstraint?.isActive = !showsMetadata
 
-        incomingAvatarLeadingConstraint?.isActive = !row.isOutgoing
-        incomingBubbleLeadingConstraint?.isActive = !row.isOutgoing
-        outgoingBubbleTrailingConstraint?.isActive = row.isOutgoing
+        let showsAvatar = !isRevoked
+        incomingAvatarLeadingConstraint?.isActive = showsAvatar && !row.isOutgoing
+        incomingBubbleLeadingConstraint?.isActive = showsAvatar && !row.isOutgoing
+        outgoingAvatarTrailingConstraint?.isActive = showsAvatar && row.isOutgoing
+        outgoingBubbleTrailingToAvatarConstraint?.isActive = showsAvatar && row.isOutgoing
+        outgoingBubbleTrailingConstraint?.isActive = !showsAvatar && row.isOutgoing
+        neutralBubbleCenterXConstraint?.isActive = !showsAvatar && !row.isOutgoing
     }
 
     private func configureContent(
@@ -1005,7 +1012,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         backgroundColor = .clear
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
-        avatarView.setColors(ChatBridgeDesignSystem.GradientToken.playfulAvatar)
+        avatarView.setColors(ChatBridgeDesignSystem.GradientToken.neutralAvatar)
         avatarView.layer.cornerRadius = 15
         avatarView.layer.masksToBounds = true
         avatarView.isAccessibilityElement = false
@@ -1019,7 +1026,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         avatarInitialLabel.translatesAutoresizingMaskIntoConstraints = false
         avatarInitialLabel.font = .preferredFont(forTextStyle: .caption1)
         avatarInitialLabel.adjustsFontForContentSizeCategory = true
-        avatarInitialLabel.textColor = .white
+        avatarInitialLabel.textColor = .secondaryLabel
         avatarInitialLabel.textAlignment = .center
         avatarInitialLabel.isAccessibilityElement = false
 
@@ -1060,7 +1067,10 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
 
         incomingAvatarLeadingConstraint = avatarView.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor)
         incomingBubbleLeadingConstraint = bubbleView.leadingAnchor.constraint(equalTo: avatarView.trailingAnchor, constant: 8)
+        outgoingAvatarTrailingConstraint = avatarView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor)
+        outgoingBubbleTrailingToAvatarConstraint = bubbleView.trailingAnchor.constraint(equalTo: avatarView.leadingAnchor, constant: -8)
         outgoingBubbleTrailingConstraint = bubbleView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor)
+        neutralBubbleCenterXConstraint = bubbleView.centerXAnchor.constraint(equalTo: centerXAnchor)
 
         let metadataTopConstraint = metadataStackView.topAnchor.constraint(equalTo: topAnchor, constant: 4)
         let bubbleTopConstraint = bubbleView.topAnchor.constraint(equalTo: metadataStackView.bottomAnchor, constant: 4)
@@ -1117,7 +1127,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         avatarDataTask?.cancel()
         avatarDataTask = nil
         expectedAvatarURL = row.senderAvatarURL
-        avatarView.isHidden = row.isOutgoing
+        avatarView.isHidden = row.content.kind == .revoked
         avatarInitialLabel.text = row.isOutgoing ? "Me" : "C"
         avatarImageView.image = nil
         avatarImageView.isHidden = true

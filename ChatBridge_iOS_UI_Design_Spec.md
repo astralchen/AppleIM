@@ -42,8 +42,8 @@ Ink:               #111827
 消息气泡：
 
 ```text
-Outgoing bubble:   #27D9A5 -> #3B82F6
-Incoming bubble:   white / system material
+Outgoing bubble:   secondarySystemBackground
+Incoming bubble:   systemBackground / system material
 Unread badge:      #FF5A7A
 ```
 
@@ -110,8 +110,11 @@ iOS 15-25：
 ### 4.3 聊天页
 
 - 背景使用低饱和渐变，聊天内容区域保持清爽。
-- 对方消息使用白色 / system material 卡片。
-- 自己消息使用 Mint-Sky 渐变气泡。
+- 消息行整体配色参照会话列表：低饱和系统背景、系统蓝轻强调、文字使用系统主次文字色。
+- 所有非撤回消息都显示发送者头像：对方消息头像在左侧，自己发送消息头像在右侧。
+- 撤回消息不显示头像，不保留头像占位，使用中性提示样式。
+- 对方消息使用 systemBackground / system material 卡片。
+- 自己消息使用 secondarySystemBackground 中性气泡，不使用强品牌渐变。
 - 图片 / 视频消息使用大圆角预览。
 - 语音消息使用播放图标、时长和轻量状态标识，强化娱乐感。
 - 底部输入栏采用 Apple Messages 风格：

@@ -89,8 +89,6 @@ final class ChatViewController: UIViewController {
         case emoji
     }
 
-    /// 渐变背景
-    private let backgroundView = GradientBackgroundView()
     /// 消息 collection view
     private lazy var collectionView = UICollectionView(
         frame: .zero,
@@ -162,6 +160,13 @@ final class ChatViewController: UIViewController {
         viewModel.load()
     }
 
+    /// 窗口、安全区或输入栏完成布局后，继续保持最新消息不被底部输入区遮挡。
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard shouldMaintainBottomPosition, !lastRenderedRowIDs.isEmpty else { return }
+        scrollToBottom(animated: false)
+    }
+
     /// 页面消失时停止播放、取消任务并保存草稿
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
@@ -174,9 +179,7 @@ final class ChatViewController: UIViewController {
 
     /// 创建聊天页视图层级和约束
     private func configureView() {
-        view.backgroundColor = .systemGroupedBackground
-        backgroundView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(backgroundView)
+        view.backgroundColor = .systemBackground
 
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.backgroundColor = .clear
@@ -262,11 +265,6 @@ final class ChatViewController: UIViewController {
         self.emojiPanelBottomConstraint = emojiPanelBottomConstraint
 
         NSLayoutConstraint.activate([
-            backgroundView.topAnchor.constraint(equalTo: view.topAnchor),
-            backgroundView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            backgroundView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            backgroundView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-
             topBannerStackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             topBannerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             topBannerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
