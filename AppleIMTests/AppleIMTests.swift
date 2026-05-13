@@ -7463,6 +7463,100 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsPhotoLibraryPanelVisibleWhileSwitchingToEmojiPanel() async throws {
+        let rows = (1...16).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "photo_to_emoji_transition_\(index)"),
+                text: "Photo to emoji transition \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = EmojiPanelStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Photo To Emoji")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: viewController.view))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+
+        inputBar.onPhotoTapped?()
+        window.layoutIfNeeded()
+        #expect(photoPanel.isHidden == false)
+
+        inputBar.onEmojiTapped?()
+        window.layoutIfNeeded()
+
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        let emojiPanelFrame = emojiPanel.convert(emojiPanel.bounds, to: viewController.view)
+        #expect(photoPanel.isHidden == false)
+        #expect(emojiPanel.isHidden == false)
+        #expect(abs(inputBarFrame.maxY - (emojiPanelFrame.minY - 8)) <= 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsEmojiPanelVisibleWhileSwitchingToPhotoLibraryPanel() async throws {
+        let rows = (1...16).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "emoji_to_photo_transition_\(index)"),
+                text: "Emoji to photo transition \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = EmojiPanelStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Emoji To Photo")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: viewController.view))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+
+        inputBar.onEmojiTapped?()
+        window.layoutIfNeeded()
+        #expect(emojiPanel.isHidden == false)
+
+        inputBar.onPhotoTapped?()
+        window.layoutIfNeeded()
+
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        let photoPanelFrame = photoPanel.convert(photoPanel.bounds, to: viewController.view)
+        #expect(emojiPanel.isHidden == false)
+        #expect(photoPanel.isHidden == false)
+        #expect(abs(inputBarFrame.maxY - (photoPanelFrame.minY - 8)) <= 1)
+    }
+
+    @MainActor
     @Test func chatPhotoLibraryInputDismissesAfterDownwardPanThreshold() throws {
         #expect(ChatPhotoLibraryInputView.shouldDismissForPan(translationY: 93, velocityY: 0))
         #expect(ChatPhotoLibraryInputView.shouldDismissForPan(translationY: 12, velocityY: 781))

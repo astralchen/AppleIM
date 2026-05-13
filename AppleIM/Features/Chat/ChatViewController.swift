@@ -81,6 +81,14 @@ final class ChatViewController: UIViewController {
     /// 自定义输入面板切换到系统键盘期间是否需要保持列表贴底。
     private var shouldStickToBottomDuringKeyboardInputSwitch = false
 
+    /// 自定义输入面板类型。
+    private enum CustomInputPanel {
+        /// 图片库面板。
+        case photoLibrary
+        /// 表情面板。
+        case emoji
+    }
+
     /// 渐变背景
     private let backgroundView = GradientBackgroundView()
     /// 消息 collection view
@@ -556,8 +564,19 @@ final class ChatViewController: UIViewController {
         isSwitchingPhotoLibraryInputToKeyboard = false
         isSwitchingEmojiInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
-        hideEmojiInput(animated: false)
         photoLibraryInputView.refreshAuthorization()
+
+        if !emojiPanelView.isHidden {
+            switchCustomInputPanel(
+                from: .emoji,
+                to: .photoLibrary,
+                shouldStickToBottom: shouldStickToBottom
+            )
+            inputBarView.showPhotoLibraryInput()
+            return
+        }
+
+        hideEmojiInput(animated: false)
         setPhotoLibraryInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
         inputBarView.showPhotoLibraryInput()
     }
@@ -568,8 +587,19 @@ final class ChatViewController: UIViewController {
         isSwitchingPhotoLibraryInputToKeyboard = false
         isSwitchingEmojiInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
-        hidePhotoLibraryInput(animated: false)
         viewModel.loadEmojiPanel()
+
+        if !photoLibraryInputView.isHidden {
+            switchCustomInputPanel(
+                from: .photoLibrary,
+                to: .emoji,
+                shouldStickToBottom: shouldStickToBottom
+            )
+            inputBarView.showEmojiInput()
+            return
+        }
+
+        hidePhotoLibraryInput(animated: false)
         setEmojiInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
         inputBarView.showEmojiInput()
     }
@@ -615,6 +645,85 @@ final class ChatViewController: UIViewController {
             shouldStickToBottom: shouldStickToBottomForLayoutChange(),
             completion: completion
         )
+    }
+
+    /// 在两个自定义输入面板之间直接切换，避免先回落到键盘约束导致输入栏抖动。
+    private func switchCustomInputPanel(
+        from source: CustomInputPanel,
+        to target: CustomInputPanel,
+        shouldStickToBottom: Bool
+    ) {
+        switch target {
+        case .photoLibrary:
+            photoLibraryInputView.isHidden = false
+            photoLibraryInputView.resetDismissGestureState()
+            photoLibraryInputBottomConstraint?.constant = 0
+            inputBarPhotoLibraryBottomConstraint?.constant = -8
+        case .emoji:
+            emojiPanelView.isHidden = false
+            emojiPanelBottomConstraint?.constant = 0
+            inputBarEmojiBottomConstraint?.constant = -8
+        }
+
+        inputBarKeyboardBottomConstraint?.isActive = false
+        inputBarPhotoLibraryBottomConstraint?.isActive = target == .photoLibrary
+        inputBarEmojiBottomConstraint?.isActive = target == .emoji
+
+        let sourceView: UIView
+        let targetView: UIView
+        switch source {
+        case .photoLibrary:
+            sourceView = photoLibraryInputView
+        case .emoji:
+            sourceView = emojiPanelView
+        }
+        switch target {
+        case .photoLibrary:
+            targetView = photoLibraryInputView
+        case .emoji:
+            targetView = emojiPanelView
+        }
+
+        sourceView.isHidden = false
+        sourceView.alpha = 1
+
+        let layoutChanges = { [weak self] in
+            guard let self else { return }
+            sourceView.alpha = 0
+            targetView.alpha = 1
+            self.view.layoutIfNeeded()
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+        }
+        let completion: (Bool) -> Void = { [weak self] _ in
+            guard let self else { return }
+            self.hideInactiveCustomInputPanel(source)
+            if shouldStickToBottom {
+                self.scrollToBottom(animated: false)
+            }
+        }
+
+        UIView.animate(
+            withDuration: 0.25,
+            delay: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction],
+            animations: layoutChanges,
+            completion: completion
+        )
+    }
+
+    /// 只隐藏已经不是当前输入目标的旧面板，避免快速连续切换时误藏新目标。
+    private func hideInactiveCustomInputPanel(_ panel: CustomInputPanel) {
+        switch panel {
+        case .photoLibrary:
+            guard inputBarPhotoLibraryBottomConstraint?.isActive != true else { return }
+            photoLibraryInputView.isHidden = true
+            photoLibraryInputView.resetDismissGestureState()
+        case .emoji:
+            guard inputBarEmojiBottomConstraint?.isActive != true else { return }
+            emojiPanelView.isHidden = true
+        }
     }
 
     /// 切换图片库输入面板布局
