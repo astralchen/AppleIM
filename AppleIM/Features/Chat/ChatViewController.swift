@@ -88,6 +88,8 @@ final class ChatViewController: UIViewController {
     private var pendingInputBarLayoutTransaction: MessageLayoutTransaction?
     /// 动画贴底校正代次；用户开始拖动后让旧的延迟校正失效。
     private var bottomPositionCorrectionGeneration = 0
+    /// 历史消息插入锚点校正代次；用户继续滚动后让旧的延迟校正失效。
+    private var prependScrollAnchorCorrectionGeneration = 0
 #if DEBUG
     /// 测试用：记录最近一次贴底滚动是否请求动画。
     private(set) var lastScrollToBottomRequestedAnimationForTesting: Bool?
@@ -107,6 +109,16 @@ final class ChatViewController: UIViewController {
         let shouldStickToBottom: Bool
         /// 不贴底时保留用户当前阅读位置，避免输入栏变化把历史消息推走。
         let previousContentOffset: CGPoint
+    }
+
+    /// 上拉加载历史消息时用于保持阅读位置的旧消息锚点。
+    private struct MessagePrependScrollAnchor {
+        /// 快照前仍在屏幕内的旧消息 ID。
+        let rowID: String
+        /// 快照前该旧消息在 collection view 内容坐标内的顶部位置。
+        let previousMinY: CGFloat
+        /// 快照前的滚动位置；恢复时在这个基础上叠加锚点位移。
+        let previousContentOffsetY: CGFloat
     }
 
     /// 消息 collection view
@@ -1055,13 +1067,9 @@ final class ChatViewController: UIViewController {
 
     /// 串行应用消息列表快照；调用方负责保证同一时间只有一次 apply 正在进行。
     private func renderMessageSnapshot(_ state: ChatViewState, completion: @escaping () -> Void) {
-        updateCollectionViewOverlayInsets()
         // 在应用新快照前记录旧列表状态，用于判断本次渲染属于首屏、上拉加载还是新消息追加。
         let previousRowsByID = rowsByID
         let previousRowIDs = lastRenderedRowIDs
-        let previousContentHeight = collectionView.contentSize.height
-        let previousContentOffsetY = collectionView.contentOffset.y
-        let layoutTransaction = beginMessageLayoutTransaction()
 
         // Diffable data source 的 item identifier 使用消息 ID；内容变化通过 changedRowIDs 触发 reload。
         let newRowIDs = state.rows.map { $0.id.rawValue }
@@ -1070,6 +1078,26 @@ final class ChatViewController: UIViewController {
             && newRowIDs.first != previousRowIDs.first
         let didAppendNewMessage = previousRowIDs.last.map { newRowIDs.contains($0) } == true
             && newRowIDs.last != previousRowIDs.last
+        let previousContentHeight: CGFloat
+        let previousContentOffsetY: CGFloat
+        let layoutTransaction: MessageLayoutTransaction
+        let prependScrollAnchor: MessagePrependScrollAnchor?
+        if isPrependingOlderMessages {
+            collectionView.layoutIfNeeded()
+            // 上拉历史分页说明用户正在读旧消息，此时不能再沿用贴底状态，
+            // 否则刷新 overlay inset 会先把列表拉到底部，导致捕获到错误锚点。
+            shouldMaintainBottomPosition = false
+            previousContentHeight = collectionView.contentSize.height
+            previousContentOffsetY = collectionView.contentOffset.y
+            layoutTransaction = beginMessageLayoutTransaction()
+            prependScrollAnchor = capturePrependingOlderMessagesAnchor(previousRowIDs: previousRowIDs, newRowIDs: newRowIDs)
+        } else {
+            updateCollectionViewOverlayInsets()
+            previousContentHeight = collectionView.contentSize.height
+            previousContentOffsetY = collectionView.contentOffset.y
+            layoutTransaction = beginMessageLayoutTransaction()
+            prependScrollAnchor = nil
+        }
         let changedRowIDs = state.rows.compactMap { row -> String? in
             let id = row.id.rawValue
             return previousRowsByID[id] == row ? nil : id
@@ -1096,21 +1124,31 @@ final class ChatViewController: UIViewController {
             changedRowIDs: changedRowIDs
         )
 
-        let shouldAnimateSnapshot = !isInitialMessageRender && !didAppendNewMessage
+        let shouldAnimateSnapshot = !isInitialMessageRender && !didAppendNewMessage && !isPrependingOlderMessages
         dataSource.apply(snapshot, animatingDifferences: shouldAnimateSnapshot) { [weak self] in
             guard let self else { return }
 
             self.collectionView.layoutIfNeeded()
-            self.updateCollectionViewOverlayInsets()
+            if !isPrependingOlderMessages {
+                self.updateCollectionViewOverlayInsets()
+            }
 
             // 上拉加载历史消息时，保持用户当前看到的第一条附近内容不跳动。
             if isPrependingOlderMessages {
-                let heightDelta = self.collectionView.contentSize.height - previousContentHeight
-                let adjustedOffsetY = previousContentOffsetY + heightDelta
-                self.collectionView.setContentOffset(
-                    CGPoint(x: self.collectionView.contentOffset.x, y: adjustedOffsetY),
-                    animated: false
-                )
+                if let prependScrollAnchor {
+                    self.schedulePrependingOlderMessagesAnchorCorrection(
+                        prependScrollAnchor,
+                        newRowIDs: newRowIDs
+                    )
+                } else {
+                    // 锚点不可用时保留旧策略作为兜底，避免极端布局状态下完全丢失补偿。
+                    let heightDelta = self.collectionView.contentSize.height - previousContentHeight
+                    let adjustedOffsetY = previousContentOffsetY + heightDelta
+                    self.collectionView.setContentOffset(
+                        CGPoint(x: self.collectionView.contentOffset.x, y: adjustedOffsetY),
+                        animated: false
+                    )
+                }
             } else if isInitialMessageRender {
                 self.needsInitialBottomPositioning = true
                 if !self.resolveInitialBottomPositioningIfPossible() {
@@ -1126,6 +1164,7 @@ final class ChatViewController: UIViewController {
             } else {
                 // 删除、撤回或收到对方消息时，用户若已经离开底部，保留原阅读位置。
                 self.preserveMessageContentOffsetIfNeeded(layoutTransaction)
+                self.scheduleMessageContentOffsetPreservationIfNeeded(layoutTransaction)
             }
 
             self.logger.debug(
@@ -1274,6 +1313,130 @@ final class ChatViewController: UIViewController {
         }
 
         return snapshot
+    }
+
+    /// 捕获历史消息插入前的可见旧消息锚点。
+    ///
+    /// 不能只依赖 `contentSize` 高度差，因为 prepend 后旧消息的时间分隔符可能重算，
+    /// 已存在 cell 自身高度会变化；用可见旧消息的内容坐标做锚点，才能保持屏幕位置稳定。
+    private func capturePrependingOlderMessagesAnchor(
+        previousRowIDs: [String],
+        newRowIDs: [String]
+    ) -> MessagePrependScrollAnchor? {
+        let newIDSet = Set(newRowIDs)
+        let visibleContentRect = CGRect(origin: collectionView.contentOffset, size: collectionView.bounds.size)
+            .insetBy(dx: 0, dy: -1)
+        let visibleIndexPaths = collectionView.indexPathsForVisibleItems.sorted { lhs, rhs in
+            lhs.item < rhs.item
+        }
+        var firstPartiallyVisibleAnchor: MessagePrependScrollAnchor?
+
+        for indexPath in visibleIndexPaths where indexPath.item < previousRowIDs.count {
+            let rowID = previousRowIDs[indexPath.item]
+            guard newIDSet.contains(rowID) else { continue }
+
+            if let cell = collectionView.cellForItem(at: indexPath) {
+                let anchor = MessagePrependScrollAnchor(
+                    rowID: rowID,
+                    previousMinY: cell.frame.minY,
+                    previousContentOffsetY: collectionView.contentOffset.y
+                )
+                // 顶部第一条有时只露出时间分隔符的一小段，prepend 后分隔符重算会让它看似位移。
+                // 优先锚定第一条完整进入可见区域的旧消息，更贴近用户实际正在阅读的内容。
+                if cell.frame.minY >= visibleContentRect.minY {
+                    return anchor
+                }
+                firstPartiallyVisibleAnchor = firstPartiallyVisibleAnchor ?? anchor
+                continue
+            }
+
+            if let attributes = collectionView.layoutAttributesForItem(at: indexPath) {
+                let anchor = MessagePrependScrollAnchor(
+                    rowID: rowID,
+                    previousMinY: attributes.frame.minY,
+                    previousContentOffsetY: collectionView.contentOffset.y
+                )
+                if attributes.frame.minY >= visibleContentRect.minY {
+                    return anchor
+                }
+                firstPartiallyVisibleAnchor = firstPartiallyVisibleAnchor ?? anchor
+            }
+        }
+        if let firstPartiallyVisibleAnchor {
+            return firstPartiallyVisibleAnchor
+        }
+
+        // `indexPathsForVisibleItems` 在 diffable apply 前后偶尔会短暂为空；
+        // 这时直接从 layout attributes 找第一个落在可见区域内的旧消息，仍然能得到稳定锚点。
+        for (index, rowID) in previousRowIDs.enumerated() where newIDSet.contains(rowID) {
+            let indexPath = IndexPath(item: index, section: 0)
+            guard
+                let attributes = collectionView.layoutAttributesForItem(at: indexPath),
+                attributes.frame.intersects(visibleContentRect)
+            else { continue }
+
+            return MessagePrependScrollAnchor(
+                rowID: rowID,
+                previousMinY: attributes.frame.minY,
+                previousContentOffsetY: collectionView.contentOffset.y
+            )
+        }
+
+        return nil
+    }
+
+    /// 安排历史消息 prepend 后的锚点校正。
+    ///
+    /// 第一轮在快照完成后立即修正，避免插入历史消息时旧内容被整体顶下去；
+    /// 第二轮放到下一次主队列，是为了覆盖自适应 cell 从估算高度稳定到真实高度的情况。
+    private func schedulePrependingOlderMessagesAnchorCorrection(
+        _ anchor: MessagePrependScrollAnchor,
+        newRowIDs: [String]
+    ) {
+        prependScrollAnchorCorrectionGeneration += 1
+        let correctionGeneration = prependScrollAnchorCorrectionGeneration
+        restorePrependingOlderMessagesAnchor(
+            anchor,
+            newRowIDs: newRowIDs,
+            generation: correctionGeneration
+        )
+
+        DispatchQueue.main.async { [weak self] in
+            self?.restorePrependingOlderMessagesAnchor(
+                anchor,
+                newRowIDs: newRowIDs,
+                generation: correctionGeneration
+            )
+        }
+    }
+
+    /// 按历史消息插入前捕获的旧消息锚点恢复滚动位置。
+    ///
+    /// 公式含义：旧 offset 加上同一条消息在内容坐标中的顶部位移，
+    /// 让这条旧消息插入前后落在屏幕上的同一个 y 位置。
+    private func restorePrependingOlderMessagesAnchor(
+        _ anchor: MessagePrependScrollAnchor,
+        newRowIDs: [String],
+        generation: Int
+    ) {
+        guard
+            generation == prependScrollAnchorCorrectionGeneration,
+            !isUserControllingMessageScroll,
+            lastRenderedRowIDs == newRowIDs,
+            let newIndex = newRowIDs.firstIndex(of: anchor.rowID),
+            let attributes = collectionView.layoutAttributesForItem(at: IndexPath(item: newIndex, section: 0))
+        else { return }
+
+        collectionView.layoutIfNeeded()
+        let proposedOffsetY = anchor.previousContentOffsetY + attributes.frame.minY - anchor.previousMinY
+        let targetOffsetY = clampedContentOffsetY(
+            proposedOffsetY,
+            visibleMessageHeight: messageVisibleHeight()
+        )
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+            animated: false
+        )
     }
 
     /// 创建聊天消息列表布局
@@ -1534,6 +1697,20 @@ final class ChatViewController: UIViewController {
         collectionView.setContentOffset(transaction.previousContentOffset, animated: false)
     }
 
+    /// 自适应 cell 高度可能在快照完成后一轮才稳定；离底阅读时需要再校正一次，
+    /// 防止收到对方消息后 UIKit 的布局稳定过程把用户正在看的历史位置向下推。
+    private func scheduleMessageContentOffsetPreservationIfNeeded(_ transaction: MessageLayoutTransaction) {
+        let correctionGeneration = bottomPositionCorrectionGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard
+                let self,
+                correctionGeneration == self.bottomPositionCorrectionGeneration
+            else { return }
+
+            self.preserveMessageContentOffsetIfNeeded(transaction)
+        }
+    }
+
     /// 判断本次布局变化是否应该保持贴底。
     private func shouldStickToBottomForLayoutChange() -> Bool {
         guard !isUserControllingMessageScroll else { return false }
@@ -1680,6 +1857,7 @@ extension ChatViewController: UICollectionViewDelegate {
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         collectionView.layer.removeAllAnimations()
         bottomPositionCorrectionGeneration += 1
+        prependScrollAnchorCorrectionGeneration += 1
         isUserControllingMessageScroll = true
         shouldMaintainBottomPosition = false
     }

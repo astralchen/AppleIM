@@ -6720,6 +6720,102 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerPreservesVisibleAnchorWhenLoadingOlderMessages() async throws {
+        let initialRows = (1...36).map { index in
+            let text = "当前消息 \(index)\n用多行内容触发自适应高度\n保证历史分页补偿不能依赖固定行高"
+            return makeChatRow(
+                id: MessageID(rawValue: "history_anchor_current_\(index)"),
+                text: text,
+                sortSequence: Int64(index + 10),
+                sentAt: Int64(1_000 + (index - 1) * 360)
+            )
+        }
+        let olderRows = (1...10).map { index in
+            let text = "历史消息 \(index)\n这批消息插入到顶部\n高度和当前消息不同"
+            return makeChatRow(
+                id: MessageID(rawValue: "history_anchor_older_\(index)"),
+                text: text,
+                sortSequence: Int64(index),
+                sentAt: Int64(400 + index * 36)
+            )
+        }
+        let useCase = DeferredOlderPageStubChatUseCase(
+            initialPage: ChatMessagePage(rows: initialRows, hasMore: true, nextBeforeSortSequence: 11),
+            olderPage: ChatMessagePage(rows: olderRows, hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "History Anchor")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: -collectionView.adjustedContentInset.top),
+            animated: false
+        )
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        // 回归点和生产逻辑一致：选取当前屏幕内第一条仍会存在的旧消息做锚点，
+        // 避免测试固定第 0 条时被导航栏遮挡、时间分隔符重算等边界状态干扰。
+        let visibleTopY = collectionView.contentOffset.y
+        let visibleOldIndexPaths = collectionView.indexPathsForVisibleItems
+            .filter { $0.item < initialRows.count && collectionView.cellForItem(at: $0) != nil }
+            .sorted { $0.item < $1.item }
+        let anchorIndexPathBefore = try #require(
+            visibleOldIndexPaths.first { indexPath in
+                guard let cell = collectionView.cellForItem(at: indexPath) else { return false }
+                return cell.frame.minY >= visibleTopY
+            } ?? visibleOldIndexPaths.first
+        )
+        let anchorCellBefore = try #require(collectionView.cellForItem(at: anchorIndexPathBefore))
+        let anchorMinYBefore = anchorCellBefore.convert(anchorCellBefore.bounds, to: viewController.view).minY
+
+        if useCase.loadOlderCallCount == 0 {
+            viewModel.loadOlderMessagesIfNeeded()
+        }
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            useCase.loadOlderCallCount == 1
+        }
+        useCase.releaseOlderPage()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + olderRows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            let anchorIndexPathAfter = IndexPath(item: olderRows.count + anchorIndexPathBefore.item, section: 0)
+            guard let anchorCellAfter = collectionView.cellForItem(at: anchorIndexPathAfter) else {
+                return false
+            }
+            let anchorMinYAfter = anchorCellAfter.convert(anchorCellAfter.bounds, to: viewController.view).minY
+            let anchorDelta = Foundation.fabs(Double(anchorMinYAfter) - Double(anchorMinYBefore))
+            return anchorDelta <= 2
+        }
+
+        let anchorCellAfter = try #require(
+            collectionView.cellForItem(at: IndexPath(item: olderRows.count + anchorIndexPathBefore.item, section: 0))
+        )
+        let anchorMinYAfter = anchorCellAfter.convert(anchorCellAfter.bounds, to: viewController.view).minY
+        let anchorDelta = Foundation.fabs(Double(anchorMinYAfter) - Double(anchorMinYBefore))
+
+        #expect(anchorDelta <= 2)
+    }
+
+    @MainActor
     @Test func chatViewModelSendsComposerImageThenText() async throws {
         let useCase = ComposerSendingStubChatUseCase()
         let viewModel = ChatViewModel(useCase: useCase, title: "Composer")
@@ -11782,6 +11878,84 @@ private final class DeferredInitialPageStubChatUseCase: @unchecked Sendable, Cha
 
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
         ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func loadDraft() async throws -> String? {
+        nil
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(_ text: String) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+}
+
+private final class DeferredOlderPageStubChatUseCase: @unchecked Sendable, ChatUseCase {
+    private let initialPage: ChatMessagePage
+    private let olderPage: ChatMessagePage
+    private var olderContinuation: CheckedContinuation<ChatMessagePage, Error>?
+    private var isOlderPageReleased = false
+    private(set) var loadOlderCallCount = 0
+
+    init(initialPage: ChatMessagePage, olderPage: ChatMessagePage) {
+        self.initialPage = initialPage
+        self.olderPage = olderPage
+    }
+
+    func releaseOlderPage() {
+        isOlderPageReleased = true
+        let continuation = olderContinuation
+        olderContinuation = nil
+
+        continuation?.resume(returning: olderPage)
+    }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        initialPage
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        loadOlderCallCount += 1
+        if isOlderPageReleased {
+            return olderPage
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            if isOlderPageReleased {
+                continuation.resume(returning: olderPage)
+            } else {
+                olderContinuation = continuation
+            }
+        }
     }
 
     func loadDraft() async throws -> String? {
