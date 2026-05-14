@@ -8,20 +8,51 @@
 import Combine
 import UIKit
 
-/// 主会话列表 section 标识
-private let conversationListSection = "main"
-/// 搜索联系人 section 标识
-private let searchContactsSection = "search_contacts"
-/// 搜索会话 section 标识
-private let searchConversationsSection = "search_conversations"
-/// 搜索消息 section 标识
-private let searchMessagesSection = "search_messages"
 /// 会话列表导航标题
 private let conversationListNavigationTitle = "Messages"
 
 /// 会话列表页面控制器
 @MainActor
 final class ConversationListViewController: UIViewController {
+    /// 列表分区标识。
+    nonisolated private enum Section: Hashable, Sendable {
+        /// 主会话列表。
+        case conversations
+        /// 搜索到的联系人。
+        case searchContacts
+        /// 搜索到的会话。
+        case searchConversations
+        /// 搜索到的消息。
+        case searchMessages
+
+        /// 是否显示 section 标题。
+        var showsHeader: Bool {
+            self != .conversations
+        }
+
+        /// section 展示标题。
+        var title: String {
+            switch self {
+            case .conversations:
+                return ""
+            case .searchContacts:
+                return "Contacts"
+            case .searchConversations:
+                return "Conversations"
+            case .searchMessages:
+                return "Messages"
+            }
+        }
+    }
+
+    /// 列表条目标识。
+    nonisolated private enum Item: Hashable, Sendable {
+        /// 普通会话行。
+        case conversation(ConversationID)
+        /// 搜索结果行。
+        case search(String)
+    }
+
     /// 会话列表 ViewModel
     private let viewModel: ConversationListViewModel
     /// 会话列表日志
@@ -35,13 +66,13 @@ final class ConversationListViewController: UIViewController {
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
     /// 列表 diffable 数据源
-    private var dataSource: UICollectionViewDiffableDataSource<String, String>?
+    private var dataSource: UICollectionViewDiffableDataSource<Section, Item>?
     /// 当前会话行缓存
-    private var rowsByID: [String: ConversationListRowState] = [:]
+    private var rowsByID: [ConversationID: ConversationListRowState] = [:]
     /// 当前搜索行缓存
     private var searchRowsByID: [String: SearchResultRowState] = [:]
     /// 已渲染的会话 ID 顺序
-    private var renderedConversationIDs: [String] = []
+    private var renderedConversationIDs: [ConversationID] = []
     /// 最近一次会话状态
     private var lastConversationState = ConversationListViewState()
     /// 最近一次搜索状态
@@ -208,15 +239,18 @@ final class ConversationListViewController: UIViewController {
 
     /// 配置 diffable data source 与 section header
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<ConversationListCell, String> { [weak self] cell, _, rowID in
+        let cellRegistration = UICollectionView.CellRegistration<ConversationListCell, Item> { [weak self] cell, _, item in
             guard let self else { return }
 
-            if let row = rowsByID[rowID] {
+            switch item {
+            case let .conversation(rowID):
+                guard let row = rowsByID[rowID] else { return }
                 cell.configure(row: row)
                 cell.isAccessibilityElement = true
                 cell.accessibilityIdentifier = "conversationList.cell.\(row.id.rawValue)"
                 cell.accessibilityLabel = self.accessibilityLabel(for: row)
-            } else if let row = searchRowsByID[rowID] {
+            case let .search(rowID):
+                guard let row = searchRowsByID[rowID] else { return }
                 cell.configure(searchRow: row)
                 cell.isAccessibilityElement = true
                 cell.accessibilityIdentifier = "conversationList.searchCell.\(rowID)"
@@ -235,16 +269,16 @@ final class ConversationListViewController: UIViewController {
                 return
             }
 
-            supplementaryView.configure(title: self.title(for: sectionID))
+            supplementaryView.configure(title: sectionID.title)
         }
 
-        dataSource = UICollectionViewDiffableDataSource<String, String>(
+        dataSource = UICollectionViewDiffableDataSource<Section, Item>(
             collectionView: collectionView
-        ) { (collectionView: UICollectionView, indexPath: IndexPath, rowID: String) in
+        ) { (collectionView: UICollectionView, indexPath: IndexPath, item: Item) in
             collectionView.dequeueConfiguredReusableCell(
                 using: cellRegistration,
                 for: indexPath,
-                item: rowID
+                item: item
             )
         }
 
@@ -255,8 +289,8 @@ final class ConversationListViewController: UIViewController {
             )
         }
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-        snapshot.appendSections([conversationListSection])
+        var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
+        snapshot.appendSections([.conversations])
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
@@ -309,9 +343,9 @@ final class ConversationListViewController: UIViewController {
 
         let previousRowsByID = rowsByID
         let cacheStartUptime = ProcessInfo.processInfo.systemUptime
-        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
+        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id, $0) })
         searchRowsByID = [:]
-        let rowIDs = state.rows.map { $0.id.rawValue }
+        let rowIDs = state.rows.map(\.id)
         let changedRowIDs = rowIDs.filter { previousRowsByID[$0] != rowsByID[$0] }
         logger.info(
             "ConversationListViewController render cache prepared rows=\(rowIDs.count) changed=\(changedRowIDs.count) phase=\(state.phase.logDescription) elapsed=\(AppLogger.elapsedMilliseconds(since: cacheStartUptime))"
@@ -319,9 +353,9 @@ final class ConversationListViewController: UIViewController {
 
         if shouldRebuildConversationSnapshot(with: rowIDs, phase: state.phase) {
             let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
-            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-            snapshot.appendSections([conversationListSection])
-            snapshot.appendItems(rowIDs, toSection: conversationListSection)
+            var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
+            snapshot.appendSections([.conversations])
+            snapshot.appendItems(rowIDs.map(Item.conversation), toSection: .conversations)
             let shouldAnimate = state.phase != .loading && !renderedConversationIDs.isEmpty
             dataSource?.apply(snapshot, animatingDifferences: shouldAnimate) { [weak self] in
                 guard let self else { return }
@@ -331,15 +365,15 @@ final class ConversationListViewController: UIViewController {
             }
         } else if rowIDs.count > renderedConversationIDs.count {
             let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
-            var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<String, String>()
+            var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<Section, Item>()
 
-            if !snapshot.sectionIdentifiers.contains(conversationListSection) {
-                snapshot.appendSections([conversationListSection])
+            if !snapshot.sectionIdentifiers.contains(.conversations) {
+                snapshot.appendSections([.conversations])
             }
 
             let newRowIDs = Array(rowIDs.dropFirst(renderedConversationIDs.count))
-            snapshot.appendItems(newRowIDs, toSection: conversationListSection)
-            snapshot.reconfigureItems(changedRowIDs.filter { !newRowIDs.contains($0) })
+            snapshot.appendItems(newRowIDs.map(Item.conversation), toSection: .conversations)
+            snapshot.reconfigureItems(changedRowIDs.filter { !newRowIDs.contains($0) }.map(Item.conversation))
             dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
                 guard let self else { return }
                 self.logger.info(
@@ -348,8 +382,8 @@ final class ConversationListViewController: UIViewController {
             }
         } else if !changedRowIDs.isEmpty {
             let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
-            var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<String, String>()
-            snapshot.reconfigureItems(changedRowIDs)
+            var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<Section, Item>()
+            snapshot.reconfigureItems(changedRowIDs.map(Item.conversation))
             dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
                 guard let self else { return }
                 self.logger.info(
@@ -407,28 +441,28 @@ final class ConversationListViewController: UIViewController {
         let allRows = state.contacts + state.conversations + state.messages
         searchRowsByID = Dictionary(uniqueKeysWithValues: allRows.map { ($0.id, $0) })
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
+        var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
 
         if !state.contacts.isEmpty {
-            snapshot.appendSections([searchContactsSection])
-            snapshot.appendItems(state.contacts.map(\.id), toSection: searchContactsSection)
+            snapshot.appendSections([.searchContacts])
+            snapshot.appendItems(state.contacts.map { .search($0.id) }, toSection: .searchContacts)
         }
 
         if !state.conversations.isEmpty {
-            snapshot.appendSections([searchConversationsSection])
-            snapshot.appendItems(state.conversations.map(\.id), toSection: searchConversationsSection)
+            snapshot.appendSections([.searchConversations])
+            snapshot.appendItems(state.conversations.map { .search($0.id) }, toSection: .searchConversations)
         }
 
         if !state.messages.isEmpty {
-            snapshot.appendSections([searchMessagesSection])
-            snapshot.appendItems(state.messages.map(\.id), toSection: searchMessagesSection)
+            snapshot.appendSections([.searchMessages])
+            snapshot.appendItems(state.messages.map { .search($0.id) }, toSection: .searchMessages)
         }
 
         dataSource?.apply(snapshot, animatingDifferences: true)
     }
 
     /// 判断是否需要完整重建会话列表快照
-    private func shouldRebuildConversationSnapshot(with rowIDs: [String], phase: ConversationListViewState.LoadingPhase) -> Bool {
+    private func shouldRebuildConversationSnapshot(with rowIDs: [ConversationID], phase: ConversationListViewState.LoadingPhase) -> Bool {
         guard !renderedConversationIDs.isEmpty else {
             return true
         }
@@ -445,7 +479,7 @@ final class ConversationListViewController: UIViewController {
         UICollectionViewCompositionalLayout { [weak self] sectionIndex, layoutEnvironment in
             var configuration = UICollectionLayoutListConfiguration(appearance: .plain)
             let sectionID = self?.dataSource?.snapshot().sectionIdentifiers[safe: sectionIndex]
-            if let sectionID = sectionID, sectionID != conversationListSection {
+            if sectionID?.showsHeader == true {
                 configuration.headerMode = .supplementary
             } else {
                 configuration.headerMode = .none
@@ -463,7 +497,8 @@ final class ConversationListViewController: UIViewController {
     /// 为会话行创建右滑操作
     private func swipeActionsConfiguration(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard
-            let rowID = dataSource?.itemIdentifier(for: indexPath),
+            let item = dataSource?.itemIdentifier(for: indexPath),
+            case let .conversation(rowID) = item,
             let row = rowsByID[rowID]
         else {
             return nil
@@ -522,22 +557,6 @@ final class ConversationListViewController: UIViewController {
         return parts.joined(separator: ", ")
     }
 
-    /// 根据 section 标识返回展示标题
-    private func title(for sectionID: String) -> String {
-        switch sectionID {
-        case conversationListSection:
-            return ""
-        case searchContactsSection:
-            return "Contacts"
-        case searchConversationsSection:
-            return "Conversations"
-        case searchMessagesSection:
-            return "Messages"
-        default:
-            return ""
-        }
-    }
-
     /// 将搜索行转换为可打开的会话行
     private func conversationRow(for searchRow: SearchResultRowState) -> ConversationListRowState? {
         guard let conversationID = searchRow.conversationID else {
@@ -573,22 +592,20 @@ extension ConversationListViewController: UICollectionViewDelegate {
         collectionView.deselectItem(at: indexPath, animated: true)
 
         guard
-            let rowID = dataSource?.itemIdentifier(for: indexPath),
-            let row = rowsByID[rowID]
-        else {
-            if
-                let rowID = dataSource?.itemIdentifier(for: indexPath),
-                let searchRow = searchRowsByID[rowID],
-                let conversation = conversationRow(for: searchRow)
-            {
+            let item = dataSource?.itemIdentifier(for: indexPath)
+        else { return }
+
+        switch item {
+        case let .conversation(rowID):
+            guard let row = rowsByID[rowID] else { return }
+            viewModel.markConversationReadLocally(conversationID: row.id)
+            onSelectConversation(row)
+        case let .search(rowID):
+            if let searchRow = searchRowsByID[rowID], let conversation = conversationRow(for: searchRow) {
                 viewModel.markConversationReadLocally(conversationID: conversation.id)
                 onSelectConversation(conversation)
             }
-            return
         }
-
-        viewModel.markConversationReadLocally(conversationID: row.id)
-        onSelectConversation(row)
     }
 
     /// 滚动时按当前可见位置触发分页加载
@@ -606,7 +623,10 @@ extension ConversationListViewController: UICollectionViewDelegate {
                 return lhs.section < rhs.section
             }
             .flatMap { dataSource?.itemIdentifier(for: $0) }
-            .map(ConversationID.init(rawValue:))
+            .flatMap { item -> ConversationID? in
+                guard case let .conversation(rowID) = item else { return nil }
+                return rowID
+            }
 
         viewModel.loadNextPageIfNeeded(visibleRowID: visibleRowID)
     }

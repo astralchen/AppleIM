@@ -7,8 +7,6 @@ import Combine
 import AVKit
 import UIKit
 
-/// 聊天消息 section 标识
-private let chatSection = "messages"
 /// 待发送语音预览播放使用的本地占位 ID，避免影响消息列表播放态
 private let pendingVoicePreviewMessageID = MessageID(rawValue: "__pending_voice_preview__")
 
@@ -56,16 +54,22 @@ final class ChatSnapshotRenderCoordinator<State> {
 /// 聊天页控制器
 @MainActor
 final class ChatViewController: UIViewController {
+    /// 消息列表分区标识。
+    nonisolated private enum Section: Hashable, Sendable {
+        /// 聊天消息分区。
+        case messages
+    }
+
     /// 聊天页 ViewModel
     private let viewModel: ChatViewModel
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
     /// 消息列表 diffable 数据源
-    private var dataSource: UICollectionViewDiffableDataSource<String, String>?
+    private var dataSource: UICollectionViewDiffableDataSource<Section, MessageID>?
     /// 当前消息行缓存
-    private var rowsByID: [String: ChatMessageRowState] = [:]
+    private var rowsByID: [MessageID: ChatMessageRowState] = [:]
     /// 最近一次渲染的消息行 ID 顺序
-    private var lastRenderedRowIDs: [String] = []
+    private var lastRenderedRowIDs: [MessageID] = []
     /// 消息列表快照 apply 门控，防止 diffable data source 重入。
     private let snapshotRenderCoordinator = ChatSnapshotRenderCoordinator<ChatViewState>()
     /// 聊天 UI 耗时日志。
@@ -114,7 +118,7 @@ final class ChatViewController: UIViewController {
     /// 上拉加载历史消息时用于保持阅读位置的旧消息锚点。
     private struct MessagePrependScrollAnchor {
         /// 快照前仍在屏幕内的旧消息 ID。
-        let rowID: String
+        let rowID: MessageID
         /// 快照前该旧消息在 collection view 内容坐标内的顶部位置。
         let previousMinY: CGFloat
         /// 快照前的滚动位置；恢复时在这个基础上叠加锚点位移。
@@ -952,7 +956,7 @@ final class ChatViewController: UIViewController {
 
     /// 配置消息列表数据源
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, String> { [weak self] cell, _, rowID in
+        let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, MessageID> { [weak self] cell, _, rowID in
             guard let self, let row = self.rowsByID[rowID] else { return }
             let actions = ChatMessageCellActions(
                 onRetry: { [weak self] messageID in
@@ -974,9 +978,9 @@ final class ChatViewController: UIViewController {
             cell.configure(row: row, actions: actions)
         }
 
-        dataSource = UICollectionViewDiffableDataSource<String, String>(
+        dataSource = UICollectionViewDiffableDataSource<Section, MessageID>(
             collectionView: collectionView
-        ) { (collectionView: UICollectionView, indexPath: IndexPath, rowID: String) in
+        ) { (collectionView: UICollectionView, indexPath: IndexPath, rowID: MessageID) in
             collectionView.dequeueConfiguredReusableCell(
                 using: cellRegistration,
                 for: indexPath,
@@ -984,8 +988,8 @@ final class ChatViewController: UIViewController {
             )
         }
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-        snapshot.appendSections([chatSection])
+        var snapshot = NSDiffableDataSourceSnapshot<Section, MessageID>()
+        snapshot.appendSections([.messages])
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
@@ -1072,7 +1076,7 @@ final class ChatViewController: UIViewController {
         let previousRowIDs = lastRenderedRowIDs
 
         // Diffable data source 的 item identifier 使用消息 ID；内容变化通过 changedRowIDs 触发 reload。
-        let newRowIDs = state.rows.map { $0.id.rawValue }
+        let newRowIDs = state.rows.map(\.id)
         let isInitialMessageRender = previousRowIDs.isEmpty && !newRowIDs.isEmpty
         let isPrependingOlderMessages = previousRowIDs.first.map { newRowIDs.contains($0) } == true
             && newRowIDs.first != previousRowIDs.first
@@ -1098,14 +1102,13 @@ final class ChatViewController: UIViewController {
             layoutTransaction = beginMessageLayoutTransaction()
             prependScrollAnchor = nil
         }
-        let changedRowIDs = state.rows.compactMap { row -> String? in
-            let id = row.id.rawValue
-            return previousRowsByID[id] == row ? nil : id
+        let changedRowIDs = state.rows.compactMap { row -> MessageID? in
+            previousRowsByID[row.id] == row ? nil : row.id
         }
         let appendedCount = max(0, newRowIDs.count - previousRowIDs.count)
 
         // 缓存最新 row 内容，供 cell registration 和下一次 render diff 对比使用。
-        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id.rawValue, $0) })
+        rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id, $0) })
         lastRenderedRowIDs = newRowIDs
 
         guard let dataSource else {
@@ -1236,16 +1239,16 @@ final class ChatViewController: UIViewController {
     ///   - changedRowIDs: ID 不变但内容发生变化的消息 ID。
     /// - Returns: 可直接应用到消息列表 data source 的快照。
     private func makeIncrementalSnapshot(
-        dataSource: UICollectionViewDiffableDataSource<String, String>,
-        previousRowIDs: [String],
-        newRowIDs: [String],
-        changedRowIDs: [String]
-    ) -> NSDiffableDataSourceSnapshot<String, String> {
+        dataSource: UICollectionViewDiffableDataSource<Section, MessageID>,
+        previousRowIDs: [MessageID],
+        newRowIDs: [MessageID],
+        changedRowIDs: [MessageID]
+    ) -> NSDiffableDataSourceSnapshot<Section, MessageID> {
         // 首次渲染时没有旧数据可对比，直接创建完整快照。
         guard !previousRowIDs.isEmpty else {
-            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-            snapshot.appendSections([chatSection])
-            snapshot.appendItems(newRowIDs, toSection: chatSection)
+            var snapshot = NSDiffableDataSourceSnapshot<Section, MessageID>()
+            snapshot.appendSections([.messages])
+            snapshot.appendItems(newRowIDs, toSection: .messages)
             return snapshot
         }
 
@@ -1257,16 +1260,16 @@ final class ChatViewController: UIViewController {
 
         // 如果中间消息发生重排，用完整快照交给 diffable data source 重新计算差异。
         guard survivingOldIDs == survivingNewIDs else {
-            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-            snapshot.appendSections([chatSection])
-            snapshot.appendItems(newRowIDs, toSection: chatSection)
+            var snapshot = NSDiffableDataSourceSnapshot<Section, MessageID>()
+            snapshot.appendSections([.messages])
+            snapshot.appendItems(newRowIDs, toSection: .messages)
             return snapshot
         }
 
         // 从当前 data source 取快照，保留 UIKit 已知的 item 状态。
         var snapshot = dataSource.snapshot()
-        if !snapshot.sectionIdentifiers.contains(chatSection) {
-            snapshot.appendSections([chatSection])
+        if !snapshot.sectionIdentifiers.contains(.messages) {
+            snapshot.appendSections([.messages])
         }
 
         // 先删除已经不在新列表里的消息，避免后续插入时和旧 item 冲突。
@@ -1285,9 +1288,9 @@ final class ChatViewController: UIViewController {
 
         // 如果新增项出现在列表中间，回退完整快照以保证顺序正确。
         guard insertedIDs == edgeInsertedIDs else {
-            var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-            snapshot.appendSections([chatSection])
-            snapshot.appendItems(newRowIDs, toSection: chatSection)
+            var snapshot = NSDiffableDataSourceSnapshot<Section, MessageID>()
+            snapshot.appendSections([.messages])
+            snapshot.appendItems(newRowIDs, toSection: .messages)
             return snapshot
         }
 
@@ -1296,13 +1299,13 @@ final class ChatViewController: UIViewController {
             if let firstSurvivingID = survivingNewIDs.first {
                 snapshot.insertItems(prefixIDs, beforeItem: firstSurvivingID)
             } else {
-                snapshot.appendItems(prefixIDs, toSection: chatSection)
+                snapshot.appendItems(prefixIDs, toSection: .messages)
             }
         }
 
         // 底部新增消息保持自然顺序追加到列表末尾。
         if !suffixIDs.isEmpty {
-            snapshot.appendItems(suffixIDs, toSection: chatSection)
+            snapshot.appendItems(suffixIDs, toSection: .messages)
         }
 
         // 对内容变化但 ID 未变化的消息执行轻量 reconfigure，避免不必要的删除插入动画。
@@ -1320,8 +1323,8 @@ final class ChatViewController: UIViewController {
     /// 不能只依赖 `contentSize` 高度差，因为 prepend 后旧消息的时间分隔符可能重算，
     /// 已存在 cell 自身高度会变化；用可见旧消息的内容坐标做锚点，才能保持屏幕位置稳定。
     private func capturePrependingOlderMessagesAnchor(
-        previousRowIDs: [String],
-        newRowIDs: [String]
+        previousRowIDs: [MessageID],
+        newRowIDs: [MessageID]
     ) -> MessagePrependScrollAnchor? {
         let newIDSet = Set(newRowIDs)
         let visibleContentRect = CGRect(origin: collectionView.contentOffset, size: collectionView.bounds.size)
@@ -1391,7 +1394,7 @@ final class ChatViewController: UIViewController {
     /// 第二轮放到下一次主队列，是为了覆盖自适应 cell 从估算高度稳定到真实高度的情况。
     private func schedulePrependingOlderMessagesAnchorCorrection(
         _ anchor: MessagePrependScrollAnchor,
-        newRowIDs: [String]
+        newRowIDs: [MessageID]
     ) {
         prependScrollAnchorCorrectionGeneration += 1
         let correctionGeneration = prependScrollAnchorCorrectionGeneration
@@ -1416,7 +1419,7 @@ final class ChatViewController: UIViewController {
     /// 让这条旧消息插入前后落在屏幕上的同一个 y 位置。
     private func restorePrependingOlderMessagesAnchor(
         _ anchor: MessagePrependScrollAnchor,
-        newRowIDs: [String],
+        newRowIDs: [MessageID],
         generation: Int
     ) {
         guard
@@ -1752,7 +1755,7 @@ final class ChatViewController: UIViewController {
     }
 
     /// 动画贴底后安排无动画校正，覆盖图片/视频自适应高度晚于滚动动画稳定的情况。
-    private func scheduleAnimatedBottomPositionCorrection(latestMessageID: String?) {
+    private func scheduleAnimatedBottomPositionCorrection(latestMessageID: MessageID?) {
         guard let latestMessageID else { return }
         bottomPositionCorrectionGeneration += 1
         let correctionGeneration = bottomPositionCorrectionGeneration
@@ -1771,7 +1774,7 @@ final class ChatViewController: UIViewController {
     }
 
     /// 执行动画后的贴底校正；只认同一条最新消息，避免旧动画抢回后续阅读位置。
-    private func performAnimatedBottomPositionCorrectionIfNeeded(generation: Int, latestMessageID: String) {
+    private func performAnimatedBottomPositionCorrectionIfNeeded(generation: Int, latestMessageID: MessageID) {
         guard
             generation == bottomPositionCorrectionGeneration,
             !isUserControllingMessageScroll,

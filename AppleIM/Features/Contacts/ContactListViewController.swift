@@ -8,17 +8,35 @@
 import Combine
 import UIKit
 
-private let contactsGroupSection = "groups"
-private let contactsStarredSection = "starred"
-private let contactsFriendsSection = "friends"
-
 /// 通讯录页面
 final class ContactListViewController: UIViewController {
+    /// 通讯录分区标识。
+    nonisolated private enum Section: Hashable, Sendable {
+        /// 群聊分区。
+        case groups
+        /// 星标联系人分区。
+        case starred
+        /// 普通联系人分区。
+        case friends
+
+        /// 分区展示标题。
+        var title: String {
+            switch self {
+            case .groups:
+                return "群聊"
+            case .starred:
+                return "星标联系人"
+            case .friends:
+                return "联系人"
+            }
+        }
+    }
+
     private let viewModel: ContactListViewModel
     private let onSelectConversation: (ConversationListRowState) -> Void
     private var cancellables: Set<AnyCancellable> = []
-    private var dataSource: UICollectionViewDiffableDataSource<String, String>?
-    private var rowsByID: [String: ContactListRowState] = [:]
+    private var dataSource: UICollectionViewDiffableDataSource<Section, ContactID>?
+    private var rowsByID: [ContactID: ContactListRowState] = [:]
     private var collectionView: UICollectionView!
     private let searchController = UISearchController(searchResultsController: nil)
     private let emptyLabel = UILabel()
@@ -96,7 +114,7 @@ final class ContactListViewController: UIViewController {
     }
 
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, rowID in
+        let cellRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, ContactID> { [weak self] cell, _, rowID in
             guard let row = self?.rowsByID[rowID] else { return }
             var content = UIListContentConfiguration.subtitleCell()
             content.text = row.title
@@ -121,11 +139,11 @@ final class ContactListViewController: UIViewController {
             }
 
             var content = UIListContentConfiguration.groupedHeader()
-            content.text = self?.title(for: sectionID)
+            content.text = sectionID.title
             header.contentConfiguration = content
         }
 
-        dataSource = UICollectionViewDiffableDataSource<String, String>(collectionView: collectionView) { collectionView, indexPath, rowID in
+        dataSource = UICollectionViewDiffableDataSource<Section, ContactID>(collectionView: collectionView) { collectionView, indexPath, rowID in
             collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: rowID)
         }
         dataSource?.supplementaryViewProvider = { collectionView, kind, indexPath in
@@ -144,13 +162,13 @@ final class ContactListViewController: UIViewController {
 
     private func render(_ state: ContactListViewState) {
         rowsByID = Dictionary(
-            uniqueKeysWithValues: (state.groupRows + state.starredRows + state.contactRows).map { ($0.id.rawValue, $0) }
+            uniqueKeysWithValues: (state.groupRows + state.starredRows + state.contactRows).map { ($0.id, $0) }
         )
 
-        var snapshot = NSDiffableDataSourceSnapshot<String, String>()
-        append(state.groupRows, to: contactsGroupSection, in: &snapshot)
-        append(state.starredRows, to: contactsStarredSection, in: &snapshot)
-        append(state.contactRows, to: contactsFriendsSection, in: &snapshot)
+        var snapshot = NSDiffableDataSourceSnapshot<Section, ContactID>()
+        append(state.groupRows, to: .groups, in: &snapshot)
+        append(state.starredRows, to: .starred, in: &snapshot)
+        append(state.contactRows, to: .friends, in: &snapshot)
         dataSource?.apply(snapshot, animatingDifferences: state.phase == .loaded)
 
         emptyLabel.text = state.emptyMessage
@@ -159,26 +177,13 @@ final class ContactListViewController: UIViewController {
 
     private func append(
         _ rows: [ContactListRowState],
-        to section: String,
-        in snapshot: inout NSDiffableDataSourceSnapshot<String, String>
+        to section: Section,
+        in snapshot: inout NSDiffableDataSourceSnapshot<Section, ContactID>
     ) {
         guard !rows.isEmpty else { return }
 
         snapshot.appendSections([section])
-        snapshot.appendItems(rows.map(\.id.rawValue), toSection: section)
-    }
-
-    private func title(for section: String) -> String {
-        switch section {
-        case contactsGroupSection:
-            "群聊"
-        case contactsStarredSection:
-            "星标联系人"
-        case contactsFriendsSection:
-            "联系人"
-        default:
-            ""
-        }
+        snapshot.appendItems(rows.map(\.id), toSection: section)
     }
 }
 
