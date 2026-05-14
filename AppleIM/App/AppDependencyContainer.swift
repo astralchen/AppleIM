@@ -189,7 +189,7 @@ final class AppDependencyContainer {
         )
     }
 
-    func makeContactListViewController() -> ContactListViewController {
+    func makeContactListViewController(router: any AppRouting) -> ContactListViewController {
         let useCase = LocalContactListUseCase(
             userID: accountID,
             storeProvider: storeProvider
@@ -197,15 +197,8 @@ final class AppDependencyContainer {
         let viewModel = ContactListViewModel(useCase: useCase)
         return ContactListViewController(
             viewModel: viewModel,
-            onSelectConversation: { conversation in
-                let chatViewController = self.makeChatViewController(conversation: conversation)
-                UIApplication.shared.connectedScenes
-                    .compactMap { ($0 as? UIWindowScene)?.keyWindow }
-                    .first?
-                    .rootViewController?
-                    .topVisibleViewController
-                    .navigationController?
-                    .pushViewController(chatViewController, animated: true)
+            onSelectConversation: { [router] conversation in
+                router.showChat(conversation: conversation)
             }
         )
     }

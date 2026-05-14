@@ -789,7 +789,8 @@ struct ChatMessageCellContentConfiguration: UIContentConfiguration {
 /// 聊天消息单元格内容视图
 @MainActor
 final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInteractionDelegate {
-    private static let avatarImageCache = NSCache<NSString, UIImage>()
+    /// 头像加载服务，可在测试中替换。
+    static var avatarImageLoader: any AvatarImageLoading = DefaultAvatarImageLoader.shared
 
     private let avatarView = GradientBackgroundView()
     private let avatarImageView = UIImageView()
@@ -815,7 +816,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
     private var stackLeadingConstraint: NSLayoutConstraint?
     private var stackTrailingConstraint: NSLayoutConstraint?
     private var stackBottomConstraint: NSLayoutConstraint?
-    private var avatarDataTask: URLSessionDataTask?
+    private var avatarLoadTask: (any AvatarImageLoadTask)?
     private var expectedAvatarURL: String?
     private var row: ChatMessageRowState?
     private var retryMessageID: MessageID?
@@ -868,7 +869,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
     }
 
     deinit {
-        avatarDataTask?.cancel()
+        avatarLoadTask?.cancel()
     }
 
     override func systemLayoutSizeFitting(
@@ -908,8 +909,8 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         retryMessageID = nil
         actions = .empty
         retryButton.accessibilityIdentifier = nil
-        avatarDataTask?.cancel()
-        avatarDataTask = nil
+        avatarLoadTask?.cancel()
+        avatarLoadTask = nil
         expectedAvatarURL = nil
         avatarImageView.image = nil
         avatarImageView.isHidden = true
@@ -1140,8 +1141,8 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
     }
 
     private func configureAvatar(for row: ChatMessageRowState) {
-        avatarDataTask?.cancel()
-        avatarDataTask = nil
+        avatarLoadTask?.cancel()
+        avatarLoadTask = nil
         expectedAvatarURL = row.senderAvatarURL
         avatarView.isHidden = row.content.kind == .revoked
         avatarInitialLabel.text = row.isOutgoing ? "Me" : "C"
@@ -1152,53 +1153,14 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
             return
         }
 
-        let cacheKey = avatarURL
-        if let cachedImage = Self.avatarImageCache.object(forKey: cacheKey as NSString) {
-            avatarImageView.image = cachedImage
-            avatarImageView.isHidden = false
-            return
-        }
-
-        if let localImage = Self.localAvatarImage(from: avatarURL) {
-            Self.avatarImageCache.setObject(localImage, forKey: cacheKey as NSString)
-            avatarImageView.image = localImage
-            avatarImageView.isHidden = false
-            return
-        }
-
-        guard let url = URL(string: avatarURL), ["http", "https"].contains(url.scheme?.lowercased()) else {
-            return
-        }
-
-        avatarDataTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let data, let image = UIImage(data: data) else {
+        avatarLoadTask = Self.avatarImageLoader.loadImage(from: avatarURL) { [weak self] image in
+            guard let self, self.expectedAvatarURL == avatarURL, let image else {
                 return
             }
 
-            Task { @MainActor in
-                Self.avatarImageCache.setObject(image, forKey: cacheKey as NSString)
-
-                guard let self, self.expectedAvatarURL == avatarURL else {
-                    return
-                }
-
-                self.avatarImageView.image = image
-                self.avatarImageView.isHidden = false
-            }
+            self.avatarImageView.image = image
+            self.avatarImageView.isHidden = false
         }
-        avatarDataTask?.resume()
-    }
-
-    private static func localAvatarImage(from value: String) -> UIImage? {
-        if let url = URL(string: value), url.isFileURL {
-            return UIImage(contentsOfFile: url.path)
-        }
-
-        guard !value.hasPrefix("http://"), !value.hasPrefix("https://") else {
-            return nil
-        }
-
-        return UIImage(contentsOfFile: value)
     }
 
     @objc private func retryButtonTapped() {

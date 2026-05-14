@@ -112,6 +112,8 @@ final class ChatPhotoLibraryInputView: UIView {
     private static let dismissDistanceThreshold: CGFloat = 92
     /// 下滑关闭最小速度
     private static let dismissVelocityThreshold: CGFloat = 780
+    /// 临时媒体文件管理服务，可在测试中替换。
+    static var temporaryMediaFileManager: any TemporaryMediaFileManaging = DefaultTemporaryMediaFileManager.shared
     /// 系统风格的动态拖拽提示条颜色
     private static func grabberColor(for traits: UITraitCollection) -> UIColor {
         switch (traits.userInterfaceStyle, traits.accessibilityContrast) {
@@ -584,11 +586,12 @@ final class ChatPhotoLibraryInputView: UIView {
         let originalExtension = URL(fileURLWithPath: resource.originalFilename).pathExtension
         let typeExtension = UTType(resource.uniformTypeIdentifier)?.preferredFilenameExtension
         let fileExtension = originalExtension.isEmpty ? (typeExtension ?? "mov") : originalExtension
-        let temporaryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ChatBridgeVideoPick-\(UUID().uuidString)")
-            .appendingPathExtension(fileExtension)
+        let temporaryURL = Self.temporaryMediaFileManager.makeTemporaryFileURL(
+            prefix: "ChatBridgeVideoPick",
+            fileExtension: fileExtension
+        )
 
-        FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
+        Self.temporaryMediaFileManager.createEmptyFile(at: temporaryURL)
 
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
@@ -598,10 +601,11 @@ final class ChatPhotoLibraryInputView: UIView {
             to: temporaryURL,
             resourceManager: resourceManager,
             options: options,
+            temporaryFileManager: Self.temporaryMediaFileManager,
             completion: { [weak self, assetID = asset.localIdentifier, preview, fileExtension] result in
                 guard let self, self.selectionState.contains(assetID: assetID) else {
                     if case .success(let url) = result {
-                        try? FileManager.default.removeItem(at: url)
+                        Self.temporaryMediaFileManager.removeFileIfExists(at: url)
                     }
                     return
                 }
@@ -664,6 +668,7 @@ enum ChatPhotoLibraryVideoFileIO {
         to temporaryURL: URL,
         resourceManager: PHAssetResourceManager,
         options: PHAssetResourceRequestOptions,
+        temporaryFileManager: any TemporaryMediaFileManaging = DefaultTemporaryMediaFileManager.shared,
         completion: @escaping @MainActor (Result<URL, StreamError>) -> Void
     ) {
         let fileHandle: FileHandle
@@ -685,7 +690,7 @@ enum ChatPhotoLibraryVideoFileIO {
                 do {
                     try fileHandle.close()
                 } catch {
-                    try? FileManager.default.removeItem(at: temporaryURL)
+                    temporaryFileManager.removeFileIfExists(at: temporaryURL)
                     result = .failure(.unableToCloseFile)
                     Task { @MainActor in
                         completion(result)
@@ -696,7 +701,7 @@ enum ChatPhotoLibraryVideoFileIO {
                 if error == nil {
                     result = .success(temporaryURL)
                 } else {
-                    try? FileManager.default.removeItem(at: temporaryURL)
+                    temporaryFileManager.removeFileIfExists(at: temporaryURL)
                     result = .failure(.requestFailed)
                 }
 

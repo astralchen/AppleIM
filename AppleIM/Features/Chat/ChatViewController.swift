@@ -470,13 +470,14 @@ final class ChatViewController: UIViewController {
 
     /// 监听仓储层会话变更，当前聊天命中时刷新消息列表。
     private func bindConversationStoreNotifications() {
-        NotificationCenter.default.publisher(for: .chatStoreConversationsDidChange)
+        NotificationCenter.default.chatStoreConversationChangesPublisher()
             .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
+            .sink { [weak self] event in
                 guard let self, view.window != nil else { return }
-                let userID = notification.userInfo?[ChatStoreConversationChangeNotification.userIDKey] as? String
-                let conversationIDs = notification.userInfo?[ChatStoreConversationChangeNotification.conversationIDsKey] as? [String] ?? []
-                viewModel.refreshAfterStoreChange(userID: userID, conversationIDs: conversationIDs)
+                viewModel.refreshAfterStoreChange(
+                    userID: event.userID.rawValue,
+                    conversationIDs: event.conversationIDs.map(\.rawValue)
+                )
             }
             .store(in: &cancellables)
     }

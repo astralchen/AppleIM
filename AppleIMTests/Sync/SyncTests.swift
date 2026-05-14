@@ -4,6 +4,28 @@ import Foundation
 @testable import AppleIM
 
 extension AppleIMTests {
+    @Test func chatStoreConversationChangeEventParsesNotificationPayload() {
+        let notification = Notification(
+            name: .chatStoreConversationsDidChange,
+            object: nil,
+            userInfo: [
+                ChatStoreConversationChangeNotification.userIDKey: "typed_event_user",
+                ChatStoreConversationChangeNotification.conversationIDsKey: [
+                    "typed_event_conversation_a",
+                    "typed_event_conversation_b"
+                ]
+            ]
+        )
+
+        let event = ChatStoreConversationChangeEvent(notification: notification)
+
+        #expect(event?.userID == UserID(rawValue: "typed_event_user"))
+        #expect(event?.conversationIDs == [
+            ConversationID(rawValue: "typed_event_conversation_a"),
+            ConversationID(rawValue: "typed_event_conversation_b")
+        ])
+    }
+
     @Test func syncEngineAppliesFirstMessageBatchAndStoresCheckpoint() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

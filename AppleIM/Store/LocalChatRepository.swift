@@ -89,16 +89,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     private let messageDAO: MessageDAO
     /// 表情 DAO
     private let emojiDAO: EmojiDAO
-    /// 本地通知管理器
-    private let localNotificationManager: (any LocalNotificationManaging)?
-    /// App 角标管理器
-    private let applicationBadgeManager: (any ApplicationBadgeManaging)?
+    /// 事务后事件分发器
+    private let eventDispatcher: any ChatStoreEventDispatching
 
     init(
         database: DatabaseActor,
         paths: AccountStoragePaths,
         localNotificationManager: (any LocalNotificationManaging)? = nil,
-        applicationBadgeManager: (any ApplicationBadgeManaging)? = nil
+        applicationBadgeManager: (any ApplicationBadgeManaging)? = nil,
+        eventDispatcher: (any ChatStoreEventDispatching)? = nil
     ) {
         self.database = database
         self.paths = paths
@@ -106,8 +105,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         self.contactDAO = ContactDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
         self.emojiDAO = EmojiDAO(database: database, paths: paths)
-        self.localNotificationManager = localNotificationManager
-        self.applicationBadgeManager = applicationBadgeManager
+        self.eventDispatcher = eventDispatcher ?? DefaultChatStoreEventDispatcher(
+            database: database,
+            paths: paths,
+            localNotificationManager: localNotificationManager,
+            applicationBadgeManager: applicationBadgeManager
+        )
     }
 
     // MARK: - ConversationRepository
@@ -211,7 +214,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             paths: paths
         )
         _ = try await refreshApplicationBadge(userID: userID)
-        Self.postConversationsDidChangeNotification(userID: userID, conversationIDs: [conversationID])
+        eventDispatcher.postConversationsDidChange(userID: userID, conversationIDs: [conversationID])
     }
 
     /// 更新会话置顶状态
@@ -406,7 +409,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
 
         try await conversationDAO.upsert(record)
         scheduleConversationIndex(conversationID: record.id, userID: userID)
-        Self.postConversationsDidChangeNotification(userID: userID, conversationIDs: [record.id])
+        eventDispatcher.postConversationsDidChange(userID: userID, conversationIDs: [record.id])
         return Self.conversation(from: record)
     }
 
@@ -505,9 +508,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             badgeCount = 0
         }
 
-        if let applicationBadgeManager {
-            await applicationBadgeManager.setApplicationIconBadgeNumber(badgeCount)
-        }
+        await eventDispatcher.setApplicationBadgeNumber(badgeCount)
 
         return badgeCount
     }
@@ -1675,7 +1676,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         for conversationID in Set(messagesToInsert.map(\.conversationID)) {
             scheduleConversationIndex(conversationID: conversationID, userID: userID)
         }
-        Self.postConversationsDidChangeNotification(
+        eventDispatcher.postConversationsDidChange(
             userID: userID,
             conversationIDs: Set(messagesToInsert.map(\.conversationID))
         )
@@ -1720,26 +1721,6 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             ConversationID(rawValue: "group_\(contact.wxid)")
         case .service, .system, .stranger:
             ConversationID(rawValue: "contact_\(contact.wxid)")
-        }
-    }
-
-    private static func postConversationsDidChangeNotification(
-        userID: UserID,
-        conversationIDs: Set<ConversationID>
-    ) {
-        guard !conversationIDs.isEmpty else { return }
-
-        let rawUserID = userID.rawValue
-        let rawConversationIDs = conversationIDs.map(\.rawValue)
-        Task { @MainActor in
-            NotificationCenter.default.post(
-                name: .chatStoreConversationsDidChange,
-                object: nil,
-                userInfo: [
-                    ChatStoreConversationChangeNotification.userIDKey: rawUserID,
-                    ChatStoreConversationChangeNotification.conversationIDsKey: rawConversationIDs
-                ]
-            )
         }
     }
 
@@ -1947,7 +1928,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     }
 
     private func notifyIncomingMessages(_ messages: [IncomingSyncMessage], userID: UserID, badgeCount: Int) async {
-        guard let localNotificationManager, !messages.isEmpty else {
+        guard !messages.isEmpty else {
             return
         }
 
@@ -1962,6 +1943,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             return
         }
 
+        var payloads: [IncomingMessageNotificationPayload] = []
         for message in messages {
             let fallbackTitle = message.conversationTitle ?? "ChatBridge"
             let context: NotificationConversationContext
@@ -1980,7 +1962,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                 continue
             }
 
-            try? await localNotificationManager.scheduleIncomingMessageNotification(
+            payloads.append(
                 IncomingMessageNotificationPayload(
                     userID: userID,
                     conversationID: message.conversationID,
@@ -1994,6 +1976,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                 )
             )
         }
+
+        await eventDispatcher.scheduleIncomingMessageNotifications(payloads)
     }
 
     private func notificationConversationContext(
@@ -2109,24 +2093,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     }
 
     private func scheduleMessageIndex(messageID: MessageID, userID: UserID) {
-        let searchIndex = SearchIndexActor(database: database, paths: paths)
-        Task {
-            await searchIndex.indexMessageBestEffort(messageID: messageID, userID: userID)
-        }
+        eventDispatcher.indexMessageBestEffort(messageID: messageID, userID: userID)
     }
 
     private func scheduleMessageRemoval(messageID: MessageID, userID: UserID) {
-        let searchIndex = SearchIndexActor(database: database, paths: paths)
-        Task {
-            await searchIndex.removeMessageBestEffort(messageID: messageID, userID: userID)
-        }
+        eventDispatcher.removeMessageBestEffort(messageID: messageID, userID: userID)
     }
 
     private func scheduleConversationIndex(conversationID: ConversationID, userID: UserID) {
-        let searchIndex = SearchIndexActor(database: database, paths: paths)
-        Task {
-            await searchIndex.indexConversationBestEffort(conversationID: conversationID, userID: userID)
-        }
+        eventDispatcher.indexConversationBestEffort(conversationID: conversationID, userID: userID)
     }
 
     private static func mediaIndexRecord(from row: SQLiteRow) throws -> MediaIndexRecord {
