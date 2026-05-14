@@ -24,6 +24,8 @@ actor ChatStoreProvider {
     private let localNotificationManager: (any LocalNotificationManaging)?
     /// App 角标管理器
     private let applicationBadgeManager: (any ApplicationBadgeManaging)?
+    /// 演示聊天数据目录
+    private let demoDataCatalog: any DemoDataCatalog
     /// 是否初始化演示数据。
     private let shouldSeedDemoData: Bool
     /// 日志
@@ -50,6 +52,7 @@ actor ChatStoreProvider {
         databaseKeyStore: any AccountDatabaseKeyStore = KeychainAccountDatabaseKeyStore(),
         localNotificationManager: (any LocalNotificationManaging)? = nil,
         applicationBadgeManager: (any ApplicationBadgeManaging)? = nil,
+        demoDataCatalog: any DemoDataCatalog = BundleDemoDataCatalog(),
         shouldSeedDemoData: Bool = true
     ) {
         self.accountID = accountID
@@ -58,6 +61,7 @@ actor ChatStoreProvider {
         self.databaseKeyStore = databaseKeyStore
         self.localNotificationManager = localNotificationManager
         self.applicationBadgeManager = applicationBadgeManager
+        self.demoDataCatalog = demoDataCatalog
         self.shouldSeedDemoData = shouldSeedDemoData
     }
 
@@ -114,7 +118,11 @@ actor ChatStoreProvider {
         )
         if shouldSeedDemoData {
             let seedStartUptime = ProcessInfo.processInfo.systemUptime
-            try await DemoDataSeeder.seedIfNeeded(repository: repository, userID: accountID)
+            try await DemoDataSeeder.seedIfNeeded(
+                repository: repository,
+                userID: accountID,
+                catalog: demoDataCatalog
+            )
             logger.info("ChatStoreProvider demo seed checked elapsed=\(AppLogger.elapsedMilliseconds(since: seedStartUptime))")
         }
         logger.info("ChatStoreProvider repository create completed elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))")

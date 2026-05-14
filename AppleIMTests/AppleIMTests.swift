@@ -1603,6 +1603,46 @@ struct AppleIMTests {
         #expect(contacts.last?.type == .group)
     }
 
+    @Test func bundleDemoDataCatalogReadsAccountDataFromJSON() async throws {
+        let catalog = BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 3))
+
+        let data = try await catalog.demoData(for: "mock_user", now: 10_000)
+
+        #expect(data.conversations.map(\.id.rawValue) == ["single_sondra", "group_core", "system_release"])
+        #expect(data.messages.map(\.messageID.rawValue) == [
+            "seed_single_sondra_1",
+            "seed_single_sondra_2",
+            "seed_single_sondra_3"
+        ])
+        #expect(data.messages.first?.localTime == 9_998)
+        #expect(data.messages.last?.sortSequence == 10_000)
+        #expect(data.messages.last?.direction == .incoming)
+        #expect(data.groupMembers.map(\.memberID.rawValue).contains("sondra"))
+        #expect(data.groupAnnouncements.first?.conversationID == "group_core")
+    }
+
+    @Test func bundleDemoDataCatalogReturnsEmptyDataForUnknownAccount() async throws {
+        let catalog = BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 3))
+
+        let data = try await catalog.demoData(for: "missing_user", now: 10_000)
+
+        #expect(data.conversations.isEmpty)
+        #expect(data.messages.isEmpty)
+        #expect(data.groupMembers.isEmpty)
+        #expect(data.groupAnnouncements.isEmpty)
+    }
+
+    @Test func bundleDemoDataCatalogRejectsInvalidMessageDirection() async throws {
+        let catalog = BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(
+            messageCount: 1,
+            firstMessageDirection: "sideways"
+        ))
+
+        await #expect(throws: DemoDataCatalogError.invalidMessageDirection("sideways")) {
+            _ = try await catalog.demoData(for: "mock_user", now: 10_000)
+        }
+    }
+
     @Test func demoDataSeederSeedsContactsIdempotentlyWithoutOverwritingExistingRows() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -1667,6 +1707,66 @@ struct AppleIMTests {
         #expect(contacts.map(\.contactID.rawValue) == ["contact_sondra", "group_core_contact"])
         #expect(contacts.first?.displayName == "Sondra")
         #expect(contacts.last?.type == .group)
+    }
+
+    @Test func demoDataSeederSeedsConversationsAndMessagesFromJSON() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "mock_user")
+
+        try await DemoDataSeeder.seedIfNeeded(
+            repository: repository,
+            userID: "mock_user",
+            catalog: BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 120)),
+            contactCatalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+        try await DemoDataSeeder.seedIfNeeded(
+            repository: repository,
+            userID: "mock_user",
+            catalog: BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 120)),
+            contactCatalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+
+        let conversations = try await repository.listConversations(for: "mock_user")
+        let storedMessages = try await repository.listMessages(
+            conversationID: "single_sondra",
+            limit: 200,
+            beforeSortSeq: nil
+        )
+        let groupMembers = try await repository.groupMembers(conversationID: "group_core")
+
+        #expect(conversations.map(\.id.rawValue).contains("single_sondra"))
+        #expect(conversations.first { $0.id == "single_sondra" }?.lastMessageDigest == "Sondra JSON message 120")
+        #expect(storedMessages.count == 120)
+        #expect(storedMessages.first?.text == "Sondra JSON message 120")
+        #expect(storedMessages.last?.text == "Sondra JSON message 1")
+        #expect(groupMembers.map(\.memberID.rawValue).contains("sondra"))
+    }
+
+    @Test func chatStoreProviderSkipsDemoSeedWhenDisabled() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "mock_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            demoDataCatalog: BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 120)),
+            shouldSeedDemoData: false
+        )
+
+        let repository = try await storeProvider.repository()
+        let conversations = try await repository.listConversations(for: "mock_user")
+        let contacts = try await repository.listContacts(for: "mock_user")
+
+        #expect(conversations.isEmpty)
+        #expect(contacts.isEmpty)
     }
 
     @Test func demoDataSeederSeedsUITestAccountAndConversationPageLoads() async throws {
@@ -4117,6 +4217,36 @@ struct AppleIMTests {
         #expect(page.rows.last.map(rowText) == "Message 60")
         #expect(page.hasMore == true)
         #expect(page.nextBeforeSortSequence == 11)
+    }
+
+    @Test func seededSondraConversationInitialPageLoadsNewestFiftyMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "mock_user")
+        try await DemoDataSeeder.seedIfNeeded(
+            repository: repository,
+            userID: "mock_user",
+            catalog: BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 120)),
+            contactCatalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+        let useCase = LocalChatUseCase(
+            userID: "mock_user",
+            conversationID: "single_sondra",
+            repository: repository,
+            conversationRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+
+        let page = try await useCase.loadInitialMessages()
+
+        #expect(page.rows.count == 50)
+        #expect(page.rows.first.map(rowText) == "Sondra JSON message 71")
+        #expect(page.rows.last.map(rowText) == "Sondra JSON message 120")
+        #expect(page.hasMore == true)
+        #expect(page.nextBeforeSortSequence == 9_951)
     }
 
     @Test func chatUseCaseOlderPageUsesSortSequenceCursor() async throws {
@@ -6607,8 +6737,50 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerDoesNotAddTopWhitespaceForShortInitialConversation() async throws {
+        let rows = (1...3).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "short_initial_visible_\(index)"),
+                text: "Short initial message \(index)",
+                sortSequence: Int64(index),
+                isOutgoing: index == 3
+            )
+        }
+        let useCase = DeferredInitialPageStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Short Initial")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+        useCase.releaseInitialPage()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let firstCell = try #require(collectionView.cellForItem(at: IndexPath(item: 0, section: 0)))
+        let firstCellFrame = firstCell.convert(firstCell.bounds, to: viewController.view)
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: viewController.view)
+        let expectedTopY = collectionFrame.minY + collectionView.adjustedContentInset.top
+
+        #expect(collectionView.contentInset.top <= viewController.view.safeAreaInsets.top + 1)
+        #expect(firstCellFrame.minY <= expectedTopY + 32)
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsInitialLatestMessageAboveInputBarWhenEnteringFromNavigation() async throws {
-        let rows = (1...22).map { index in
+        let rows = (1...120).map { index in
             makeChatRow(
                 id: MessageID(rawValue: "initial_navigation_visible_\(index)"),
                 text: "模拟推送链路应立即刷新可见界面 #4ee2ef 第 \(index) 条，这是一段用于触发多行自适应高度的聊天消息内容。",
@@ -6624,6 +6796,70 @@ struct AppleIMTests {
         let navigationController = UINavigationController(rootViewController: viewController)
         let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
         window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+        useCase.releaseInitialPage()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsInitialImageMessagesAboveInputBar() async throws {
+        let directory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let imageSizes: [(width: Int, height: Int)] = [
+            (320, 180),
+            (180, 320),
+            (320, 180),
+            (320, 180),
+            (180, 320),
+            (320, 180)
+        ]
+        let rows = try imageSizes.enumerated().map { index, size in
+            let sequence = index + 1
+            let thumbnailURL = directory.appendingPathComponent("initial_image_\(sequence).jpg")
+            try makeJPEGData(width: size.width, height: size.height, quality: 0.9)
+                .write(to: thumbnailURL, options: [.atomic])
+            return ChatMessageRowState(
+                id: MessageID(rawValue: "initial_image_visible_\(sequence)"),
+                content: .image(.init(thumbnailPath: thumbnailURL.path)),
+                sortSequence: Int64(sequence),
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: true,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            )
+        }
+        let useCase = DeferredInitialPageStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Sondra")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
         window.makeKeyAndVisible()
         defer {
             window.isHidden = true
@@ -7051,6 +7287,58 @@ struct AppleIMTests {
         #expect(buttonFrameInScrollView.maxY <= scrollView.bounds.maxY)
         #expect(removeButton.clipsToBounds == true)
         #expect(removeButton.layer.cornerRadius == 12)
+    }
+
+    @MainActor
+    @Test func chatInputBarAttachmentPreviewScrollsAcrossFullInputWidth() throws {
+        let containerView = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
+        let inputBar = ChatInputBarView()
+        inputBar.translatesAutoresizingMaskIntoConstraints = false
+        containerView.addSubview(inputBar)
+        NSLayoutConstraint.activate([
+            inputBar.leadingAnchor.constraint(equalTo: containerView.leadingAnchor),
+            inputBar.trailingAnchor.constraint(equalTo: containerView.trailingAnchor),
+            inputBar.topAnchor.constraint(equalTo: containerView.topAnchor),
+            inputBar.bottomAnchor.constraint(equalTo: containerView.bottomAnchor)
+        ])
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            ),
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-2",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            ),
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-3",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        containerView.layoutIfNeeded()
+
+        let firstItemView = try #require(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-1"))
+        let scrollView = try #require(firstItemView.superview?.superview as? UIScrollView)
+        let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
+        let scrollFrame = scrollView.convert(scrollView.bounds, to: inputBar)
+        let moreButtonFrame = moreButton.convert(moreButton.bounds, to: inputBar)
+
+        #expect(scrollFrame.minX == 0)
+        #expect(scrollFrame.maxX == inputBar.bounds.width)
+        #expect(moreButtonFrame.minX == 12)
     }
 
     @MainActor
@@ -7538,6 +7826,36 @@ struct AppleIMTests {
         第五行
         """
         setup.inputBar.textViewDidChange(textView)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(setup.collectionView.cellForItem(at: IndexPath(item: lastItem, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerRestoresBottomAlignmentWhenNearBottomLayoutDrifts() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Initial Layout Drift",
+            rowPrefix: "initial_layout_drift"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+        setup.collectionView.scrollToItem(at: IndexPath(item: lastItem, section: 0), at: .bottom, animated: false)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        setup.collectionView.setContentOffset(
+            CGPoint(x: setup.collectionView.contentOffset.x, y: setup.collectionView.contentOffset.y - 40),
+            animated: false
+        )
+        setup.viewController.viewDidLayoutSubviews()
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -12203,6 +12521,120 @@ private func makeMockContactsFile() throws -> URL {
             "isStarred": false
           }
         ]
+      }
+    ]
+    """
+    try Data(json.utf8).write(to: url, options: [.atomic])
+    return url
+}
+
+private func makeMockDemoDataFile(messageCount: Int, firstMessageDirection: String = "incoming") throws -> URL {
+    let directory = temporaryDirectory()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let url = directory.appendingPathComponent("mock_demo_data.json")
+    let messages = (1...messageCount).map { index in
+        let direction = index == 1 ? firstMessageDirection : (index.isMultiple(of: 5) ? "outgoing" : "incoming")
+        let offset = index - messageCount
+        return """
+              {
+                "conversationID": "single_sondra",
+                "senderID": "\(direction == "outgoing" ? "mock_user" : "sondra")",
+                "text": "Sondra JSON message \(index)",
+                "localTimeOffsetSeconds": \(offset),
+                "messageID": "seed_single_sondra_\(index)",
+                "serverMessageID": "server_seed_single_sondra_\(index)",
+                "sequenceOffsetSeconds": \(offset),
+                "direction": "\(direction)",
+                "readStatus": "\(direction == "incoming" ? "unread" : "read")",
+                "sortSequenceOffsetSeconds": \(offset)
+              }
+        """
+    }.joined(separator: ",\n")
+    let lastOffset = 0
+    let json = """
+    [
+      {
+        "accountID": "mock_user",
+        "conversations": [
+          {
+            "id": "single_sondra",
+            "type": "single",
+            "targetID": "sondra",
+            "title": "Sondra",
+            "avatarURL": null,
+            "unreadCount": 2,
+            "draftText": null,
+            "isPinned": true,
+            "isMuted": false,
+            "isHidden": false,
+            "createdAtOffsetSeconds": -7200
+          },
+          {
+            "id": "group_core",
+            "type": "group",
+            "targetID": "chatbridge_core",
+            "title": "ChatBridge Core",
+            "avatarURL": null,
+            "unreadCount": 0,
+            "draftText": null,
+            "isPinned": false,
+            "isMuted": true,
+            "isHidden": false,
+            "createdAtOffsetSeconds": -7200,
+            "lastMessageTimeOffsetSeconds": -1800,
+            "lastMessageDigest": "群聊 JSON seed 已接入。",
+            "sortTimestampOffsetSeconds": -1800
+          },
+          {
+            "id": "system_release",
+            "type": "system",
+            "targetID": "system",
+            "title": "系统通知",
+            "avatarURL": null,
+            "unreadCount": 0,
+            "draftText": null,
+            "isPinned": false,
+            "isMuted": false,
+            "isHidden": false,
+            "createdAtOffsetSeconds": -7200,
+            "lastMessageTimeOffsetSeconds": -3600,
+            "lastMessageDigest": "系统 JSON seed 已接入。",
+            "sortTimestampOffsetSeconds": -3600
+          }
+        ],
+        "messages": [
+    \(messages)
+        ],
+        "groupMembers": [
+          {
+            "conversationID": "group_core",
+            "memberID": "mock_user",
+            "displayName": "Me",
+            "role": "admin",
+            "joinTimeOffsetSeconds": -3600
+          },
+          {
+            "conversationID": "group_core",
+            "memberID": "sondra",
+            "displayName": "Sondra",
+            "role": "owner",
+            "joinTimeOffsetSeconds": -3500
+          }
+        ],
+        "groupAnnouncements": [
+          {
+            "conversationID": "group_core",
+            "text": "群聊 JSON seed 已接入。"
+          }
+        ],
+        "lastMessageTimeOffsetSeconds": \(lastOffset)
+      },
+      {
+        "accountID": "other_user",
+        "conversations": [],
+        "messages": [],
+        "groupMembers": [],
+        "groupAnnouncements": []
       }
     ]
     """

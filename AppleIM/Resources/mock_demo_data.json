@@ -1,0 +1,242 @@
+[
+  {
+    "accountID": "demo_user",
+    "conversations": [
+      {
+        "id": "single_sondra",
+        "type": "single",
+        "targetID": "sondra",
+        "title": "Sondra",
+        "avatarURL": null,
+        "unreadCount": 2,
+        "draftText": null,
+        "isPinned": true,
+        "isMuted": false,
+        "isHidden": false,
+        "createdAtOffsetSeconds": -14400
+      },
+      {
+        "id": "group_core",
+        "type": "group",
+        "targetID": "chatbridge_core",
+        "title": "ChatBridge Core",
+        "avatarURL": null,
+        "unreadCount": 0,
+        "draftText": null,
+        "isPinned": false,
+        "isMuted": true,
+        "isHidden": false,
+        "createdAtOffsetSeconds": -14400
+      },
+      {
+        "id": "system_release",
+        "type": "system",
+        "targetID": "system",
+        "title": "系统通知",
+        "avatarURL": null,
+        "unreadCount": 0,
+        "draftText": null,
+        "isPinned": false,
+        "isMuted": false,
+        "isHidden": false,
+        "createdAtOffsetSeconds": -14400
+      }
+    ],
+    "messageBatches": [
+      {
+        "conversationID": "single_sondra",
+        "incomingSenderID": "sondra",
+        "outgoingSenderID": "demo_user",
+        "count": 120,
+        "textPrefix": "Sondra 演示消息",
+        "messageIDPrefix": "seed_demo_sondra",
+        "serverMessageIDPrefix": "server_seed_demo_sondra",
+        "startOffsetSeconds": -7140,
+        "intervalSeconds": 60,
+        "outgoingEvery": 5
+      }
+    ],
+    "messages": [
+      {
+        "conversationID": "group_core",
+        "senderID": "ios_yan",
+        "text": "Swift 6 严格并发检查保持开启。",
+        "localTimeOffsetSeconds": -1800,
+        "messageID": "seed_demo_group_core_1",
+        "serverMessageID": "server_seed_demo_group_core_1",
+        "sequenceOffsetSeconds": -1800,
+        "direction": "incoming",
+        "readStatus": "read",
+        "sortSequenceOffsetSeconds": -1800
+      },
+      {
+        "conversationID": "system_release",
+        "senderID": "system",
+        "text": "Sprint 1 本地存储收口中。",
+        "localTimeOffsetSeconds": -7200,
+        "messageID": "seed_demo_system_release_1",
+        "serverMessageID": "server_seed_demo_system_release_1",
+        "sequenceOffsetSeconds": -7200,
+        "direction": "incoming",
+        "readStatus": "read",
+        "sortSequenceOffsetSeconds": -7200
+      }
+    ],
+    "groupMembers": [
+      {
+        "conversationID": "group_core",
+        "memberID": "demo_user",
+        "displayName": "Me",
+        "role": "admin",
+        "joinTimeOffsetSeconds": -3600
+      },
+      {
+        "conversationID": "group_core",
+        "memberID": "sondra",
+        "displayName": "Sondra",
+        "role": "owner",
+        "joinTimeOffsetSeconds": -3500
+      },
+      {
+        "conversationID": "group_core",
+        "memberID": "qa_ming",
+        "displayName": "明明",
+        "role": "member",
+        "joinTimeOffsetSeconds": -3400
+      },
+      {
+        "conversationID": "group_core",
+        "memberID": "ios_yan",
+        "displayName": "Yan",
+        "role": "member",
+        "joinTimeOffsetSeconds": -3300
+      }
+    ],
+    "groupAnnouncements": [
+      {
+        "conversationID": "group_core",
+        "text": "群聊 P1 本地闭环演示：公告、@ 成员与会话提示已接入。"
+      }
+    ]
+  },
+  {
+    "accountID": "ui_test_user",
+    "conversations": [
+      {
+        "id": "single_sondra",
+        "type": "single",
+        "targetID": "sondra",
+        "title": "Sondra",
+        "avatarURL": null,
+        "unreadCount": 2,
+        "draftText": null,
+        "isPinned": true,
+        "isMuted": false,
+        "isHidden": false,
+        "createdAtOffsetSeconds": -14400
+      },
+      {
+        "id": "group_core",
+        "type": "group",
+        "targetID": "chatbridge_core",
+        "title": "ChatBridge Core",
+        "avatarURL": null,
+        "unreadCount": 0,
+        "draftText": null,
+        "isPinned": false,
+        "isMuted": true,
+        "isHidden": false,
+        "createdAtOffsetSeconds": -14400
+      },
+      {
+        "id": "system_release",
+        "type": "system",
+        "targetID": "system",
+        "title": "系统通知",
+        "avatarURL": null,
+        "unreadCount": 0,
+        "draftText": null,
+        "isPinned": false,
+        "isMuted": false,
+        "isHidden": false,
+        "createdAtOffsetSeconds": -14400
+      }
+    ],
+    "messageBatches": [
+      {
+        "conversationID": "single_sondra",
+        "incomingSenderID": "sondra",
+        "outgoingSenderID": "ui_test_user",
+        "count": 120,
+        "textPrefix": "Sondra UI 测试消息",
+        "messageIDPrefix": "seed_ui_sondra",
+        "serverMessageIDPrefix": "server_seed_ui_sondra",
+        "startOffsetSeconds": -7140,
+        "intervalSeconds": 60,
+        "outgoingEvery": 5
+      }
+    ],
+    "messages": [
+      {
+        "conversationID": "group_core",
+        "senderID": "ios_yan",
+        "text": "Swift 6 严格并发检查保持开启。",
+        "localTimeOffsetSeconds": -1800,
+        "messageID": "seed_ui_group_core_1",
+        "serverMessageID": "server_seed_ui_group_core_1",
+        "sequenceOffsetSeconds": -1800,
+        "direction": "incoming",
+        "readStatus": "read",
+        "sortSequenceOffsetSeconds": -1800
+      },
+      {
+        "conversationID": "system_release",
+        "senderID": "system",
+        "text": "Sprint 1 本地存储收口中。",
+        "localTimeOffsetSeconds": -7200,
+        "messageID": "seed_ui_system_release_1",
+        "serverMessageID": "server_seed_ui_system_release_1",
+        "sequenceOffsetSeconds": -7200,
+        "direction": "incoming",
+        "readStatus": "read",
+        "sortSequenceOffsetSeconds": -7200
+      }
+    ],
+    "groupMembers": [
+      {
+        "conversationID": "group_core",
+        "memberID": "ui_test_user",
+        "displayName": "Me",
+        "role": "admin",
+        "joinTimeOffsetSeconds": -3600
+      },
+      {
+        "conversationID": "group_core",
+        "memberID": "sondra",
+        "displayName": "Sondra",
+        "role": "owner",
+        "joinTimeOffsetSeconds": -3500
+      },
+      {
+        "conversationID": "group_core",
+        "memberID": "qa_ming",
+        "displayName": "明明",
+        "role": "member",
+        "joinTimeOffsetSeconds": -3400
+      },
+      {
+        "conversationID": "group_core",
+        "memberID": "ios_yan",
+        "displayName": "Yan",
+        "role": "member",
+        "joinTimeOffsetSeconds": -3300
+      }
+    ],
+    "groupAnnouncements": [
+      {
+        "conversationID": "group_core",
+        "text": "群聊 P1 本地闭环演示：公告、@ 成员与会话提示已接入。"
+      }
+    ]
+  }
+]

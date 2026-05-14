@@ -18,111 +18,30 @@ nonisolated enum DemoDataSeeder {
     /// - Parameters:
     ///   - repository: 聊天仓储
     ///   - userID: 用户 ID
-    static func seedIfNeeded(repository: LocalChatRepository, userID: UserID) async throws {
+    static func seedIfNeeded(
+        repository: LocalChatRepository,
+        userID: UserID,
+        catalog: any DemoDataCatalog = BundleDemoDataCatalog(),
+        contactCatalog: any ContactCatalog = BundleContactCatalog()
+    ) async throws {
         let now = Int64(Date().timeIntervalSince1970)
         let hasConversations = try await repository.hasConversations(for: userID)
+        let demoData = try await catalog.demoData(for: userID, now: now)
 
         if !hasConversations {
-            let records = [
-                ConversationRecord(
-                    id: "single_sondra",
-                    userID: userID,
-                    type: .single,
-                    targetID: "sondra",
-                    title: "Sondra",
-                    avatarURL: nil,
-                    lastMessageID: nil,
-                    lastMessageTime: now,
-                    lastMessageDigest: "Repository/DAO 链路已接入 SQLite。",
-                    unreadCount: 2,
-                    draftText: nil,
-                    isPinned: true,
-                    isMuted: false,
-                    isHidden: false,
-                    sortTimestamp: now,
-                    updatedAt: now,
-                    createdAt: now
-                ),
-                ConversationRecord(
-                    id: "group_core",
-                    userID: userID,
-                    type: .group,
-                    targetID: "chatbridge_core",
-                    title: "ChatBridge Core",
-                    avatarURL: nil,
-                    lastMessageID: nil,
-                    lastMessageTime: now - 1_800,
-                    lastMessageDigest: "Swift 6 严格并发检查保持开启。",
-                    unreadCount: 0,
-                    draftText: nil,
-                    isPinned: false,
-                    isMuted: true,
-                    isHidden: false,
-                    sortTimestamp: now - 1_800,
-                    updatedAt: now - 1_800,
-                    createdAt: now - 1_800
-                ),
-                ConversationRecord(
-                    id: "system_release",
-                    userID: userID,
-                    type: .system,
-                    targetID: "system",
-                    title: "系统通知",
-                    avatarURL: nil,
-                    lastMessageID: nil,
-                    lastMessageTime: now - 7_200,
-                    lastMessageDigest: "Sprint 1 本地存储收口中。",
-                    unreadCount: 0,
-                    draftText: nil,
-                    isPinned: false,
-                    isMuted: false,
-                    isHidden: false,
-                    sortTimestamp: now - 7_200,
-                    updatedAt: now - 7_200,
-                    createdAt: now - 7_200
-                )
-            ]
-
-            try await repository.insertInitialConversations(records)
-            try await repository.insertInitialTextMessages(initialMessages(userID: userID, now: now))
+            try await repository.insertInitialConversations(demoData.conversations)
+            try await repository.insertInitialTextMessages(demoData.messages)
         }
 
-        try await seedContactsIfNeeded(repository: repository, userID: userID)
-        try await repository.upsertGroupMembers([
-            GroupMember(
-                conversationID: "group_core",
-                memberID: userID,
-                displayName: "Me",
-                role: .admin,
-                joinTime: now - 3_600
-            ),
-            GroupMember(
-                conversationID: "group_core",
-                memberID: "sondra",
-                displayName: "Sondra",
-                role: .owner,
-                joinTime: now - 3_500
-            ),
-            GroupMember(
-                conversationID: "group_core",
-                memberID: "qa_ming",
-                displayName: "明明",
-                role: .member,
-                joinTime: now - 3_400
-            ),
-            GroupMember(
-                conversationID: "group_core",
-                memberID: "ios_yan",
-                displayName: "Yan",
-                role: .member,
-                joinTime: now - 3_300
+        try await seedContactsIfNeeded(repository: repository, userID: userID, catalog: contactCatalog)
+        try await repository.upsertGroupMembers(demoData.groupMembers)
+        for announcement in demoData.groupAnnouncements {
+            try await repository.updateGroupAnnouncement(
+                conversationID: announcement.conversationID,
+                userID: userID,
+                text: announcement.text
             )
-        ])
-        try await repository.updateGroupAnnouncement(
-            conversationID: "group_core",
-            userID: userID,
-            text: "群聊 P1 本地闭环演示：公告、@ 成员与会话提示已接入。"
-        )
+        }
         try await seedEmojiIfNeeded(repository: repository, userID: userID, now: now)
     }
 
@@ -138,63 +57,6 @@ nonisolated enum DemoDataSeeder {
 
         let contacts = try await catalog.contacts(for: userID)
         try await repository.upsertContacts(contacts)
-    }
-
-    private static func initialMessages(userID: UserID, now: Int64) -> [InitialTextMessageInput] {
-        [
-            InitialTextMessageInput(
-                userID: userID,
-                conversationID: "single_sondra",
-                senderID: "sondra",
-                text: "本地账号存储已准备完成。",
-                localTime: now - 90,
-                messageID: "seed_single_sondra_1",
-                serverMessageID: "server_seed_single_sondra_1",
-                sequence: now - 90,
-                direction: .incoming,
-                readStatus: .unread,
-                sortSequence: now - 90
-            ),
-            InitialTextMessageInput(
-                userID: userID,
-                conversationID: "single_sondra",
-                senderID: "sondra",
-                text: "Repository/DAO 链路已接入 SQLite。",
-                localTime: now,
-                messageID: "seed_single_sondra_2",
-                serverMessageID: "server_seed_single_sondra_2",
-                sequence: now,
-                direction: .incoming,
-                readStatus: .unread,
-                sortSequence: now
-            ),
-            InitialTextMessageInput(
-                userID: userID,
-                conversationID: "group_core",
-                senderID: "ios_yan",
-                text: "Swift 6 严格并发检查保持开启。",
-                localTime: now - 1_800,
-                messageID: "seed_group_core_1",
-                serverMessageID: "server_seed_group_core_1",
-                sequence: now - 1_800,
-                direction: .incoming,
-                readStatus: .read,
-                sortSequence: now - 1_800
-            ),
-            InitialTextMessageInput(
-                userID: userID,
-                conversationID: "system_release",
-                senderID: "system",
-                text: "Sprint 1 本地存储收口中。",
-                localTime: now - 7_200,
-                messageID: "seed_system_release_1",
-                serverMessageID: "server_seed_system_release_1",
-                sequence: now - 7_200,
-                direction: .incoming,
-                readStatus: .read,
-                sortSequence: now - 7_200
-            )
-        ]
     }
 
     private static func seedEmojiIfNeeded(repository: LocalChatRepository, userID: UserID, now: Int64) async throws {

@@ -455,8 +455,8 @@ final class ChatInputBarView: UIView {
             glassContainerView.bottomAnchor.constraint(equalTo: textInputContainerView.bottomAnchor),
 
             attachmentPreviewScrollView.topAnchor.constraint(equalTo: attachmentPreviewView.topAnchor, constant: 4),
-            attachmentPreviewScrollView.leadingAnchor.constraint(equalTo: attachmentPreviewView.leadingAnchor),
-            attachmentPreviewScrollView.trailingAnchor.constraint(equalTo: attachmentPreviewView.trailingAnchor),
+            attachmentPreviewScrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            attachmentPreviewScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
             attachmentPreviewScrollView.bottomAnchor.constraint(equalTo: attachmentPreviewView.bottomAnchor, constant: -4),
             attachmentPreviewScrollView.heightAnchor.constraint(equalToConstant: 74),
 

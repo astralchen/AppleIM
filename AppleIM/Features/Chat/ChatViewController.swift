@@ -176,7 +176,11 @@ final class ChatViewController: UIViewController {
             _ = resolveInitialBottomPositioningIfPossible()
             return
         }
-        guard !isUserControllingMessageScroll, shouldMaintainBottomPosition, !lastRenderedRowIDs.isEmpty else { return }
+        guard
+            !isUserControllingMessageScroll,
+            !lastRenderedRowIDs.isEmpty,
+            shouldMaintainBottomPosition || isNearBottom()
+        else { return }
         scrollToBottom(animated: false)
     }
 
@@ -1118,7 +1122,13 @@ final class ChatViewController: UIViewController {
                 )
             } else if isInitialMessageRender {
                 self.needsInitialBottomPositioning = true
-                _ = self.resolveInitialBottomPositioningIfPossible()
+                if !self.resolveInitialBottomPositioningIfPossible() {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self else { return }
+                        self.view.layoutIfNeeded()
+                        _ = self.resolveInitialBottomPositioningIfPossible()
+                    }
+                }
             } else if wasNearBottom || shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows) {
                 // 新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: didAppendNewMessage)
@@ -1451,8 +1461,8 @@ final class ChatViewController: UIViewController {
         guard collectionView.bounds.width > 0, collectionView.bounds.height > 0 else { return }
 
         let collectionFrame = collectionView.convert(collectionView.bounds, to: view)
-        let topInset = max(0, messageOverlayTopInset(in: collectionFrame))
         let bottomInset = max(0, collectionFrame.maxY - messageOverlayBottomVisibleY())
+        let topInset = max(0, messageOverlayTopInset(in: collectionFrame))
         let targetInsets = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
 
         guard collectionView.contentInset != targetInsets else { return }
@@ -1581,9 +1591,13 @@ final class ChatViewController: UIViewController {
 
     /// 最新消息可见下边界，使用 content 坐标便于和 layout attributes 对齐。
     private func messageVisibleBottomY() -> CGFloat {
-        collectionView.contentOffset.y
-            + collectionView.bounds.height
-            - collectionView.adjustedContentInset.bottom
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: view)
+        let insetVisibleBottomY = collectionFrame.maxY - collectionView.adjustedContentInset.bottom
+        let overlayVisibleBottomY = view.window == nil
+            ? insetVisibleBottomY
+            : messageOverlayBottomVisibleY()
+        let visibleBottomY = min(insetVisibleBottomY, overlayVisibleBottomY)
+        return collectionView.contentOffset.y + max(0, visibleBottomY - collectionFrame.minY)
     }
 
     /// 当前消息可见区域高度；输入栏覆盖列表时，合法最大偏移需要用这个高度计算。
