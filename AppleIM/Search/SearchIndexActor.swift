@@ -6,16 +6,6 @@
 
 import Foundation
 
-/// 搜索索引修复任务的待处理载荷
-nonisolated private struct SearchIndexRepairJobPayload: Codable, Equatable, Sendable {
-    /// 修复范围，例如 message 或 conversation
-    let scope: String
-    /// 需要重建索引的消息 ID
-    let messageID: String?
-    /// 需要重建索引的会话 ID
-    let conversationID: String?
-}
-
 /// 搜索索引 Actor
 ///
 /// 负责写入和查询 `search.db` 中的 FTS 表，并在失败时登记异步修复任务。
@@ -350,13 +340,12 @@ actor SearchIndexActor {
         messageID: MessageID?,
         conversationID: ConversationID?
     ) async throws {
-        let payload = SearchIndexRepairJobPayload(
+        let payload = SearchIndexRepairPendingJobPayload(
             scope: scope,
             messageID: messageID?.rawValue,
             conversationID: conversationID?.rawValue
         )
-        let payloadData = try JSONEncoder().encode(payload)
-        let payloadJSON = String(decoding: payloadData, as: UTF8.self)
+        let payloadJSON = try PendingJobPayload.searchIndexRepair(payload).encodedJSON()
         let now = Int64(Date().timeIntervalSince1970)
         let bizKey = [scope, messageID?.rawValue, conversationID?.rawValue]
             .compactMap { $0 }

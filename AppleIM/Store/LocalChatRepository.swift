@@ -7,20 +7,6 @@
 
 import Foundation
 
-/// 媒体下载待处理任务负载
-///
-/// 用于序列化媒体下载任务的参数，存储在 pending_job 表的 payload_json 字段
-nonisolated private struct MediaDownloadPendingJobPayload: Codable, Equatable, Sendable {
-    /// 媒体资源 ID
-    let mediaID: String
-    /// 所属消息 ID（可选）
-    let ownerMessageID: String?
-    /// 本地文件路径
-    let localPath: String
-    /// 远程下载地址
-    let remoteURL: String
-}
-
 /// 通知会话上下文
 ///
 /// 用于发送本地通知时携带会话信息
@@ -2369,20 +2355,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             localPath: resource.localPath,
             remoteURL: resource.remoteURL
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
-        let payloadData = try encoder.encode(payload)
-
-        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
-            throw ChatStoreError.missingColumn("media_download_payload")
-        }
 
         return PendingJobInput(
             id: mediaDownloadJobID(mediaID: resource.mediaID),
             userID: resource.userID,
             type: .mediaDownload,
             bizKey: resource.mediaID,
-            payloadJSON: payloadJSON,
+            payloadJSON: try PendingJobPayload.mediaDownload(payload).encodedJSON(),
             maxRetryCount: 3,
             nextRetryAt: createdAt
         )

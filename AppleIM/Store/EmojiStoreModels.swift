@@ -90,14 +90,16 @@ nonisolated struct StoredEmojiContent: Equatable, Hashable, Sendable {
 
 /// 发出的表情消息输入。
 nonisolated struct OutgoingEmojiMessageInput: Equatable, Sendable {
-    let userID: UserID
-    let conversationID: ConversationID
-    let senderID: UserID
+    let envelope: OutgoingMessageEnvelope
     let emoji: StoredEmojiContent
-    let localTime: Int64
-    let messageID: MessageID?
-    let clientMessageID: String?
-    let sortSequence: Int64?
+
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -109,14 +111,23 @@ nonisolated struct OutgoingEmojiMessageInput: Equatable, Sendable {
         clientMessageID: String? = nil,
         sortSequence: Int64? = nil
     ) {
-        self.userID = userID
-        self.conversationID = conversationID
-        self.senderID = senderID
+        self.init(
+            envelope: OutgoingMessageEnvelope(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: clientMessageID,
+                sortSequence: sortSequence
+            ),
+            emoji: emoji
+        )
+    }
+
+    init(envelope: OutgoingMessageEnvelope, emoji: StoredEmojiContent) {
+        self.envelope = envelope
         self.emoji = emoji
-        self.localTime = localTime
-        self.messageID = messageID
-        self.clientMessageID = clientMessageID
-        self.sortSequence = sortSequence
     }
 }
 

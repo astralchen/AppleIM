@@ -140,6 +140,37 @@ nonisolated struct ConversationPageCursor: Equatable, Sendable {
     }
 }
 
+/// 发出消息的公共输入信封。
+///
+/// 收敛不同消息类型共有的发送上下文，具体内容由各 input 自己保存。
+nonisolated struct OutgoingMessageEnvelope: Equatable, Sendable {
+    let userID: UserID
+    let conversationID: ConversationID
+    let senderID: UserID
+    let localTime: Int64
+    let messageID: MessageID?
+    let clientMessageID: String?
+    let sortSequence: Int64?
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        localTime: Int64,
+        messageID: MessageID? = nil,
+        clientMessageID: String? = nil,
+        sortSequence: Int64? = nil
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.senderID = senderID
+        self.localTime = localTime
+        self.messageID = messageID
+        self.clientMessageID = clientMessageID
+        self.sortSequence = sortSequence
+    }
+}
+
 /// 初始演示文本消息输入参数。
 ///
 /// 仅用于首次账号 seed，将会话摘要背后的演示消息落到真实消息表。
@@ -200,26 +231,22 @@ nonisolated struct InitialTextMessageInput: Equatable, Sendable {
 
 /// 发出的文本消息输入参数
 nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
-    /// 用户 ID
-    let userID: UserID
-    /// 会话 ID
-    let conversationID: ConversationID
-    /// 发送者 ID
-    let senderID: UserID
+    /// 公共发送上下文
+    let envelope: OutgoingMessageEnvelope
     /// 文本内容
     let text: String
-    /// 本地时间戳
-    let localTime: Int64
-    /// 消息 ID（可选，不传则自动生成）
-    let messageID: MessageID?
-    /// 客户端消息 ID（可选，不传则使用 messageID）
-    let clientMessageID: String?
     /// 被 @ 的用户 ID 列表
     let mentionedUserIDs: [UserID]
     /// 是否 @ 所有人
     let mentionsAll: Bool
-    /// 排序序号（可选，不传则使用 localTime）
-    let sortSequence: Int64?
+
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -233,16 +260,32 @@ nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
         mentionsAll: Bool = false,
         sortSequence: Int64? = nil
     ) {
-        self.userID = userID
-        self.conversationID = conversationID
-        self.senderID = senderID
+        self.init(
+            envelope: OutgoingMessageEnvelope(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: clientMessageID,
+                sortSequence: sortSequence
+            ),
+            text: text,
+            mentionedUserIDs: mentionedUserIDs,
+            mentionsAll: mentionsAll
+        )
+    }
+
+    init(
+        envelope: OutgoingMessageEnvelope,
+        text: String,
+        mentionedUserIDs: [UserID] = [],
+        mentionsAll: Bool = false
+    ) {
+        self.envelope = envelope
         self.text = text
-        self.localTime = localTime
-        self.messageID = messageID
-        self.clientMessageID = clientMessageID
         self.mentionedUserIDs = mentionedUserIDs
         self.mentionsAll = mentionsAll
-        self.sortSequence = sortSequence
     }
 }
 
@@ -282,30 +325,55 @@ nonisolated enum GroupChatError: Error, Equatable, Sendable {
     case permissionDenied
 }
 
+/// 存储媒体内容的公共资源快照。
+///
+/// 对应各类媒体内容表与 media_resource 中共有的资源字段。
+nonisolated struct StoredMediaResourceSnapshot: Equatable, Sendable {
+    let mediaID: String
+    let localPath: String
+    let sizeBytes: Int64
+    let remoteURL: String?
+    let md5: String?
+    let uploadStatus: MediaUploadStatus
+
+    init(
+        mediaID: String,
+        localPath: String,
+        sizeBytes: Int64,
+        remoteURL: String? = nil,
+        md5: String? = nil,
+        uploadStatus: MediaUploadStatus = .pending
+    ) {
+        self.mediaID = mediaID
+        self.localPath = localPath
+        self.sizeBytes = sizeBytes
+        self.remoteURL = remoteURL
+        self.md5 = md5
+        self.uploadStatus = uploadStatus
+    }
+}
+
 /// 存储的图片内容
 ///
 /// 包含图片的元数据和本地路径
 nonisolated struct StoredImageContent: Equatable, Sendable {
-    /// 媒体 ID
-    let mediaID: String
-    /// 原图本地路径
-    let localPath: String
+    /// 公共媒体资源快照
+    let resource: StoredMediaResourceSnapshot
     /// 缩略图本地路径
     let thumbnailPath: String
     /// 宽度（像素）
     let width: Int
     /// 高度（像素）
     let height: Int
-    /// 文件大小（字节）
-    let sizeBytes: Int64
-    /// 远程 CDN URL
-    let remoteURL: String?
-    /// 文件摘要
-    let md5: String?
     /// 图片格式（jpg、png 等）
     let format: String
-    /// 上传状态
-    let uploadStatus: MediaUploadStatus
+
+    var mediaID: String { resource.mediaID }
+    var localPath: String { resource.localPath }
+    var sizeBytes: Int64 { resource.sizeBytes }
+    var remoteURL: String? { resource.remoteURL }
+    var md5: String? { resource.md5 }
+    var uploadStatus: MediaUploadStatus { resource.uploadStatus }
 
     init(
         mediaID: String,
@@ -319,16 +387,34 @@ nonisolated struct StoredImageContent: Equatable, Sendable {
         format: String,
         uploadStatus: MediaUploadStatus = .pending
     ) {
-        self.mediaID = mediaID
-        self.localPath = localPath
+        self.init(
+            resource: StoredMediaResourceSnapshot(
+                mediaID: mediaID,
+                localPath: localPath,
+                sizeBytes: sizeBytes,
+                remoteURL: remoteURL,
+                md5: md5,
+                uploadStatus: uploadStatus
+            ),
+            thumbnailPath: thumbnailPath,
+            width: width,
+            height: height,
+            format: format
+        )
+    }
+
+    init(
+        resource: StoredMediaResourceSnapshot,
+        thumbnailPath: String,
+        width: Int,
+        height: Int,
+        format: String
+    ) {
+        self.resource = resource
         self.thumbnailPath = thumbnailPath
         self.width = width
         self.height = height
-        self.sizeBytes = sizeBytes
-        self.remoteURL = remoteURL
-        self.md5 = md5
         self.format = format
-        self.uploadStatus = uploadStatus
     }
 }
 
@@ -336,20 +422,19 @@ nonisolated struct StoredImageContent: Equatable, Sendable {
 ///
 /// 包含语音文件元数据和本地路径
 nonisolated struct StoredVoiceContent: Equatable, Sendable {
-    /// 媒体 ID
-    let mediaID: String
-    /// 语音本地路径
-    let localPath: String
+    /// 公共媒体资源快照
+    let resource: StoredMediaResourceSnapshot
     /// 时长（毫秒）
     let durationMilliseconds: Int
-    /// 文件大小（字节）
-    let sizeBytes: Int64
-    /// 远程 CDN URL
-    let remoteURL: String?
     /// 语音格式（m4a、aac 等）
     let format: String
-    /// 上传状态
-    let uploadStatus: MediaUploadStatus
+
+    var mediaID: String { resource.mediaID }
+    var localPath: String { resource.localPath }
+    var sizeBytes: Int64 { resource.sizeBytes }
+    var remoteURL: String? { resource.remoteURL }
+    var md5: String? { resource.md5 }
+    var uploadStatus: MediaUploadStatus { resource.uploadStatus }
 
     init(
         mediaID: String,
@@ -360,22 +445,35 @@ nonisolated struct StoredVoiceContent: Equatable, Sendable {
         format: String,
         uploadStatus: MediaUploadStatus = .pending
     ) {
-        self.mediaID = mediaID
-        self.localPath = localPath
+        self.init(
+            resource: StoredMediaResourceSnapshot(
+                mediaID: mediaID,
+                localPath: localPath,
+                sizeBytes: sizeBytes,
+                remoteURL: remoteURL,
+                md5: nil,
+                uploadStatus: uploadStatus
+            ),
+            durationMilliseconds: durationMilliseconds,
+            format: format
+        )
+    }
+
+    init(
+        resource: StoredMediaResourceSnapshot,
+        durationMilliseconds: Int,
+        format: String
+    ) {
+        self.resource = resource
         self.durationMilliseconds = durationMilliseconds
-        self.sizeBytes = sizeBytes
-        self.remoteURL = remoteURL
         self.format = format
-        self.uploadStatus = uploadStatus
     }
 }
 
 /// 存储的视频内容
 nonisolated struct StoredVideoContent: Equatable, Sendable {
-    /// 媒体 ID
-    let mediaID: String
-    /// 视频本地路径
-    let localPath: String
+    /// 公共媒体资源快照
+    let resource: StoredMediaResourceSnapshot
     /// 缩略图本地路径
     let thumbnailPath: String
     /// 时长（毫秒）
@@ -384,14 +482,13 @@ nonisolated struct StoredVideoContent: Equatable, Sendable {
     let width: Int
     /// 高度（像素）
     let height: Int
-    /// 文件大小（字节）
-    let sizeBytes: Int64
-    /// 远程 CDN URL
-    let remoteURL: String?
-    /// 文件摘要
-    let md5: String?
-    /// 上传状态
-    let uploadStatus: MediaUploadStatus
+
+    var mediaID: String { resource.mediaID }
+    var localPath: String { resource.localPath }
+    var sizeBytes: Int64 { resource.sizeBytes }
+    var remoteURL: String? { resource.remoteURL }
+    var md5: String? { resource.md5 }
+    var uploadStatus: MediaUploadStatus { resource.uploadStatus }
 
     init(
         mediaID: String,
@@ -405,37 +502,52 @@ nonisolated struct StoredVideoContent: Equatable, Sendable {
         md5: String? = nil,
         uploadStatus: MediaUploadStatus = .pending
     ) {
-        self.mediaID = mediaID
-        self.localPath = localPath
+        self.init(
+            resource: StoredMediaResourceSnapshot(
+                mediaID: mediaID,
+                localPath: localPath,
+                sizeBytes: sizeBytes,
+                remoteURL: remoteURL,
+                md5: md5,
+                uploadStatus: uploadStatus
+            ),
+            thumbnailPath: thumbnailPath,
+            durationMilliseconds: durationMilliseconds,
+            width: width,
+            height: height
+        )
+    }
+
+    init(
+        resource: StoredMediaResourceSnapshot,
+        thumbnailPath: String,
+        durationMilliseconds: Int,
+        width: Int,
+        height: Int
+    ) {
+        self.resource = resource
         self.thumbnailPath = thumbnailPath
         self.durationMilliseconds = durationMilliseconds
         self.width = width
         self.height = height
-        self.sizeBytes = sizeBytes
-        self.remoteURL = remoteURL
-        self.md5 = md5
-        self.uploadStatus = uploadStatus
     }
 }
 
 /// 存储的文件内容
 nonisolated struct StoredFileContent: Equatable, Sendable {
-    /// 媒体 ID
-    let mediaID: String
-    /// 文件本地路径
-    let localPath: String
+    /// 公共媒体资源快照
+    let resource: StoredMediaResourceSnapshot
     /// 文件名
     let fileName: String
     /// 文件扩展名
     let fileExtension: String?
-    /// 文件大小（字节）
-    let sizeBytes: Int64
-    /// 远程 CDN URL
-    let remoteURL: String?
-    /// 文件摘要
-    let md5: String?
-    /// 上传状态
-    let uploadStatus: MediaUploadStatus
+
+    var mediaID: String { resource.mediaID }
+    var localPath: String { resource.localPath }
+    var sizeBytes: Int64 { resource.sizeBytes }
+    var remoteURL: String? { resource.remoteURL }
+    var md5: String? { resource.md5 }
+    var uploadStatus: MediaUploadStatus { resource.uploadStatus }
 
     init(
         mediaID: String,
@@ -447,14 +559,28 @@ nonisolated struct StoredFileContent: Equatable, Sendable {
         md5: String? = nil,
         uploadStatus: MediaUploadStatus = .pending
     ) {
-        self.mediaID = mediaID
-        self.localPath = localPath
+        self.init(
+            resource: StoredMediaResourceSnapshot(
+                mediaID: mediaID,
+                localPath: localPath,
+                sizeBytes: sizeBytes,
+                remoteURL: remoteURL,
+                md5: md5,
+                uploadStatus: uploadStatus
+            ),
+            fileName: fileName,
+            fileExtension: fileExtension
+        )
+    }
+
+    init(
+        resource: StoredMediaResourceSnapshot,
+        fileName: String,
+        fileExtension: String?
+    ) {
+        self.resource = resource
         self.fileName = fileName
         self.fileExtension = fileExtension
-        self.sizeBytes = sizeBytes
-        self.remoteURL = remoteURL
-        self.md5 = md5
-        self.uploadStatus = uploadStatus
     }
 }
 
@@ -472,22 +598,18 @@ nonisolated enum MediaUploadStatus: Int, Codable, Sendable {
 
 /// 发出的图片消息输入参数
 nonisolated struct OutgoingImageMessageInput: Equatable, Sendable {
-    /// 用户 ID
-    let userID: UserID
-    /// 会话 ID
-    let conversationID: ConversationID
-    /// 发送者 ID
-    let senderID: UserID
+    /// 公共发送上下文
+    let envelope: OutgoingMessageEnvelope
     /// 图片内容
     let image: StoredImageContent
-    /// 本地时间戳
-    let localTime: Int64
-    /// 消息 ID（可选，不传则自动生成）
-    let messageID: MessageID?
-    /// 客户端消息 ID（可选，不传则使用 messageID）
-    let clientMessageID: String?
-    /// 排序序号（可选，不传则使用 localTime）
-    let sortSequence: Int64?
+
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -499,35 +621,40 @@ nonisolated struct OutgoingImageMessageInput: Equatable, Sendable {
         clientMessageID: String? = nil,
         sortSequence: Int64? = nil
     ) {
-        self.userID = userID
-        self.conversationID = conversationID
-        self.senderID = senderID
+        self.init(
+            envelope: OutgoingMessageEnvelope(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: clientMessageID,
+                sortSequence: sortSequence
+            ),
+            image: image
+        )
+    }
+
+    init(envelope: OutgoingMessageEnvelope, image: StoredImageContent) {
+        self.envelope = envelope
         self.image = image
-        self.localTime = localTime
-        self.messageID = messageID
-        self.clientMessageID = clientMessageID
-        self.sortSequence = sortSequence
     }
 }
 
 /// 发出的语音消息输入参数
 nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable {
-    /// 用户 ID
-    let userID: UserID
-    /// 会话 ID
-    let conversationID: ConversationID
-    /// 发送者 ID
-    let senderID: UserID
+    /// 公共发送上下文
+    let envelope: OutgoingMessageEnvelope
     /// 语音内容
     let voice: StoredVoiceContent
-    /// 本地时间戳
-    let localTime: Int64
-    /// 消息 ID（可选，不传则自动生成）
-    let messageID: MessageID?
-    /// 客户端消息 ID（可选，不传则使用 messageID）
-    let clientMessageID: String?
-    /// 排序序号（可选，不传则使用 localTime）
-    let sortSequence: Int64?
+
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -539,27 +666,38 @@ nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable {
         clientMessageID: String? = nil,
         sortSequence: Int64? = nil
     ) {
-        self.userID = userID
-        self.conversationID = conversationID
-        self.senderID = senderID
+        self.init(
+            envelope: OutgoingMessageEnvelope(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: clientMessageID,
+                sortSequence: sortSequence
+            ),
+            voice: voice
+        )
+    }
+
+    init(envelope: OutgoingMessageEnvelope, voice: StoredVoiceContent) {
+        self.envelope = envelope
         self.voice = voice
-        self.localTime = localTime
-        self.messageID = messageID
-        self.clientMessageID = clientMessageID
-        self.sortSequence = sortSequence
     }
 }
 
 /// 发出的视频消息输入参数
 nonisolated struct OutgoingVideoMessageInput: Equatable, Sendable {
-    let userID: UserID
-    let conversationID: ConversationID
-    let senderID: UserID
+    let envelope: OutgoingMessageEnvelope
     let video: StoredVideoContent
-    let localTime: Int64
-    let messageID: MessageID?
-    let clientMessageID: String?
-    let sortSequence: Int64?
+
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -571,27 +709,38 @@ nonisolated struct OutgoingVideoMessageInput: Equatable, Sendable {
         clientMessageID: String? = nil,
         sortSequence: Int64? = nil
     ) {
-        self.userID = userID
-        self.conversationID = conversationID
-        self.senderID = senderID
+        self.init(
+            envelope: OutgoingMessageEnvelope(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: clientMessageID,
+                sortSequence: sortSequence
+            ),
+            video: video
+        )
+    }
+
+    init(envelope: OutgoingMessageEnvelope, video: StoredVideoContent) {
+        self.envelope = envelope
         self.video = video
-        self.localTime = localTime
-        self.messageID = messageID
-        self.clientMessageID = clientMessageID
-        self.sortSequence = sortSequence
     }
 }
 
 /// 发出的文件消息输入参数
 nonisolated struct OutgoingFileMessageInput: Equatable, Sendable {
-    let userID: UserID
-    let conversationID: ConversationID
-    let senderID: UserID
+    let envelope: OutgoingMessageEnvelope
     let file: StoredFileContent
-    let localTime: Int64
-    let messageID: MessageID?
-    let clientMessageID: String?
-    let sortSequence: Int64?
+
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -603,14 +752,23 @@ nonisolated struct OutgoingFileMessageInput: Equatable, Sendable {
         clientMessageID: String? = nil,
         sortSequence: Int64? = nil
     ) {
-        self.userID = userID
-        self.conversationID = conversationID
-        self.senderID = senderID
+        self.init(
+            envelope: OutgoingMessageEnvelope(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: clientMessageID,
+                sortSequence: sortSequence
+            ),
+            file: file
+        )
+    }
+
+    init(envelope: OutgoingMessageEnvelope, file: StoredFileContent) {
+        self.envelope = envelope
         self.file = file
-        self.localTime = localTime
-        self.messageID = messageID
-        self.clientMessageID = clientMessageID
-        self.sortSequence = sortSequence
     }
 }
 
@@ -674,6 +832,10 @@ nonisolated struct PendingJob: Identifiable, Equatable, Sendable {
     let updatedAt: Int64
     /// 创建时间
     let createdAt: Int64
+
+    func decodedPayload() throws -> PendingJobPayload {
+        try PendingJobPayload.decode(payloadJSON, type: type)
+    }
 }
 
 /// 待处理任务输入参数
@@ -710,6 +872,10 @@ nonisolated struct PendingJobInput: Equatable, Sendable {
         self.maxRetryCount = maxRetryCount
         self.nextRetryAt = nextRetryAt
     }
+
+    func decodedPayload() throws -> PendingJobPayload {
+        try PendingJobPayload.decode(payloadJSON, type: type)
+    }
 }
 
 /// 消息重发待处理任务载荷
@@ -720,8 +886,8 @@ nonisolated struct MessageResendPendingJobPayload: Codable, Equatable, Sendable 
     let lastFailureReason: MessageSendFailureReason?
 }
 
-/// 图片上传待处理任务载荷
-nonisolated struct ImageUploadPendingJobPayload: Codable, Equatable, Sendable {
+/// 媒体上传待处理任务载荷。
+nonisolated struct MediaUploadPendingJobPayload: Codable, Equatable, Sendable {
     let messageID: String
     let conversationID: String
     let clientMessageID: String
@@ -729,22 +895,87 @@ nonisolated struct ImageUploadPendingJobPayload: Codable, Equatable, Sendable {
     let lastFailureReason: String?
 }
 
-/// 视频上传待处理任务载荷
-nonisolated struct VideoUploadPendingJobPayload: Codable, Equatable, Sendable {
-    let messageID: String
-    let conversationID: String
-    let clientMessageID: String
-    let mediaID: String
-    let lastFailureReason: String?
+typealias ImageUploadPendingJobPayload = MediaUploadPendingJobPayload
+typealias VideoUploadPendingJobPayload = MediaUploadPendingJobPayload
+typealias FileUploadPendingJobPayload = MediaUploadPendingJobPayload
+
+/// 搜索索引修复任务载荷。
+nonisolated struct SearchIndexRepairPendingJobPayload: Codable, Equatable, Sendable {
+    let scope: String
+    let messageID: String?
+    let conversationID: String?
 }
 
-/// 文件上传待处理任务载荷
-nonisolated struct FileUploadPendingJobPayload: Codable, Equatable, Sendable {
-    let messageID: String
-    let conversationID: String
-    let clientMessageID: String
+/// 媒体下载任务载荷。
+nonisolated struct MediaDownloadPendingJobPayload: Codable, Equatable, Sendable {
     let mediaID: String
-    let lastFailureReason: String?
+    let ownerMessageID: String?
+    let localPath: String
+    let remoteURL: String
+}
+
+/// 待处理任务的类型化载荷。
+nonisolated enum PendingJobPayload: Equatable, Sendable {
+    case messageResend(MessageResendPendingJobPayload)
+    case mediaUpload(MediaUploadPendingJobPayload)
+    case searchIndexRepair(SearchIndexRepairPendingJobPayload)
+    case mediaDownload(MediaDownloadPendingJobPayload)
+
+    var jobType: PendingJobType {
+        switch self {
+        case .messageResend:
+            return .messageResend
+        case .mediaUpload:
+            return .imageUpload
+        case .searchIndexRepair:
+            return .searchIndexRepair
+        case .mediaDownload:
+            return .mediaDownload
+        }
+    }
+
+    func encodedJSON() throws -> String {
+        switch self {
+        case let .messageResend(payload):
+            return try Self.payloadJSON(from: payload)
+        case let .mediaUpload(payload):
+            return try Self.payloadJSON(from: payload)
+        case let .searchIndexRepair(payload):
+            return try Self.payloadJSON(from: payload)
+        case let .mediaDownload(payload):
+            return try Self.payloadJSON(from: payload)
+        }
+    }
+
+    static func decode(_ payloadJSON: String, type: PendingJobType) throws -> PendingJobPayload {
+        let data = Data(payloadJSON.utf8)
+        let decoder = JSONDecoder()
+
+        switch type {
+        case .messageResend:
+            return .messageResend(try decoder.decode(MessageResendPendingJobPayload.self, from: data))
+        case .imageUpload, .videoUpload, .fileUpload:
+            return .mediaUpload(try decoder.decode(MediaUploadPendingJobPayload.self, from: data))
+        case .searchIndexRepair:
+            return .searchIndexRepair(try decoder.decode(SearchIndexRepairPendingJobPayload.self, from: data))
+        case .mediaDownload:
+            return .mediaDownload(try decoder.decode(MediaDownloadPendingJobPayload.self, from: data))
+        case .thumbnailGeneration, .messageCompensationSync:
+            throw ChatStoreError.missingColumn("pending_job_payload")
+        }
+    }
+
+    private static func payloadJSON<T: Encodable>(from payload: T) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let payloadData = try encoder.encode(payload)
+
+        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
+            throw ChatStoreError.missingColumn("pending_job_payload")
+        }
+
+        return payloadJSON
+    }
 }
 
 /// 消息待处理任务构造器
@@ -786,7 +1017,7 @@ nonisolated enum PendingMessageJobFactory {
             userID: userID,
             type: .messageResend,
             bizKey: clientMessageID,
-            payloadJSON: try payloadJSON(from: payload),
+            payloadJSON: try PendingJobPayload.messageResend(payload).encodedJSON(),
             maxRetryCount: maxRetryCount,
             nextRetryAt: nextRetryAt
         )
@@ -802,7 +1033,7 @@ nonisolated enum PendingMessageJobFactory {
         maxRetryCount: Int,
         nextRetryAt: Int64?
     ) throws -> PendingJobInput {
-        let payload = ImageUploadPendingJobPayload(
+        let payload = MediaUploadPendingJobPayload(
             messageID: messageID.rawValue,
             conversationID: conversationID.rawValue,
             clientMessageID: clientMessageID,
@@ -815,7 +1046,7 @@ nonisolated enum PendingMessageJobFactory {
             userID: userID,
             type: .imageUpload,
             bizKey: clientMessageID,
-            payloadJSON: try payloadJSON(from: payload),
+            payloadJSON: try PendingJobPayload.mediaUpload(payload).encodedJSON(),
             maxRetryCount: maxRetryCount,
             nextRetryAt: nextRetryAt
         )
@@ -831,7 +1062,7 @@ nonisolated enum PendingMessageJobFactory {
         maxRetryCount: Int,
         nextRetryAt: Int64?
     ) throws -> PendingJobInput {
-        let payload = VideoUploadPendingJobPayload(
+        let payload = MediaUploadPendingJobPayload(
             messageID: messageID.rawValue,
             conversationID: conversationID.rawValue,
             clientMessageID: clientMessageID,
@@ -844,7 +1075,7 @@ nonisolated enum PendingMessageJobFactory {
             userID: userID,
             type: .videoUpload,
             bizKey: clientMessageID,
-            payloadJSON: try payloadJSON(from: payload),
+            payloadJSON: try PendingJobPayload.mediaUpload(payload).encodedJSON(),
             maxRetryCount: maxRetryCount,
             nextRetryAt: nextRetryAt
         )
@@ -860,7 +1091,7 @@ nonisolated enum PendingMessageJobFactory {
         maxRetryCount: Int,
         nextRetryAt: Int64?
     ) throws -> PendingJobInput {
-        let payload = FileUploadPendingJobPayload(
+        let payload = MediaUploadPendingJobPayload(
             messageID: messageID.rawValue,
             conversationID: conversationID.rawValue,
             clientMessageID: clientMessageID,
@@ -873,22 +1104,10 @@ nonisolated enum PendingMessageJobFactory {
             userID: userID,
             type: .fileUpload,
             bizKey: clientMessageID,
-            payloadJSON: try payloadJSON(from: payload),
+            payloadJSON: try PendingJobPayload.mediaUpload(payload).encodedJSON(),
             maxRetryCount: maxRetryCount,
             nextRetryAt: nextRetryAt
         )
-    }
-
-    private static func payloadJSON<T: Encodable>(from payload: T) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
-        let payloadData = try encoder.encode(payload)
-
-        guard let payloadJSON = String(data: payloadData, encoding: .utf8) else {
-            throw ChatStoreError.missingColumn("pending_job_payload")
-        }
-
-        return payloadJSON
     }
 }
 

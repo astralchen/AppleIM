@@ -195,6 +195,37 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
         self.canRevoke = canRevoke
     }
 
+    func copy(
+        content: ChatMessageRowContent? = nil,
+        sortSequence: Int64? = nil,
+        sentAt: Int64? = nil,
+        timeText: String? = nil,
+        showsTimeSeparator: Bool? = nil,
+        statusText: String? = nil,
+        uploadProgress: Double? = nil,
+        senderAvatarURL: String? = nil,
+        isOutgoing: Bool? = nil,
+        canRetry: Bool? = nil,
+        canDelete: Bool? = nil,
+        canRevoke: Bool? = nil
+    ) -> ChatMessageRowState {
+        ChatMessageRowState(
+            id: id,
+            content: content ?? self.content,
+            sortSequence: sortSequence ?? self.sortSequence,
+            sentAt: sentAt ?? self.sentAt,
+            timeText: timeText ?? self.timeText,
+            showsTimeSeparator: showsTimeSeparator ?? self.showsTimeSeparator,
+            statusText: statusText ?? self.statusText,
+            uploadProgress: uploadProgress ?? self.uploadProgress,
+            senderAvatarURL: senderAvatarURL ?? self.senderAvatarURL,
+            isOutgoing: isOutgoing ?? self.isOutgoing,
+            canRetry: canRetry ?? self.canRetry,
+            canDelete: canDelete ?? self.canDelete,
+            canRevoke: canRevoke ?? self.canRevoke
+        )
+    }
+
     func withVoicePlayback(isPlaying: Bool, isUnplayed: Bool? = nil) -> ChatMessageRowState {
         guard let voice = voiceContent else {
             return self
@@ -209,21 +240,7 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             playbackElapsedMilliseconds: isPlaying ? voice.playbackElapsedMilliseconds : 0
         )
 
-        return ChatMessageRowState(
-            id: id,
-            content: .voice(updatedVoice),
-            sortSequence: sortSequence,
-            sentAt: sentAt,
-            timeText: timeText,
-            showsTimeSeparator: showsTimeSeparator,
-            statusText: statusText,
-            uploadProgress: uploadProgress,
-            senderAvatarURL: senderAvatarURL,
-            isOutgoing: isOutgoing,
-            canRetry: canRetry,
-            canDelete: canDelete,
-            canRevoke: canRevoke
-        )
+        return copy(content: .voice(updatedVoice))
     }
 
     func withVoicePlaybackProgress(_ progress: VoicePlaybackProgress) -> ChatMessageRowState {
@@ -243,39 +260,11 @@ nonisolated struct ChatMessageRowState: Identifiable, Hashable, Sendable {
             playbackElapsedMilliseconds: progress.elapsedMilliseconds
         )
 
-        return ChatMessageRowState(
-            id: id,
-            content: .voice(updatedVoice),
-            sortSequence: sortSequence,
-            sentAt: sentAt,
-            timeText: timeText,
-            showsTimeSeparator: showsTimeSeparator,
-            statusText: statusText,
-            uploadProgress: uploadProgress,
-            senderAvatarURL: senderAvatarURL,
-            isOutgoing: isOutgoing,
-            canRetry: canRetry,
-            canDelete: canDelete,
-            canRevoke: canRevoke
-        )
+        return copy(content: .voice(updatedVoice))
     }
 
     func withTimeSeparator(_ showsTimeSeparator: Bool) -> ChatMessageRowState {
-        ChatMessageRowState(
-            id: id,
-            content: content,
-            sortSequence: sortSequence,
-            sentAt: sentAt,
-            timeText: timeText,
-            showsTimeSeparator: showsTimeSeparator,
-            statusText: statusText,
-            uploadProgress: uploadProgress,
-            senderAvatarURL: senderAvatarURL,
-            isOutgoing: isOutgoing,
-            canRetry: canRetry,
-            canDelete: canDelete,
-            canRevoke: canRevoke
-        )
+        copy(showsTimeSeparator: showsTimeSeparator)
     }
 
     var voiceContent: ChatMessageRowContent.VoiceContent? {
