@@ -325,6 +325,112 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func conversationListViewModelMarksSimulationAndBackgroundRefreshRenderIntents() async throws {
+        let useCase = ImmediateResultSlowRefreshConversationListUseCase()
+        let viewModel = ConversationListViewModel(useCase: useCase)
+        var capturedStates: [ConversationListViewState] = []
+        let cancellable = viewModel.statePublisher.sink { state in
+            capturedStates.append(state)
+        }
+        defer {
+            cancellable.cancel()
+        }
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.simulateIncomingMessages()
+        try await waitForCondition {
+            capturedStates.contains(where: { $0.renderIntent == .simulatedIncoming })
+        }
+
+        let simulatedStateCandidate = capturedStates.last(where: { state in
+            state.renderIntent == ConversationListViewState.RenderIntent.simulatedIncoming
+        })
+        let simulatedState = try #require(simulatedStateCandidate)
+        #expect(simulatedState.rows.first?.subtitle == "Immediate simulation result")
+        #expect(simulatedState.rows.isEmpty == false)
+
+        try await waitForCondition(timeoutNanoseconds: 2_000_000_000) {
+            capturedStates.contains(where: { $0.renderIntent == .backgroundRefresh && $0.phase == .loaded })
+        }
+
+        let refreshStateCandidate = capturedStates.last(where: { state in
+            let isBackgroundRefresh = state.renderIntent == ConversationListViewState.RenderIntent.backgroundRefresh
+            let isLoaded = state.phase == ConversationListViewState.LoadingPhase.loaded
+            return isBackgroundRefresh && isLoaded
+        })
+        let refreshState = try #require(refreshStateCandidate)
+        #expect(refreshState.rows.isEmpty == false)
+    }
+
+    @MainActor
+    @Test func conversationListSnapshotPlannerAnimatesOnlySimulatedIncomingMove() {
+        let previousIDs: [ConversationID] = ["conversation_a", "conversation_b", "conversation_c"]
+        let newIDs: [ConversationID] = ["conversation_c", "conversation_a", "conversation_b"]
+
+        let plan = ConversationListSnapshotPlanner.plan(
+            previousRowIDs: previousIDs,
+            rowIDs: newIDs,
+            changedRowIDs: ["conversation_c"],
+            phase: .loaded,
+            renderIntent: .simulatedIncoming
+        )
+
+        #expect(plan.operation == .rebuild(animatingDifferences: true))
+        #expect(plan.reconfiguredRowIDs == ["conversation_c"])
+    }
+
+    @MainActor
+    @Test func conversationListSnapshotPlannerDoesNotAnimateBackgroundRefreshMove() {
+        let previousIDs: [ConversationID] = ["conversation_a", "conversation_b", "conversation_c"]
+        let newIDs: [ConversationID] = ["conversation_c", "conversation_a", "conversation_b"]
+
+        let plan = ConversationListSnapshotPlanner.plan(
+            previousRowIDs: previousIDs,
+            rowIDs: newIDs,
+            changedRowIDs: ["conversation_c"],
+            phase: .loaded,
+            renderIntent: .backgroundRefresh
+        )
+
+        #expect(plan.operation == .rebuild(animatingDifferences: false))
+        #expect(plan.reconfiguredRowIDs == ["conversation_c"])
+    }
+
+    @MainActor
+    @Test func conversationListSnapshotPlannerReconfiguresUnmovedContentChange() {
+        let rowIDs: [ConversationID] = ["conversation_a", "conversation_b"]
+
+        let plan = ConversationListSnapshotPlanner.plan(
+            previousRowIDs: rowIDs,
+            rowIDs: rowIDs,
+            changedRowIDs: ["conversation_b"],
+            phase: .loaded,
+            renderIntent: .backgroundRefresh
+        )
+
+        #expect(plan.operation == .reconfigure)
+        #expect(plan.reconfiguredRowIDs == ["conversation_b"])
+    }
+
+    @MainActor
+    @Test func conversationListSnapshotPlannerAppendsPaginationWithoutAnimation() {
+        let plan = ConversationListSnapshotPlanner.plan(
+            previousRowIDs: ["conversation_a", "conversation_b"],
+            rowIDs: ["conversation_a", "conversation_b", "conversation_c"],
+            changedRowIDs: ["conversation_a"],
+            phase: .loaded,
+            renderIntent: .pagination
+        )
+
+        #expect(plan.operation == .append(newRowIDs: ["conversation_c"]))
+        #expect(plan.reconfiguredRowIDs == ["conversation_a"])
+    }
+
+    @MainActor
     @Test func conversationListViewModelHandlesRapidSimulatedIncomingTaps() async throws {
         let useCase = DelayedSimulatingConversationListUseCase()
         let viewModel = ConversationListViewModel(useCase: useCase)

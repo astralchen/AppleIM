@@ -11,6 +11,75 @@ import UIKit
 /// 会话列表导航标题
 private let conversationListNavigationTitle = "Messages"
 
+/// 会话列表 diffable snapshot 操作计划。
+nonisolated struct ConversationListSnapshotPlan: Equatable, Sendable {
+    /// 需要执行的 snapshot 操作。
+    enum Operation: Equatable, Sendable {
+        /// 重建整个会话分区。
+        case rebuild(animatingDifferences: Bool)
+        /// 仅追加分页新行。
+        case append(newRowIDs: [ConversationID])
+        /// 仅刷新已有可见行内容。
+        case reconfigure
+        /// 无需更新 snapshot。
+        case none
+    }
+
+    /// 主要 snapshot 操作。
+    let operation: Operation
+    /// 需要在同一次 snapshot 中刷新内容的既有会话。
+    let reconfiguredRowIDs: [ConversationID]
+}
+
+/// 将列表状态变化归约成稳定、可测试的 snapshot 更新策略。
+nonisolated enum ConversationListSnapshotPlanner {
+    static func plan(
+        previousRowIDs: [ConversationID],
+        rowIDs: [ConversationID],
+        changedRowIDs: [ConversationID],
+        phase: ConversationListViewState.LoadingPhase,
+        renderIntent: ConversationListViewState.RenderIntent
+    ) -> ConversationListSnapshotPlan {
+        let currentIDSet = Set(rowIDs)
+        let previousIDSet = Set(previousRowIDs)
+        let existingChangedRowIDs = changedRowIDs.filter { currentIDSet.contains($0) && previousIDSet.contains($0) }
+
+        guard !previousRowIDs.isEmpty else {
+            return ConversationListSnapshotPlan(operation: .rebuild(animatingDifferences: false), reconfiguredRowIDs: [])
+        }
+
+        guard phase != .loading else {
+            return ConversationListSnapshotPlan(operation: .rebuild(animatingDifferences: false), reconfiguredRowIDs: existingChangedRowIDs)
+        }
+
+        guard rowIDs.count >= previousRowIDs.count else {
+            return ConversationListSnapshotPlan(operation: .rebuild(animatingDifferences: false), reconfiguredRowIDs: existingChangedRowIDs)
+        }
+
+        guard rowIDs.starts(with: previousRowIDs) else {
+            return ConversationListSnapshotPlan(
+                operation: .rebuild(animatingDifferences: renderIntent == .simulatedIncoming),
+                reconfiguredRowIDs: existingChangedRowIDs
+            )
+        }
+
+        if rowIDs.count > previousRowIDs.count {
+            let newRowIDs = Array(rowIDs.dropFirst(previousRowIDs.count))
+            let newIDSet = Set(newRowIDs)
+            return ConversationListSnapshotPlan(
+                operation: .append(newRowIDs: newRowIDs),
+                reconfiguredRowIDs: existingChangedRowIDs.filter { !newIDSet.contains($0) }
+            )
+        }
+
+        if !existingChangedRowIDs.isEmpty {
+            return ConversationListSnapshotPlan(operation: .reconfigure, reconfiguredRowIDs: existingChangedRowIDs)
+        }
+
+        return ConversationListSnapshotPlan(operation: .none, reconfiguredRowIDs: [])
+    }
+}
+
 /// 会话列表页面控制器
 @MainActor
 final class ConversationListViewController: UIViewController {
@@ -351,19 +420,31 @@ final class ConversationListViewController: UIViewController {
             "ConversationListViewController render cache prepared rows=\(rowIDs.count) changed=\(changedRowIDs.count) phase=\(state.phase.logDescription) elapsed=\(AppLogger.elapsedMilliseconds(since: cacheStartUptime))"
         )
 
-        if shouldRebuildConversationSnapshot(with: rowIDs, phase: state.phase) {
+        let snapshotPlan = ConversationListSnapshotPlanner.plan(
+            previousRowIDs: renderedConversationIDs,
+            rowIDs: rowIDs,
+            changedRowIDs: changedRowIDs,
+            phase: state.phase,
+            renderIntent: state.renderIntent
+        )
+
+        switch snapshotPlan.operation {
+        case let .rebuild(shouldAnimate):
             let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
             var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
             snapshot.appendSections([.conversations])
             snapshot.appendItems(rowIDs.map(Item.conversation), toSection: .conversations)
-            let shouldAnimate = state.phase != .loading && !renderedConversationIDs.isEmpty
+            let reconfiguredItems = snapshotPlan.reconfiguredRowIDs.map(Item.conversation)
+            if !reconfiguredItems.isEmpty {
+                snapshot.reconfigureItems(reconfiguredItems)
+            }
             dataSource?.apply(snapshot, animatingDifferences: shouldAnimate) { [weak self] in
                 guard let self else { return }
                 self.logger.info(
-                    "ConversationListViewController snapshot rebuild applied rows=\(rowIDs.count) animated=\(shouldAnimate) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                    "ConversationListViewController snapshot rebuild applied rows=\(rowIDs.count) animated=\(shouldAnimate) reconfigured=\(reconfiguredItems.count) intent=\(state.renderIntent.logDescription) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
                 )
             }
-        } else if rowIDs.count > renderedConversationIDs.count {
+        case let .append(newRowIDs):
             let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
             var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<Section, Item>()
 
@@ -371,26 +452,28 @@ final class ConversationListViewController: UIViewController {
                 snapshot.appendSections([.conversations])
             }
 
-            let newRowIDs = Array(rowIDs.dropFirst(renderedConversationIDs.count))
             snapshot.appendItems(newRowIDs.map(Item.conversation), toSection: .conversations)
-            snapshot.reconfigureItems(changedRowIDs.filter { !newRowIDs.contains($0) }.map(Item.conversation))
+            let reconfiguredItems = snapshotPlan.reconfiguredRowIDs.map(Item.conversation)
+            if !reconfiguredItems.isEmpty {
+                snapshot.reconfigureItems(reconfiguredItems)
+            }
             dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
                 guard let self else { return }
                 self.logger.info(
-                    "ConversationListViewController snapshot append applied rows=\(rowIDs.count) appended=\(newRowIDs.count) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                    "ConversationListViewController snapshot append applied rows=\(rowIDs.count) appended=\(newRowIDs.count) reconfigured=\(reconfiguredItems.count) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
                 )
             }
-        } else if !changedRowIDs.isEmpty {
+        case .reconfigure:
             let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
             var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<Section, Item>()
-            snapshot.reconfigureItems(changedRowIDs.map(Item.conversation))
+            snapshot.reconfigureItems(snapshotPlan.reconfiguredRowIDs.map(Item.conversation))
             dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in
                 guard let self else { return }
                 self.logger.info(
-                    "ConversationListViewController snapshot reconfigure applied rows=\(rowIDs.count) changed=\(changedRowIDs.count) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
+                    "ConversationListViewController snapshot reconfigure applied rows=\(rowIDs.count) changed=\(snapshotPlan.reconfiguredRowIDs.count) buildAndApplyElapsed=\(AppLogger.elapsedMilliseconds(since: snapshotStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
                 )
             }
-        } else {
+        case .none:
             logger.info(
                 "ConversationListViewController render skipped snapshot rows=\(rowIDs.count) total=\(AppLogger.elapsedMilliseconds(since: renderStartUptime))"
             )
@@ -459,19 +542,6 @@ final class ConversationListViewController: UIViewController {
         }
 
         dataSource?.apply(snapshot, animatingDifferences: true)
-    }
-
-    /// 判断是否需要完整重建会话列表快照
-    private func shouldRebuildConversationSnapshot(with rowIDs: [ConversationID], phase: ConversationListViewState.LoadingPhase) -> Bool {
-        guard !renderedConversationIDs.isEmpty else {
-            return true
-        }
-
-        guard rowIDs.count >= renderedConversationIDs.count else {
-            return true
-        }
-
-        return !rowIDs.starts(with: renderedConversationIDs) || phase == .loading
     }
 
     /// 创建列表布局
@@ -659,6 +729,25 @@ private extension ConversationListViewState.LoadingPhase {
             "loaded"
         case .failed:
             "failed"
+        }
+    }
+}
+
+private extension ConversationListViewState.RenderIntent {
+    var logDescription: String {
+        switch self {
+        case .idle:
+            "idle"
+        case .initialLoad:
+            "initialLoad"
+        case .backgroundRefresh:
+            "backgroundRefresh"
+        case .simulatedIncoming:
+            "simulatedIncoming"
+        case .localMutation:
+            "localMutation"
+        case .pagination:
+            "pagination"
         }
     }
 }

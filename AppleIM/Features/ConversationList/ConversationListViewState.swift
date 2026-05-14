@@ -57,6 +57,22 @@ nonisolated struct ConversationListRowState: Identifiable, Equatable, Sendable {
 ///
 /// 包含会话列表的所有 UI 状态
 nonisolated struct ConversationListViewState: Equatable, Sendable {
+    /// 列表渲染意图，用于让 UI 区分用户可见动作和后台校准刷新。
+    enum RenderIntent: Equatable, Sendable {
+        /// 默认渲染，不携带特殊动画意图。
+        case idle
+        /// 首屏或显式加载。
+        case initialLoad
+        /// 后台刷新或校准，不应触发列表位移动画。
+        case backgroundRefresh
+        /// 模拟推送的乐观更新，可保留一次轻微移动动画。
+        case simulatedIncoming
+        /// 本地状态更新，例如进入会话时清未读。
+        case localMutation
+        /// 分页追加。
+        case pagination
+    }
+
     /// 加载阶段
     enum LoadingPhase: Equatable, Sendable {
         /// 空闲
@@ -81,6 +97,8 @@ nonisolated struct ConversationListViewState: Equatable, Sendable {
     var hasMoreRows = false
     /// 空列表提示
     var emptyMessage = "No conversations yet"
+    /// 最近一次状态发布的渲染意图
+    var renderIntent: RenderIntent = .idle
 
     /// 是否为空
     var isEmpty: Bool {

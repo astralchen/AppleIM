@@ -108,6 +108,7 @@ final class ConversationListViewModel {
                 state.rows = []
                 state.isLoadingMore = false
                 state.hasMoreRows = false
+                state.renderIntent = .initialLoad
             }
             diagnostics.log(
                 "ConversationList loading state published generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: loadingPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
@@ -116,6 +117,7 @@ final class ConversationListViewModel {
             let refreshPublishStartUptime = ProcessInfo.processInfo.systemUptime
             publish { state in
                 state.isLoadingMore = false
+                state.renderIntent = .backgroundRefresh
             }
             diagnostics.log(
                 "ConversationList refresh state published generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: refreshPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
@@ -140,6 +142,7 @@ final class ConversationListViewModel {
                     state.rows = page.rows
                     state.hasMoreRows = page.hasMore
                     state.isLoadingMore = false
+                    state.renderIntent = showLoading ? .initialLoad : .backgroundRefresh
                 }
                 diagnostics.log(
                     "ConversationList loaded state published generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: loadedPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
@@ -167,6 +170,7 @@ final class ConversationListViewModel {
                     state.phase = .failed("Unable to load conversations")
                     state.isLoadingMore = false
                     state.hasMoreRows = false
+                    state.renderIntent = showLoading ? .initialLoad : .backgroundRefresh
                 }
                 loadTask = nil
                 diagnostics.log(
@@ -200,6 +204,7 @@ final class ConversationListViewModel {
 
         publish { state in
             state.isLoadingMore = true
+            state.renderIntent = .pagination
         }
 
         let cursor = nextCursor
@@ -216,6 +221,7 @@ final class ConversationListViewModel {
                     state.rows.append(contentsOf: page.rows.filter { !existingIDs.contains($0.id) })
                     state.hasMoreRows = page.hasMore
                     state.isLoadingMore = false
+                    state.renderIntent = .pagination
                 }
                 nextCursor = page.nextCursor
                 loadMoreTask = nil
@@ -224,6 +230,7 @@ final class ConversationListViewModel {
             } catch {
                 publish { state in
                     state.isLoadingMore = false
+                    state.renderIntent = .pagination
                 }
                 loadMoreTask = nil
             }
@@ -261,6 +268,7 @@ final class ConversationListViewModel {
                     isMuted: row.isMuted
                 )
             }
+            state.renderIntent = .localMutation
         }
     }
 
@@ -307,6 +315,7 @@ final class ConversationListViewModel {
             }
 
             state.rows.insert(result.finalRow, at: insertionIndex)
+            state.renderIntent = .simulatedIncoming
         }
     }
 
@@ -342,6 +351,7 @@ final class ConversationListViewModel {
             } catch {
                 publish { state in
                     state.phase = .failed("Unable to update conversation")
+                    state.renderIntent = .backgroundRefresh
                 }
             }
         }
