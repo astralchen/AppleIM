@@ -1539,7 +1539,9 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
 
     /// 执行文本消息重发任务
     private func runMessageResendJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
-        let payload = try JSONDecoder().decode(MessageResendPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
+        guard case let .messageResend(payload) = try job.decodedPayload() else {
+            throw ChatStoreError.missingColumn("pending_job_payload")
+        }
         let messageID = MessageID(rawValue: payload.messageID)
 
         guard let message = try await messageRepository.message(messageID: messageID) else {
@@ -1564,7 +1566,9 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
 
     /// 执行图片上传恢复任务
     private func runImageUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
-        let payload = try JSONDecoder().decode(ImageUploadPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
+        guard case let .mediaUpload(payload) = try job.decodedPayload() else {
+            throw ChatStoreError.missingColumn("pending_job_payload")
+        }
         let messageID = MessageID(rawValue: payload.messageID)
 
         guard let message = try await messageRepository.message(messageID: messageID) else {
@@ -1638,7 +1642,9 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
 
     /// 执行视频上传恢复任务
     private func runVideoUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
-        let payload = try JSONDecoder().decode(VideoUploadPendingJobPayload.self, from: Data(job.payloadJSON.utf8))
+        guard case let .mediaUpload(payload) = try job.decodedPayload() else {
+            throw ChatStoreError.missingColumn("pending_job_payload")
+        }
         let messageID = MessageID(rawValue: payload.messageID)
 
         guard let message = try await messageRepository.message(messageID: messageID) else {
