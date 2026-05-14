@@ -246,32 +246,8 @@ final class ChatViewModel {
     ///   - data: 图片数据
     ///   - preferredFileExtension: 首选文件扩展名
     func sendImage(data: Data, preferredFileExtension: String?) {
-        let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
-        logger.info("ChatViewModel sendImage started taskID=\(Self.shortLogID(taskID.uuidString))")
-        sendTasks[taskID] = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                sendTasks[taskID] = nil
-                logger.info("ChatViewModel sendImage completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
-            }
-
-            do {
-                publish { state in
-                    state.draftText = ""
-                }
-
-                for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
-                    guard !Task.isCancelled else { return }
-                    upsert(row)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                publish { state in
-                    state.phase = .failed("Unable to send image")
-                }
-            }
+        startSendTask(name: "sendImage", errorMessage: "Unable to send image") { [useCase] in
+            useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension)
         }
     }
 
@@ -327,66 +303,20 @@ final class ChatViewModel {
 
     /// 发送表情消息。
     func sendEmoji(_ emoji: EmojiAssetRecord) {
-        let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
-        logger.info("ChatViewModel sendEmoji started taskID=\(Self.shortLogID(taskID.uuidString))")
-        sendTasks[taskID] = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                sendTasks[taskID] = nil
-                logger.info("ChatViewModel sendEmoji completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
-            }
-
-            do {
-                publish { state in
-                    state.draftText = ""
-                }
-
-                for try await row in useCase.sendEmoji(emoji) {
-                    guard !Task.isCancelled else { return }
-                    upsert(row)
-                }
-                loadEmojiPanel()
-            } catch is CancellationError {
-                return
-            } catch {
-                publish { state in
-                    state.phase = .failed("Unable to send emoji")
-                }
-            }
-        }
+        startSendTask(
+            name: "sendEmoji",
+            errorMessage: "Unable to send emoji",
+            operation: { [useCase] in useCase.sendEmoji(emoji) },
+            onFinish: { [weak self] in self?.loadEmojiPanel() }
+        )
     }
 
     /// 发送语音消息
     ///
     /// - Parameter recording: 已完成的本地录音文件
     func sendVoice(recording: VoiceRecordingFile) {
-        let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
-        logger.info("ChatViewModel sendVoice started taskID=\(Self.shortLogID(taskID.uuidString))")
-        sendTasks[taskID] = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                sendTasks[taskID] = nil
-                logger.info("ChatViewModel sendVoice completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
-            }
-
-            do {
-                publish { state in
-                    state.draftText = ""
-                }
-
-                for try await row in useCase.sendVoice(recording: recording) {
-                    guard !Task.isCancelled else { return }
-                    upsert(row)
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                publish { state in
-                    state.phase = .failed("Unable to send voice")
-                }
-            }
+        startSendTask(name: "sendVoice", errorMessage: "Unable to send voice") { [useCase] in
+            useCase.sendVoice(recording: recording)
         }
     }
 
@@ -396,14 +326,25 @@ final class ChatViewModel {
     ///   - fileURL: PHPicker 或文件提供方返回的临时视频文件
     ///   - preferredFileExtension: 首选文件扩展名
     func sendVideo(fileURL: URL, preferredFileExtension: String?) {
+        startSendTask(name: "sendVideo", errorMessage: "Unable to send video") { [useCase] in
+            useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
+        }
+    }
+
+    private func startSendTask(
+        name: String,
+        errorMessage: String,
+        operation: @escaping () -> AsyncThrowingStream<ChatMessageRowState, Error>,
+        onFinish: (() -> Void)? = nil
+    ) {
         let taskID = UUID()
         let startUptime = ProcessInfo.processInfo.systemUptime
-        logger.info("ChatViewModel sendVideo started taskID=\(Self.shortLogID(taskID.uuidString))")
+        logger.info("ChatViewModel \(name) started taskID=\(Self.shortLogID(taskID.uuidString))")
         sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
             defer {
                 sendTasks[taskID] = nil
-                logger.info("ChatViewModel sendVideo completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+                logger.info("ChatViewModel \(name) completed taskID=\(Self.shortLogID(taskID.uuidString)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
             }
 
             do {
@@ -411,15 +352,16 @@ final class ChatViewModel {
                     state.draftText = ""
                 }
 
-                for try await row in useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension) {
+                for try await row in operation() {
                     guard !Task.isCancelled else { return }
                     upsert(row)
                 }
+                onFinish?()
             } catch is CancellationError {
                 return
             } catch {
                 publish { state in
-                    state.phase = .failed("Unable to send video")
+                    state.phase = .failed(errorMessage)
                 }
             }
         }

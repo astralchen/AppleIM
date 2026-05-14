@@ -332,18 +332,17 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
             case let .image(image) = message.content,
-            let clientMessageID = message.delivery.clientMessageID,
-            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+            let requirements = Self.mediaSendRequirements(message: message, upload: upload)
         else {
             return .failure(.ackMissing)
         }
 
         let request = ServerImageMessageSendRequest(
             conversationID: message.conversationID.rawValue,
-            clientMessageID: clientMessageID,
+            clientMessageID: requirements.clientMessageID,
             senderID: message.senderID.rawValue,
             mediaID: Self.nonEmptyValue(upload.mediaID) ?? image.mediaID,
-            cdnURL: cdnURL,
+            cdnURL: requirements.cdnURL,
             md5: upload.md5 ?? image.md5,
             width: image.width,
             height: image.height,
@@ -358,18 +357,17 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
             case let .voice(voice) = message.content,
-            let clientMessageID = message.delivery.clientMessageID,
-            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+            let requirements = Self.mediaSendRequirements(message: message, upload: upload)
         else {
             return .failure(.ackMissing)
         }
 
         let request = ServerVoiceMessageSendRequest(
             conversationID: message.conversationID.rawValue,
-            clientMessageID: clientMessageID,
+            clientMessageID: requirements.clientMessageID,
             senderID: message.senderID.rawValue,
             mediaID: Self.nonEmptyValue(upload.mediaID) ?? voice.mediaID,
-            cdnURL: cdnURL,
+            cdnURL: requirements.cdnURL,
             md5: upload.md5,
             durationMilliseconds: voice.durationMilliseconds,
             sizeBytes: voice.sizeBytes,
@@ -383,18 +381,17 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     func sendVideo(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
             case let .video(video) = message.content,
-            let clientMessageID = message.delivery.clientMessageID,
-            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+            let requirements = Self.mediaSendRequirements(message: message, upload: upload)
         else {
             return .failure(.ackMissing)
         }
 
         let request = ServerVideoMessageSendRequest(
             conversationID: message.conversationID.rawValue,
-            clientMessageID: clientMessageID,
+            clientMessageID: requirements.clientMessageID,
             senderID: message.senderID.rawValue,
             mediaID: Self.nonEmptyValue(upload.mediaID) ?? video.mediaID,
-            cdnURL: cdnURL,
+            cdnURL: requirements.cdnURL,
             md5: upload.md5 ?? video.md5,
             durationMilliseconds: video.durationMilliseconds,
             width: video.width,
@@ -409,18 +406,17 @@ nonisolated struct ServerMessageSendService: MessageSendService {
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
             case let .file(file) = message.content,
-            let clientMessageID = message.delivery.clientMessageID,
-            let cdnURL = Self.nonEmptyValue(upload.cdnURL)
+            let requirements = Self.mediaSendRequirements(message: message, upload: upload)
         else {
             return .failure(.ackMissing)
         }
 
         let request = ServerFileMessageSendRequest(
             conversationID: message.conversationID.rawValue,
-            clientMessageID: clientMessageID,
+            clientMessageID: requirements.clientMessageID,
             senderID: message.senderID.rawValue,
             mediaID: Self.nonEmptyValue(upload.mediaID) ?? file.mediaID,
-            cdnURL: cdnURL,
+            cdnURL: requirements.cdnURL,
             md5: upload.md5 ?? file.md5,
             fileName: file.fileName,
             fileExtension: file.fileExtension,
@@ -455,6 +451,20 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         )
 
         return await sendMedia(path: Self.sendEmojiPath, request: request)
+    }
+
+    private static func mediaSendRequirements(
+        message: StoredMessage,
+        upload: MediaUploadAck
+    ) -> MediaSendRequirements? {
+        guard
+            let clientMessageID = message.delivery.clientMessageID,
+            let cdnURL = nonEmptyValue(upload.cdnURL)
+        else {
+            return nil
+        }
+
+        return MediaSendRequirements(clientMessageID: clientMessageID, cdnURL: cdnURL)
     }
 
     private func sendMedia<Request: Encodable & Sendable>(
@@ -492,4 +502,9 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
     }
+}
+
+private struct MediaSendRequirements {
+    let clientMessageID: String
+    let cdnURL: String
 }

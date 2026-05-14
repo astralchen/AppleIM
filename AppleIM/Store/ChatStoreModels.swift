@@ -1033,20 +1033,15 @@ nonisolated enum PendingMessageJobFactory {
         maxRetryCount: Int,
         nextRetryAt: Int64?
     ) throws -> PendingJobInput {
-        let payload = MediaUploadPendingJobPayload(
-            messageID: messageID.rawValue,
-            conversationID: conversationID.rawValue,
+        try mediaUploadInput(
+            type: .imageUpload,
+            jobID: imageUploadJobID(clientMessageID: clientMessageID),
+            messageID: messageID,
+            conversationID: conversationID,
             clientMessageID: clientMessageID,
             mediaID: mediaID,
-            lastFailureReason: failureReason
-        )
-
-        return PendingJobInput(
-            id: imageUploadJobID(clientMessageID: clientMessageID),
             userID: userID,
-            type: .imageUpload,
-            bizKey: clientMessageID,
-            payloadJSON: try PendingJobPayload.mediaUpload(payload).encodedJSON(),
+            failureReason: failureReason,
             maxRetryCount: maxRetryCount,
             nextRetryAt: nextRetryAt
         )
@@ -1062,26 +1057,47 @@ nonisolated enum PendingMessageJobFactory {
         maxRetryCount: Int,
         nextRetryAt: Int64?
     ) throws -> PendingJobInput {
-        let payload = MediaUploadPendingJobPayload(
-            messageID: messageID.rawValue,
-            conversationID: conversationID.rawValue,
+        try mediaUploadInput(
+            type: .videoUpload,
+            jobID: videoUploadJobID(clientMessageID: clientMessageID),
+            messageID: messageID,
+            conversationID: conversationID,
             clientMessageID: clientMessageID,
             mediaID: mediaID,
-            lastFailureReason: failureReason
-        )
-
-        return PendingJobInput(
-            id: videoUploadJobID(clientMessageID: clientMessageID),
             userID: userID,
-            type: .videoUpload,
-            bizKey: clientMessageID,
-            payloadJSON: try PendingJobPayload.mediaUpload(payload).encodedJSON(),
+            failureReason: failureReason,
             maxRetryCount: maxRetryCount,
             nextRetryAt: nextRetryAt
         )
     }
 
     static func fileUploadInput(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        clientMessageID: String,
+        mediaID: String,
+        userID: UserID,
+        failureReason: String?,
+        maxRetryCount: Int,
+        nextRetryAt: Int64?
+    ) throws -> PendingJobInput {
+        try mediaUploadInput(
+            type: .fileUpload,
+            jobID: fileUploadJobID(clientMessageID: clientMessageID),
+            messageID: messageID,
+            conversationID: conversationID,
+            clientMessageID: clientMessageID,
+            mediaID: mediaID,
+            userID: userID,
+            failureReason: failureReason,
+            maxRetryCount: maxRetryCount,
+            nextRetryAt: nextRetryAt
+        )
+    }
+
+    private static func mediaUploadInput(
+        type: PendingJobType,
+        jobID: String,
         messageID: MessageID,
         conversationID: ConversationID,
         clientMessageID: String,
@@ -1100,9 +1116,9 @@ nonisolated enum PendingMessageJobFactory {
         )
 
         return PendingJobInput(
-            id: fileUploadJobID(clientMessageID: clientMessageID),
+            id: jobID,
             userID: userID,
-            type: .fileUpload,
+            type: type,
             bizKey: clientMessageID,
             payloadJSON: try PendingJobPayload.mediaUpload(payload).encodedJSON(),
             maxRetryCount: maxRetryCount,

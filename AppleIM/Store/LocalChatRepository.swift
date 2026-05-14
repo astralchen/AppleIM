@@ -2210,7 +2210,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         userID: UserID,
         createdAt: Int64
     ) -> [MediaIndexRecord] {
-        [
+        return [
             MediaIndexRecord(
                 mediaID: image.mediaID,
                 userID: userID,
@@ -2479,47 +2479,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         uploadAck: MediaUploadAck?,
         updatedAt: Int64
     ) -> [SQLiteStatement] {
-        [
-            SQLiteStatement(
-                """
-                UPDATE message_image
-                SET
-                    upload_status = ?,
-                    cdn_url = COALESCE(?, cdn_url),
-                    md5 = COALESCE(?, md5)
-                WHERE content_id = (
-                    SELECT content_id
-                    FROM message
-                    WHERE message_id = ?
-                    LIMIT 1
-                );
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .text(messageID.rawValue)
-                ]
-            ),
-            SQLiteStatement(
-                """
-                UPDATE media_resource
-                SET
-                    upload_status = ?,
-                    remote_url = COALESCE(?, remote_url),
-                    md5 = COALESCE(?, md5),
-                    updated_at = ?
-                WHERE owner_message_id = ?;
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .integer(updatedAt),
-                    .text(messageID.rawValue)
-                ]
-            )
-        ]
+        updateMediaUploadStatusStatements(
+            messageID: messageID,
+            status: status,
+            uploadAck: uploadAck,
+            updatedAt: updatedAt,
+            tableSpec: .image
+        )
     }
 
     private static func updateVoiceUploadStatusStatements(
@@ -2528,45 +2494,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         uploadAck: MediaUploadAck?,
         updatedAt: Int64
     ) -> [SQLiteStatement] {
-        [
-            SQLiteStatement(
-                """
-                UPDATE message_voice
-                SET
-                    upload_status = ?,
-                    cdn_url = COALESCE(?, cdn_url)
-                WHERE content_id = (
-                    SELECT content_id
-                    FROM message
-                    WHERE message_id = ?
-                    LIMIT 1
-                );
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .text(messageID.rawValue)
-                ]
-            ),
-            SQLiteStatement(
-                """
-                UPDATE media_resource
-                SET
-                    upload_status = ?,
-                    remote_url = COALESCE(?, remote_url),
-                    md5 = COALESCE(?, md5),
-                    updated_at = ?
-                WHERE owner_message_id = ?;
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .integer(updatedAt),
-                    .text(messageID.rawValue)
-                ]
-            )
-        ]
+        updateMediaUploadStatusStatements(
+            messageID: messageID,
+            status: status,
+            uploadAck: uploadAck,
+            updatedAt: updatedAt,
+            tableSpec: .voice
+        )
     }
 
     private static func updateVideoUploadStatusStatements(
@@ -2575,14 +2509,52 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         uploadAck: MediaUploadAck?,
         updatedAt: Int64
     ) -> [SQLiteStatement] {
-        [
+        updateMediaUploadStatusStatements(
+            messageID: messageID,
+            status: status,
+            uploadAck: uploadAck,
+            updatedAt: updatedAt,
+            tableSpec: .video
+        )
+    }
+
+    private static func updateFileUploadStatusStatements(
+        messageID: MessageID,
+        status: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        updatedAt: Int64
+    ) -> [SQLiteStatement] {
+        updateMediaUploadStatusStatements(
+            messageID: messageID,
+            status: status,
+            uploadAck: uploadAck,
+            updatedAt: updatedAt,
+            tableSpec: .file
+        )
+    }
+
+    private static func updateMediaUploadStatusStatements(
+        messageID: MessageID,
+        status: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        updatedAt: Int64,
+        tableSpec: MediaUploadTableSpec
+    ) -> [SQLiteStatement] {
+        var contentParameters: [SQLiteValue] = [
+            .integer(Int64(status.rawValue)),
+            .optionalText(uploadAck?.cdnURL)
+        ]
+        if tableSpec.writesContentMD5 {
+            contentParameters.append(.optionalText(uploadAck?.md5))
+        }
+        contentParameters.append(.text(messageID.rawValue))
+
+        return [
             SQLiteStatement(
                 """
-                UPDATE message_video
+                UPDATE \(tableSpec.contentTable)
                 SET
-                    upload_status = ?,
-                    cdn_url = COALESCE(?, cdn_url),
-                    md5 = COALESCE(?, md5)
+                \(tableSpec.contentSetClause)
                 WHERE content_id = (
                     SELECT content_id
                     FROM message
@@ -2590,12 +2562,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     LIMIT 1
                 );
                 """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .text(messageID.rawValue)
-                ]
+                parameters: contentParameters
             ),
             SQLiteStatement(
                 """
@@ -2618,53 +2585,29 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         ]
     }
 
-    private static func updateFileUploadStatusStatements(
-        messageID: MessageID,
-        status: MediaUploadStatus,
-        uploadAck: MediaUploadAck?,
-        updatedAt: Int64
-    ) -> [SQLiteStatement] {
-        [
-            SQLiteStatement(
+    private struct MediaUploadTableSpec {
+        let contentTable: String
+        let writesContentMD5: Bool
+
+        var contentSetClause: String {
+            if writesContentMD5 {
                 """
-                UPDATE message_file
-                SET
                     upload_status = ?,
                     cdn_url = COALESCE(?, cdn_url),
                     md5 = COALESCE(?, md5)
-                WHERE content_id = (
-                    SELECT content_id
-                    FROM message
-                    WHERE message_id = ?
-                    LIMIT 1
-                );
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .text(messageID.rawValue)
-                ]
-            ),
-            SQLiteStatement(
                 """
-                UPDATE media_resource
-                SET
+            } else {
+                """
                     upload_status = ?,
-                    remote_url = COALESCE(?, remote_url),
-                    md5 = COALESCE(?, md5),
-                    updated_at = ?
-                WHERE owner_message_id = ?;
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .integer(updatedAt),
-                    .text(messageID.rawValue)
-                ]
-            )
-        ]
+                    cdn_url = COALESCE(?, cdn_url)
+                """
+            }
+        }
+
+        static let image = MediaUploadTableSpec(contentTable: "message_image", writesContentMD5: true)
+        static let voice = MediaUploadTableSpec(contentTable: "message_voice", writesContentMD5: false)
+        static let video = MediaUploadTableSpec(contentTable: "message_video", writesContentMD5: true)
+        static let file = MediaUploadTableSpec(contentTable: "message_file", writesContentMD5: true)
     }
 
     private static func upsertPendingJobStatement(
@@ -2854,45 +2797,25 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     .integer(message.mentionsAll ? 1 : 0)
                 ]
             ),
-            SQLiteStatement(
-                """
-                INSERT INTO message (
-                    message_id,
-                    conversation_id,
-                    sender_id,
-                    client_msg_id,
-                    server_msg_id,
-                    seq,
-                    msg_type,
-                    direction,
-                    send_status,
-                    delivery_status,
-                    read_status,
-                    revoke_status,
-                    is_deleted,
-                    content_table,
-                    content_id,
-                    sort_seq,
-                    server_time,
-                    local_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?);
-                """,
-                parameters: [
-                    .text(message.messageID.rawValue),
-                    .text(message.conversationID.rawValue),
-                    .text(message.senderID.rawValue),
-                    .optionalText(message.clientMessageID),
-                    .optionalText(message.serverMessageID),
-                    .integer(message.sequence),
-                    .integer(Int64(MessageType.text.rawValue)),
-                    .integer(Int64(message.direction.rawValue)),
-                    .integer(Int64(MessageSendStatus.success.rawValue)),
-                    .text("message_text"),
-                    .text(contentID),
-                    .integer(message.sequence),
-                    .integer(message.serverTime),
-                    .integer(message.localTime)
-                ]
+            MessageDAO.insertMessageRecordStatement(
+                messageID: message.messageID,
+                conversationID: message.conversationID,
+                senderID: message.senderID,
+                clientMessageID: message.clientMessageID,
+                serverMessageID: message.serverMessageID,
+                sequence: message.sequence,
+                type: .text,
+                direction: message.direction,
+                sendStatus: .success,
+                deliveryStatus: 0,
+                readStatus: .unread,
+                revokeStatus: 0,
+                isDeleted: false,
+                contentTable: "message_text",
+                contentID: contentID,
+                sortSequence: message.sequence,
+                serverTime: message.serverTime,
+                localTime: message.localTime
             )
         ]
     }

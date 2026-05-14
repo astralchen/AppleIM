@@ -2137,20 +2137,6 @@ enum TestChatError: Error {
     case expectedFailure
 }
 
-extension ChatUseCase {
-    func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish()
-        }
-    }
-
-    func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish()
-        }
-    }
-}
-
 func makeChatRow(
     id: MessageID,
     text: String,

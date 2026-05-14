@@ -183,6 +183,22 @@ func waitForConversationList(in app: XCUIApplication, file: StaticString = #file
 
 @MainActor
 func openSondraConversation(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    openConversation(cellID: "single_sondra", title: "Sondra", in: app, file: file, line: line)
+}
+
+@MainActor
+func openGroupCoreConversation(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
+    openConversation(cellID: "group_core", title: "ChatBridge Core", in: app, file: file, line: line)
+}
+
+@MainActor
+func openConversation(
+    cellID: String,
+    title: String,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
     waitForConversationList(in: app, file: file, line: line)
 
     let messageInput = app.textViews["chat.messageInput"]
@@ -191,8 +207,8 @@ func openSondraConversation(in app: XCUIApplication, file: StaticString = #fileP
     }
 
     let candidates = [
-        app.cells["conversationList.cell.single_sondra"].firstMatch,
-        app.staticTexts["Sondra"].firstMatch
+        app.cells["conversationList.cell.\(cellID)"].firstMatch,
+        app.staticTexts[title].firstMatch
     ]
     for _ in 0..<3 {
         for conversation in candidates where conversation.exists {
@@ -209,36 +225,6 @@ func openSondraConversation(in app: XCUIApplication, file: StaticString = #fileP
     }
 
     XCTFail("Expected chat message input", file: file, line: line)
-}
-
-@MainActor
-func openGroupCoreConversation(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
-    waitForConversationList(in: app, file: file, line: line)
-
-    let messageInput = app.textViews["chat.messageInput"]
-    if messageInput.waitForExistence(timeout: 1) {
-        return
-    }
-
-    let candidates = [
-        app.cells["conversationList.cell.group_core"].firstMatch,
-        app.staticTexts["ChatBridge Core"].firstMatch
-    ]
-    for _ in 0..<3 {
-        for conversation in candidates where conversation.exists {
-            if conversation.isHittable {
-                conversation.tap()
-            } else {
-                conversation.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            }
-
-            if messageInput.waitForExistence(timeout: 3) {
-                return
-            }
-        }
-    }
-
-    XCTFail("Expected group chat message input", file: file, line: line)
 }
 
 @MainActor
@@ -352,11 +338,7 @@ func waitForConversationCell(
 ) {
     let predicate = NSPredicate(format: "label CONTAINS %@", text)
     let cell = conversationCell(id: id, in: app)
-    XCTAssertTrue(cell.waitForExistence(timeout: 5), "Expected conversation cell \(id)", file: file, line: line)
-
-    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: cell)
-    let result = XCTWaiter.wait(for: [expectation], timeout: 5)
-    XCTAssertEqual(result, .completed, "Expected conversation cell \(id) label to contain \(text)", file: file, line: line)
+    assertConversationCell(cell, matches: predicate, description: "\(id) label to contain \(text)", file: file, line: line)
 }
 
 @MainActor
@@ -381,12 +363,8 @@ func waitForConversationCell(
     line: UInt = #line
 ) {
     let cell = conversationCell(containing: title, in: app)
-    XCTAssertTrue(cell.waitForExistence(timeout: 5), "Expected conversation cell \(title)", file: file, line: line)
-
     let predicate = NSPredicate(format: "NOT label CONTAINS %@", text)
-    let expectation = XCTNSPredicateExpectation(predicate: predicate, object: cell)
-    let result = XCTWaiter.wait(for: [expectation], timeout: 5)
-    XCTAssertEqual(result, .completed, "Expected conversation cell \(title) label not to contain \(text)", file: file, line: line)
+    assertConversationCell(cell, matches: predicate, description: "\(title) label not to contain \(text)", file: file, line: line)
 }
 
 @MainActor
@@ -399,11 +377,21 @@ func waitForConversationCell(
 ) {
     let predicate = NSPredicate(format: "NOT label CONTAINS %@", text)
     let cell = conversationCell(id: id, in: app)
-    XCTAssertTrue(cell.waitForExistence(timeout: 5), "Expected conversation cell \(id)", file: file, line: line)
+    assertConversationCell(cell, matches: predicate, description: "\(id) label not to contain \(text)", file: file, line: line)
+}
 
+@MainActor
+private func assertConversationCell(
+    _ cell: XCUIElement,
+    matches predicate: NSPredicate,
+    description: String,
+    file: StaticString,
+    line: UInt
+) {
+    XCTAssertTrue(cell.waitForExistence(timeout: 5), "Expected conversation cell \(description)", file: file, line: line)
     let expectation = XCTNSPredicateExpectation(predicate: predicate, object: cell)
     let result = XCTWaiter.wait(for: [expectation], timeout: 5)
-    XCTAssertEqual(result, .completed, "Expected conversation cell \(id) label not to contain \(text)", file: file, line: line)
+    XCTAssertEqual(result, .completed, "Expected conversation cell \(description)", file: file, line: line)
 }
 
 @MainActor

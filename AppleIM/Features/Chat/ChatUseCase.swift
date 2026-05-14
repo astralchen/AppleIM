@@ -124,6 +124,22 @@ extension ChatUseCase {
         sendText(text)
     }
 
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
     func loadGroupContext() async throws -> GroupChatContext? {
         nil
     }
@@ -145,6 +161,10 @@ extension ChatUseCase {
     }
 
     func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    private static func emptyRowStream() -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()
         }
@@ -411,159 +431,126 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
     /// 发送图片消息并流式返回上传和发送状态
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    guard let mediaFileStore else {
-                        continuation.finish()
-                        return
-                    }
-
-                    let now = Int64(Date().timeIntervalSince1970)
-                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
-                    let storedImage = try await mediaFileStore.saveImage(
-                        data: data,
-                        preferredFileExtension: preferredFileExtension
-                    )
-                    let insertedMessage = try await repository.insertOutgoingImageMessage(
-                        OutgoingImageMessageInput(
-                            userID: userID,
-                            conversationID: conversationID,
-                            senderID: userID,
-                            image: storedImage.content,
-                            localTime: now,
-                            sortSequence: now
-                        )
-                    )
-
-                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
-                    try await uploadAndSendImage(insertedMessage, continuation: continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
+        sendPreparedMediaMessage(operation: .image) {
+            guard let mediaFileStore else {
+                return nil
             }
 
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+            let now = Self.currentTimestamp()
+            try await repository.clearDraft(conversationID: conversationID, userID: userID)
+            let storedImage = try await mediaFileStore.saveImage(
+                data: data,
+                preferredFileExtension: preferredFileExtension
+            )
+            return try await repository.insertOutgoingImageMessage(
+                OutgoingImageMessageInput(
+                    userID: userID,
+                    conversationID: conversationID,
+                    senderID: userID,
+                    image: storedImage.content,
+                    localTime: now,
+                    sortSequence: now
+                )
+            )
         }
     }
 
     /// 发送语音消息并流式返回上传和发送状态
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            guard recording.durationMilliseconds >= Self.minimumVoiceDurationMilliseconds else {
+        guard recording.durationMilliseconds >= Self.minimumVoiceDurationMilliseconds else {
+            return AsyncThrowingStream { continuation in
                 continuation.finish()
-                return
+            }
+        }
+
+        return sendPreparedMediaMessage(operation: .voice) {
+            guard let mediaFileStore else {
+                return nil
             }
 
-            let task = Task {
-                do {
-                    guard let mediaFileStore else {
-                        continuation.finish()
-                        return
-                    }
-
-                    let now = Int64(Date().timeIntervalSince1970)
-                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
-                    let storedVoice = try await mediaFileStore.saveVoice(
-                        recordingURL: recording.fileURL,
-                        durationMilliseconds: recording.durationMilliseconds,
-                        preferredFileExtension: recording.fileExtension
-                    )
-                    let insertedMessage = try await repository.insertOutgoingVoiceMessage(
-                        OutgoingVoiceMessageInput(
-                            userID: userID,
-                            conversationID: conversationID,
-                            senderID: userID,
-                            voice: storedVoice.content,
-                            localTime: now,
-                            sortSequence: now
-                        )
-                    )
-
-                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
-                    try await uploadAndSendVoice(insertedMessage, continuation: continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+            let now = Self.currentTimestamp()
+            try await repository.clearDraft(conversationID: conversationID, userID: userID)
+            let storedVoice = try await mediaFileStore.saveVoice(
+                recordingURL: recording.fileURL,
+                durationMilliseconds: recording.durationMilliseconds,
+                preferredFileExtension: recording.fileExtension
+            )
+            return try await repository.insertOutgoingVoiceMessage(
+                OutgoingVoiceMessageInput(
+                    userID: userID,
+                    conversationID: conversationID,
+                    senderID: userID,
+                    voice: storedVoice.content,
+                    localTime: now,
+                    sortSequence: now
+                )
+            )
         }
     }
 
     /// 发送视频消息并流式返回上传和发送状态
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    guard let mediaFileStore else {
-                        continuation.finish()
-                        return
-                    }
-
-                    let now = Int64(Date().timeIntervalSince1970)
-                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
-                    let storedVideo = try await mediaFileStore.saveVideo(
-                        fileURL: fileURL,
-                        preferredFileExtension: preferredFileExtension
-                    )
-                    let insertedMessage = try await repository.insertOutgoingVideoMessage(
-                        OutgoingVideoMessageInput(
-                            userID: userID,
-                            conversationID: conversationID,
-                            senderID: userID,
-                            video: storedVideo.content,
-                            localTime: now,
-                            sortSequence: now
-                        )
-                    )
-
-                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
-                    try await uploadAndSendVideo(insertedMessage, continuation: continuation)
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
+        sendPreparedMediaMessage(operation: .video) {
+            guard let mediaFileStore else {
+                return nil
             }
 
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+            let now = Self.currentTimestamp()
+            try await repository.clearDraft(conversationID: conversationID, userID: userID)
+            let storedVideo = try await mediaFileStore.saveVideo(
+                fileURL: fileURL,
+                preferredFileExtension: preferredFileExtension
+            )
+            return try await repository.insertOutgoingVideoMessage(
+                OutgoingVideoMessageInput(
+                    userID: userID,
+                    conversationID: conversationID,
+                    senderID: userID,
+                    video: storedVideo.content,
+                    localTime: now,
+                    sortSequence: now
+                )
+            )
         }
     }
 
     /// 发送文件消息并流式返回上传和发送状态
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        sendPreparedMediaMessage(operation: .file) {
+            guard let mediaFileStore else {
+                return nil
+            }
+
+            let now = Self.currentTimestamp()
+            try await repository.clearDraft(conversationID: conversationID, userID: userID)
+            let storedFile = try await mediaFileStore.saveFile(fileURL: fileURL)
+            return try await repository.insertOutgoingFileMessage(
+                OutgoingFileMessageInput(
+                    userID: userID,
+                    conversationID: conversationID,
+                    senderID: userID,
+                    file: storedFile.content,
+                    localTime: now,
+                    sortSequence: now
+                )
+            )
+        }
+    }
+
+    private func sendPreparedMediaMessage(
+        operation: MediaUploadOperation,
+        prepareMessage: @escaping @Sendable () async throws -> StoredMessage?
+    ) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    guard let mediaFileStore else {
+                    guard let insertedMessage = try await prepareMessage() else {
                         continuation.finish()
                         return
                     }
 
-                    let now = Int64(Date().timeIntervalSince1970)
-                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
-                    let storedFile = try await mediaFileStore.saveFile(fileURL: fileURL)
-                    let insertedMessage = try await repository.insertOutgoingFileMessage(
-                        OutgoingFileMessageInput(
-                            userID: userID,
-                            conversationID: conversationID,
-                            senderID: userID,
-                            file: storedFile.content,
-                            localTime: now,
-                            sortSequence: now
-                        )
-                    )
-
                     continuation.yield(row(from: insertedMessage, currentUserID: userID))
-                    try await uploadAndSendFile(insertedMessage, continuation: continuation)
+                    try await uploadAndSendMedia(insertedMessage, operation: operation, continuation: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -766,7 +753,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     if existingMessage.type == .image {
                         let sendingMessage = try await repository.resendImageMessage(messageID: messageID)
                         continuation.yield(row(from: sendingMessage, currentUserID: userID))
-                        try await uploadAndSendImage(sendingMessage, continuation: continuation)
+                        try await uploadAndSendMedia(sendingMessage, operation: .image, continuation: continuation)
                         continuation.finish()
                         return
                     }
@@ -774,7 +761,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     if existingMessage.type == .video {
                         let sendingMessage = try await repository.resendVideoMessage(messageID: messageID)
                         continuation.yield(row(from: sendingMessage, currentUserID: userID))
-                        try await uploadAndSendVideo(sendingMessage, continuation: continuation)
+                        try await uploadAndSendMedia(sendingMessage, operation: .video, continuation: continuation)
                         continuation.finish()
                         return
                     }
@@ -782,7 +769,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                     if existingMessage.type == .file {
                         let sendingMessage = try await repository.resendFileMessage(messageID: messageID)
                         continuation.yield(row(from: sendingMessage, currentUserID: userID))
-                        try await uploadAndSendFile(sendingMessage, continuation: continuation)
+                        try await uploadAndSendMedia(sendingMessage, operation: .file, continuation: continuation)
                         continuation.finish()
                         return
                     }
@@ -905,14 +892,14 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
-    /// 上传图片并发送图片消息体
-    ///
-    /// 图片已完成本地落盘和消息入库，这里只负责上传、ack 和失败恢复任务。
-    private func uploadAndSendImage(
+    /// 上传媒体并发送消息体。
+    private func uploadAndSendMedia(
         _ message: StoredMessage,
+        operation: MediaUploadOperation,
         continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
     ) async throws {
-        try await repository.updateImageUploadStatus(
+        try await operation.updateStatus(
+            repository: repository,
             messageID: message.id,
             uploadStatus: .uploading,
             uploadAck: nil,
@@ -921,408 +908,97 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             pendingJob: nil
         )
 
-        for await event in mediaUploadService.uploadImage(message: message) {
+        for await event in operation.upload(using: mediaUploadService, message: message) {
             switch event {
             case let .progress(progress):
                 continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
             case let .completed(uploadAck):
-                let result = await sendService.sendImage(message: message, upload: uploadAck)
+                let result = await operation.send(using: sendService, message: message, upload: uploadAck)
                 let finalStatus: MessageSendStatus
-                let imageUploadStatus: MediaUploadStatus
+                let uploadStatus: MediaUploadStatus
                 let sendAck: MessageSendAck?
 
                 switch result {
                 case let .success(ack):
                     finalStatus = .success
-                    imageUploadStatus = .success
+                    uploadStatus = .success
                     sendAck = ack
-                    try await markImageUploadJobSuccess(for: message)
+                    try await operation.markUploadJobSuccess(for: message, repository: pendingJobRepository)
                 case .failure:
                     finalStatus = .failed
-                    imageUploadStatus = .failed
+                    uploadStatus = .failed
                     sendAck = nil
                 }
 
-                try await repository.updateImageUploadStatus(
+                try await operation.updateStatus(
+                    repository: repository,
                     messageID: message.id,
-                    uploadStatus: imageUploadStatus,
+                    uploadStatus: uploadStatus,
                     uploadAck: uploadAck,
                     sendStatus: finalStatus,
                     sendAck: sendAck,
-                    pendingJob: finalStatus == .failed ? try makeImageUploadJobInput(
+                    pendingJob: finalStatus == .failed ? try operation.makeUploadJobInput(
                         for: message,
-                        failureReason: result.failureReason?.rawValue
+                        userID: userID,
+                        repository: pendingJobRepository,
+                        retryPolicy: retryPolicy,
+                        failureReason: result.failureReason?.rawValue,
+                        now: Self.currentTimestamp()
                     ) : nil
                 )
 
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
+                try await yieldStoredMessage(messageID: message.id, to: continuation)
                 return
             case let .failed(reason):
-                try await repository.updateImageUploadStatus(
+                try await operation.updateStatus(
+                    repository: repository,
                     messageID: message.id,
                     uploadStatus: .failed,
                     uploadAck: nil,
                     sendStatus: .failed,
                     sendAck: nil,
-                    pendingJob: try makeImageUploadJobInput(for: message, failureReason: reason.rawValue)
+                    pendingJob: try operation.makeUploadJobInput(
+                        for: message,
+                        userID: userID,
+                        repository: pendingJobRepository,
+                        retryPolicy: retryPolicy,
+                        failureReason: reason.rawValue,
+                        now: Self.currentTimestamp()
+                    )
                 )
 
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
+                try await yieldStoredMessage(messageID: message.id, to: continuation)
                 return
             }
         }
 
-        try await repository.updateImageUploadStatus(
+        guard operation.marksEmptyUploadStreamAsFailure else { return }
+        try await operation.updateStatus(
+            repository: repository,
             messageID: message.id,
             uploadStatus: .failed,
             uploadAck: nil,
             sendStatus: .failed,
             sendAck: nil,
-            pendingJob: try makeImageUploadJobInput(for: message, failureReason: MediaUploadFailureReason.unknown.rawValue)
+            pendingJob: try operation.makeUploadJobInput(
+                for: message,
+                userID: userID,
+                repository: pendingJobRepository,
+                retryPolicy: retryPolicy,
+                failureReason: MediaUploadFailureReason.unknown.rawValue,
+                now: Self.currentTimestamp()
+            )
         )
+        try await yieldStoredMessage(messageID: message.id, to: continuation)
+    }
 
-        if let updatedMessage = try await repository.message(messageID: message.id) {
+    private func yieldStoredMessage(
+        messageID: MessageID,
+        to continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
+    ) async throws {
+        if let updatedMessage = try await repository.message(messageID: messageID) {
             continuation.yield(row(from: updatedMessage, currentUserID: userID))
         }
-    }
-
-    /// 上传语音并发送语音消息体
-    ///
-    /// 语音已完成本地落盘和消息入库，这里只负责上传、ack 和最终状态。
-    private func uploadAndSendVoice(
-        _ message: StoredMessage,
-        continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
-    ) async throws {
-        try await repository.updateVoiceUploadStatus(
-            messageID: message.id,
-            uploadStatus: .uploading,
-            uploadAck: nil,
-            sendStatus: .sending,
-            sendAck: nil
-        )
-
-        for await event in mediaUploadService.uploadVoice(message: message) {
-            switch event {
-            case let .progress(progress):
-                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
-            case let .completed(uploadAck):
-                let result = await sendService.sendVoice(message: message, upload: uploadAck)
-                let finalStatus: MessageSendStatus
-                let voiceUploadStatus: MediaUploadStatus
-                let sendAck: MessageSendAck?
-
-                switch result {
-                case let .success(ack):
-                    finalStatus = .success
-                    voiceUploadStatus = .success
-                    sendAck = ack
-                case .failure:
-                    finalStatus = .failed
-                    voiceUploadStatus = .failed
-                    sendAck = nil
-                }
-
-                try await repository.updateVoiceUploadStatus(
-                    messageID: message.id,
-                    uploadStatus: voiceUploadStatus,
-                    uploadAck: uploadAck,
-                    sendStatus: finalStatus,
-                    sendAck: sendAck
-                )
-
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
-                return
-            case .failed:
-                try await repository.updateVoiceUploadStatus(
-                    messageID: message.id,
-                    uploadStatus: .failed,
-                    uploadAck: nil,
-                    sendStatus: .failed,
-                    sendAck: nil
-                )
-
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
-                return
-            }
-        }
-
-        try await repository.updateVoiceUploadStatus(
-            messageID: message.id,
-            uploadStatus: .failed,
-            uploadAck: nil,
-            sendStatus: .failed,
-            sendAck: nil
-        )
-
-        if let updatedMessage = try await repository.message(messageID: message.id) {
-            continuation.yield(row(from: updatedMessage, currentUserID: userID))
-        }
-    }
-
-    /// 上传视频并发送视频消息体
-    ///
-    /// 视频已完成本地落盘和消息入库，这里负责上传、发送 ack 和失败恢复任务。
-    private func uploadAndSendVideo(
-        _ message: StoredMessage,
-        continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
-    ) async throws {
-        try await repository.updateVideoUploadStatus(
-            messageID: message.id,
-            uploadStatus: .uploading,
-            uploadAck: nil,
-            sendStatus: .sending,
-            sendAck: nil,
-            pendingJob: nil
-        )
-
-        for await event in mediaUploadService.uploadVideo(message: message) {
-            switch event {
-            case let .progress(progress):
-                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
-            case let .completed(uploadAck):
-                let result = await sendService.sendVideo(message: message, upload: uploadAck)
-                let finalStatus: MessageSendStatus
-                let videoUploadStatus: MediaUploadStatus
-                let sendAck: MessageSendAck?
-
-                switch result {
-                case let .success(ack):
-                    finalStatus = .success
-                    videoUploadStatus = .success
-                    sendAck = ack
-                    try await markVideoUploadJobSuccess(for: message)
-                case .failure:
-                    finalStatus = .failed
-                    videoUploadStatus = .failed
-                    sendAck = nil
-                }
-
-                try await repository.updateVideoUploadStatus(
-                    messageID: message.id,
-                    uploadStatus: videoUploadStatus,
-                    uploadAck: uploadAck,
-                    sendStatus: finalStatus,
-                    sendAck: sendAck,
-                    pendingJob: finalStatus == .failed ? try makeVideoUploadJobInput(
-                        for: message,
-                        failureReason: result.failureReason?.rawValue
-                    ) : nil
-                )
-
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
-                return
-            case let .failed(reason):
-                try await repository.updateVideoUploadStatus(
-                    messageID: message.id,
-                    uploadStatus: .failed,
-                    uploadAck: nil,
-                    sendStatus: .failed,
-                    sendAck: nil,
-                    pendingJob: try makeVideoUploadJobInput(for: message, failureReason: reason.rawValue)
-                )
-
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
-                return
-            }
-        }
-    }
-
-    /// 上传文件并发送文件消息体
-    ///
-    /// 文件已完成本地落盘和消息入库，这里负责上传、发送 ack 和失败恢复任务。
-    private func uploadAndSendFile(
-        _ message: StoredMessage,
-        continuation: AsyncThrowingStream<ChatMessageRowState, Error>.Continuation
-    ) async throws {
-        try await repository.updateFileUploadStatus(
-            messageID: message.id,
-            uploadStatus: .uploading,
-            uploadAck: nil,
-            sendStatus: .sending,
-            sendAck: nil,
-            pendingJob: nil
-        )
-
-        for await event in mediaUploadService.uploadFile(message: message) {
-            switch event {
-            case let .progress(progress):
-                continuation.yield(row(from: message, currentUserID: userID, uploadProgress: progress))
-            case let .completed(uploadAck):
-                let result = await sendService.sendFile(message: message, upload: uploadAck)
-                let finalStatus: MessageSendStatus
-                let fileUploadStatus: MediaUploadStatus
-                let sendAck: MessageSendAck?
-
-                switch result {
-                case let .success(ack):
-                    finalStatus = .success
-                    fileUploadStatus = .success
-                    sendAck = ack
-                    try await markFileUploadJobSuccess(for: message)
-                case .failure:
-                    finalStatus = .failed
-                    fileUploadStatus = .failed
-                    sendAck = nil
-                }
-
-                try await repository.updateFileUploadStatus(
-                    messageID: message.id,
-                    uploadStatus: fileUploadStatus,
-                    uploadAck: uploadAck,
-                    sendStatus: finalStatus,
-                    sendAck: sendAck,
-                    pendingJob: finalStatus == .failed ? try makeFileUploadJobInput(
-                        for: message,
-                        failureReason: result.failureReason?.rawValue
-                    ) : nil
-                )
-
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
-                return
-            case let .failed(reason):
-                try await repository.updateFileUploadStatus(
-                    messageID: message.id,
-                    uploadStatus: .failed,
-                    uploadAck: nil,
-                    sendStatus: .failed,
-                    sendAck: nil,
-                    pendingJob: try makeFileUploadJobInput(for: message, failureReason: reason.rawValue)
-                )
-
-                if let updatedMessage = try await repository.message(messageID: message.id) {
-                    continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                }
-                return
-            }
-        }
-    }
-
-    /// 创建图片上传恢复任务输入参数
-    private func makeImageUploadJobInput(
-        for message: StoredMessage,
-        failureReason: String?
-    ) throws -> PendingJobInput? {
-        guard
-            pendingJobRepository != nil,
-            let clientMessageID = message.delivery.clientMessageID,
-            case let .image(image) = message.content
-        else {
-            return nil
-        }
-
-        return try PendingMessageJobFactory.imageUploadInput(
-            messageID: message.id,
-            conversationID: message.conversationID,
-            clientMessageID: clientMessageID,
-            mediaID: image.mediaID,
-            userID: userID,
-            failureReason: failureReason,
-            maxRetryCount: retryPolicy.maxRetryCount,
-            nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
-        )
-    }
-
-    /// 标记图片上传恢复任务成功
-    private func markImageUploadJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
-            return
-        }
-
-        try await pendingJobRepository.updatePendingJobStatus(
-            jobID: PendingMessageJobFactory.imageUploadJobID(clientMessageID: clientMessageID),
-            status: .success,
-            nextRetryAt: nil
-        )
-    }
-
-    /// 创建视频上传恢复任务输入参数
-    private func makeVideoUploadJobInput(
-        for message: StoredMessage,
-        failureReason: String?
-    ) throws -> PendingJobInput? {
-        guard
-            pendingJobRepository != nil,
-            let clientMessageID = message.delivery.clientMessageID,
-            case let .video(video) = message.content
-        else {
-            return nil
-        }
-
-        return try PendingMessageJobFactory.videoUploadInput(
-            messageID: message.id,
-            conversationID: message.conversationID,
-            clientMessageID: clientMessageID,
-            mediaID: video.mediaID,
-            userID: userID,
-            failureReason: failureReason,
-            maxRetryCount: retryPolicy.maxRetryCount,
-            nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
-        )
-    }
-
-    /// 创建文件上传恢复任务输入参数
-    private func makeFileUploadJobInput(
-        for message: StoredMessage,
-        failureReason: String?
-    ) throws -> PendingJobInput? {
-        guard
-            pendingJobRepository != nil,
-            let clientMessageID = message.delivery.clientMessageID,
-            case let .file(file) = message.content
-        else {
-            return nil
-        }
-
-        return try PendingMessageJobFactory.fileUploadInput(
-            messageID: message.id,
-            conversationID: message.conversationID,
-            clientMessageID: clientMessageID,
-            mediaID: file.mediaID,
-            userID: userID,
-            failureReason: failureReason,
-            maxRetryCount: retryPolicy.maxRetryCount,
-            nextRetryAt: retryPolicy.nextRetryAt(now: Self.currentTimestamp(), retryCount: 0)
-        )
-    }
-
-    /// 标记视频上传恢复任务成功
-    private func markVideoUploadJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
-            return
-        }
-
-        try await pendingJobRepository.updatePendingJobStatus(
-            jobID: PendingMessageJobFactory.videoUploadJobID(clientMessageID: clientMessageID),
-            status: .success,
-            nextRetryAt: nil
-        )
-    }
-
-    /// 标记文件上传恢复任务成功
-    private func markFileUploadJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
-            return
-        }
-
-        try await pendingJobRepository.updatePendingJobStatus(
-            jobID: PendingMessageJobFactory.fileUploadJobID(clientMessageID: clientMessageID),
-            status: .success,
-            nextRetryAt: nil
-        )
     }
 
     /// 当前秒级时间戳
@@ -1511,14 +1187,11 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
                 successCount += result.succeeded ? 1 : 0
                 rescheduledCount += result.rescheduled ? 1 : 0
                 exhaustedCount += result.exhausted ? 1 : 0
-            case .imageUpload:
-                let result = try await runImageUploadJob(job, now: now)
-                attemptedCount += result.attempted ? 1 : 0
-                successCount += result.succeeded ? 1 : 0
-                rescheduledCount += result.rescheduled ? 1 : 0
-                exhaustedCount += result.exhausted ? 1 : 0
-            case .videoUpload:
-                let result = try await runVideoUploadJob(job, now: now)
+            case .imageUpload, .videoUpload, .fileUpload:
+                guard let operation = MediaUploadOperation(jobType: job.type) else {
+                    continue
+                }
+                let result = try await runMediaUploadJob(job, operation: operation, now: now)
                 attemptedCount += result.attempted ? 1 : 0
                 successCount += result.succeeded ? 1 : 0
                 rescheduledCount += result.rescheduled ? 1 : 0
@@ -1564,8 +1237,12 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         }
     }
 
-    /// 执行图片上传恢复任务
-    private func runImageUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
+    /// 执行媒体上传恢复任务
+    private func runMediaUploadJob(
+        _ job: PendingJob,
+        operation: MediaUploadOperation,
+        now: Int64 = Int64(Date().timeIntervalSince1970)
+    ) async throws -> PendingJobAttemptResult {
         guard case let .mediaUpload(payload) = try job.decodedPayload() else {
             throw ChatStoreError.missingColumn("pending_job_payload")
         }
@@ -1577,7 +1254,8 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
         }
 
         try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .running, nextRetryAt: nil)
-        try await messageRepository.updateImageUploadStatus(
+        try await operation.updateStatus(
+            repository: messageRepository,
             messageID: messageID,
             uploadStatus: .uploading,
             uploadAck: nil,
@@ -1586,16 +1264,17 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
             pendingJob: nil
         )
 
-        for await event in mediaUploadService.uploadImage(message: message) {
+        for await event in operation.upload(using: mediaUploadService, message: message) {
             switch event {
             case .progress:
                 continue
             case let .completed(uploadAck):
-                let result = await sendService.sendImage(message: message, upload: uploadAck)
+                let result = await operation.send(using: sendService, message: message, upload: uploadAck)
 
                 switch result {
                 case let .success(sendAck):
-                    try await messageRepository.updateImageUploadStatus(
+                    try await operation.updateStatus(
+                        repository: messageRepository,
                         messageID: messageID,
                         uploadStatus: .success,
                         uploadAck: uploadAck,
@@ -1606,7 +1285,8 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
                     try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .success, nextRetryAt: nil)
                     return PendingJobAttemptResult(attempted: true, succeeded: true, rescheduled: false, exhausted: false)
                 case .failure:
-                    try await messageRepository.updateImageUploadStatus(
+                    try await operation.updateStatus(
+                        repository: messageRepository,
                         messageID: messageID,
                         uploadStatus: .failed,
                         uploadAck: uploadAck,
@@ -1617,7 +1297,8 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
                     return try await retryOrExhaust(job, now: now)
                 }
             case .failed:
-                try await messageRepository.updateImageUploadStatus(
+                try await operation.updateStatus(
+                    repository: messageRepository,
                     messageID: messageID,
                     uploadStatus: .failed,
                     uploadAck: nil,
@@ -1629,83 +1310,8 @@ nonisolated struct PendingMessageRetryRunner: Sendable {
             }
         }
 
-        try await messageRepository.updateImageUploadStatus(
-            messageID: messageID,
-            uploadStatus: .failed,
-            uploadAck: nil,
-            sendStatus: .failed,
-            sendAck: nil,
-            pendingJob: nil
-        )
-        return try await retryOrExhaust(job, now: now)
-    }
-
-    /// 执行视频上传恢复任务
-    private func runVideoUploadJob(_ job: PendingJob, now: Int64 = Int64(Date().timeIntervalSince1970)) async throws -> PendingJobAttemptResult {
-        guard case let .mediaUpload(payload) = try job.decodedPayload() else {
-            throw ChatStoreError.missingColumn("pending_job_payload")
-        }
-        let messageID = MessageID(rawValue: payload.messageID)
-
-        guard let message = try await messageRepository.message(messageID: messageID) else {
-            try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .cancelled, nextRetryAt: nil)
-            return PendingJobAttemptResult(attempted: false, succeeded: false, rescheduled: false, exhausted: true)
-        }
-
-        try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .running, nextRetryAt: nil)
-        try await messageRepository.updateVideoUploadStatus(
-            messageID: messageID,
-            uploadStatus: .uploading,
-            uploadAck: nil,
-            sendStatus: .sending,
-            sendAck: nil,
-            pendingJob: nil
-        )
-
-        for await event in mediaUploadService.uploadVideo(message: message) {
-            switch event {
-            case .progress:
-                continue
-            case let .completed(uploadAck):
-                let result = await sendService.sendVideo(message: message, upload: uploadAck)
-
-                switch result {
-                case let .success(sendAck):
-                    try await messageRepository.updateVideoUploadStatus(
-                        messageID: messageID,
-                        uploadStatus: .success,
-                        uploadAck: uploadAck,
-                        sendStatus: .success,
-                        sendAck: sendAck,
-                        pendingJob: nil
-                    )
-                    try await pendingJobRepository.updatePendingJobStatus(jobID: job.id, status: .success, nextRetryAt: nil)
-                    return PendingJobAttemptResult(attempted: true, succeeded: true, rescheduled: false, exhausted: false)
-                case .failure:
-                    try await messageRepository.updateVideoUploadStatus(
-                        messageID: messageID,
-                        uploadStatus: .failed,
-                        uploadAck: uploadAck,
-                        sendStatus: .failed,
-                        sendAck: nil,
-                        pendingJob: nil
-                    )
-                    return try await retryOrExhaust(job, now: now)
-                }
-            case .failed:
-                try await messageRepository.updateVideoUploadStatus(
-                    messageID: messageID,
-                    uploadStatus: .failed,
-                    uploadAck: nil,
-                    sendStatus: .failed,
-                    sendAck: nil,
-                    pendingJob: nil
-                )
-                return try await retryOrExhaust(job, now: now)
-            }
-        }
-
-        try await messageRepository.updateVideoUploadStatus(
+        try await operation.updateStatus(
+            repository: messageRepository,
             messageID: messageID,
             uploadStatus: .failed,
             uploadAck: nil,
@@ -1739,6 +1345,211 @@ nonisolated private struct PendingJobAttemptResult: Equatable, Sendable {
     let rescheduled: Bool
     /// 是否已耗尽重试次数
     let exhausted: Bool
+}
+
+/// 媒体上传操作类型，集中描述不同媒体的上传、发送和状态更新差异。
+nonisolated private enum MediaUploadOperation: Sendable {
+    case image
+    case voice
+    case video
+    case file
+
+    init?(jobType: PendingJobType) {
+        switch jobType {
+        case .imageUpload:
+            self = .image
+        case .videoUpload:
+            self = .video
+        case .fileUpload:
+            self = .file
+        default:
+            return nil
+        }
+    }
+
+    var marksEmptyUploadStreamAsFailure: Bool {
+        switch self {
+        case .image, .voice:
+            return true
+        case .video, .file:
+            return false
+        }
+    }
+
+    func upload(using service: any MediaUploadService, message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
+        switch self {
+        case .image:
+            return service.uploadImage(message: message)
+        case .voice:
+            return service.uploadVoice(message: message)
+        case .video:
+            return service.uploadVideo(message: message)
+        case .file:
+            return service.uploadFile(message: message)
+        }
+    }
+
+    func send(
+        using service: any MessageSendService,
+        message: StoredMessage,
+        upload: MediaUploadAck
+    ) async -> MessageSendResult {
+        switch self {
+        case .image:
+            return await service.sendImage(message: message, upload: upload)
+        case .voice:
+            return await service.sendVoice(message: message, upload: upload)
+        case .video:
+            return await service.sendVideo(message: message, upload: upload)
+        case .file:
+            return await service.sendFile(message: message, upload: upload)
+        }
+    }
+
+    func updateStatus(
+        repository: any MessageRepository,
+        messageID: MessageID,
+        uploadStatus: MediaUploadStatus,
+        uploadAck: MediaUploadAck?,
+        sendStatus: MessageSendStatus,
+        sendAck: MessageSendAck?,
+        pendingJob: PendingJobInput?
+    ) async throws {
+        switch self {
+        case .image:
+            try await repository.updateImageUploadStatus(
+                messageID: messageID,
+                uploadStatus: uploadStatus,
+                uploadAck: uploadAck,
+                sendStatus: sendStatus,
+                sendAck: sendAck,
+                pendingJob: pendingJob
+            )
+        case .voice:
+            try await repository.updateVoiceUploadStatus(
+                messageID: messageID,
+                uploadStatus: uploadStatus,
+                uploadAck: uploadAck,
+                sendStatus: sendStatus,
+                sendAck: sendAck
+            )
+        case .video:
+            try await repository.updateVideoUploadStatus(
+                messageID: messageID,
+                uploadStatus: uploadStatus,
+                uploadAck: uploadAck,
+                sendStatus: sendStatus,
+                sendAck: sendAck,
+                pendingJob: pendingJob
+            )
+        case .file:
+            try await repository.updateFileUploadStatus(
+                messageID: messageID,
+                uploadStatus: uploadStatus,
+                uploadAck: uploadAck,
+                sendStatus: sendStatus,
+                sendAck: sendAck,
+                pendingJob: pendingJob
+            )
+        }
+    }
+
+    func makeUploadJobInput(
+        for message: StoredMessage,
+        userID: UserID,
+        repository: (any PendingJobRepository)?,
+        retryPolicy: MessageRetryPolicy,
+        failureReason: String?,
+        now: Int64
+    ) throws -> PendingJobInput? {
+        guard
+            repository != nil,
+            let clientMessageID = message.delivery.clientMessageID,
+            let mediaID = mediaID(from: message)
+        else {
+            return nil
+        }
+
+        let nextRetryAt = retryPolicy.nextRetryAt(now: now, retryCount: 0)
+        switch self {
+        case .image:
+            return try PendingMessageJobFactory.imageUploadInput(
+                messageID: message.id,
+                conversationID: message.conversationID,
+                clientMessageID: clientMessageID,
+                mediaID: mediaID,
+                userID: userID,
+                failureReason: failureReason,
+                maxRetryCount: retryPolicy.maxRetryCount,
+                nextRetryAt: nextRetryAt
+            )
+        case .video:
+            return try PendingMessageJobFactory.videoUploadInput(
+                messageID: message.id,
+                conversationID: message.conversationID,
+                clientMessageID: clientMessageID,
+                mediaID: mediaID,
+                userID: userID,
+                failureReason: failureReason,
+                maxRetryCount: retryPolicy.maxRetryCount,
+                nextRetryAt: nextRetryAt
+            )
+        case .file:
+            return try PendingMessageJobFactory.fileUploadInput(
+                messageID: message.id,
+                conversationID: message.conversationID,
+                clientMessageID: clientMessageID,
+                mediaID: mediaID,
+                userID: userID,
+                failureReason: failureReason,
+                maxRetryCount: retryPolicy.maxRetryCount,
+                nextRetryAt: nextRetryAt
+            )
+        case .voice:
+            return nil
+        }
+    }
+
+    func markUploadJobSuccess(
+        for message: StoredMessage,
+        repository: (any PendingJobRepository)?
+    ) async throws {
+        guard let repository, let clientMessageID = message.delivery.clientMessageID else {
+            return
+        }
+
+        guard let jobID = jobID(clientMessageID: clientMessageID) else {
+            return
+        }
+
+        try await repository.updatePendingJobStatus(jobID: jobID, status: .success, nextRetryAt: nil)
+    }
+
+    private func mediaID(from message: StoredMessage) -> String? {
+        switch (self, message.content) {
+        case let (.image, .image(image)):
+            return image.mediaID
+        case let (.video, .video(video)):
+            return video.mediaID
+        case let (.file, .file(file)):
+            return file.mediaID
+        default:
+            return nil
+        }
+    }
+
+    private func jobID(clientMessageID: String) -> String? {
+        switch self {
+        case .image:
+            return PendingMessageJobFactory.imageUploadJobID(clientMessageID: clientMessageID)
+        case .video:
+            return PendingMessageJobFactory.videoUploadJobID(clientMessageID: clientMessageID)
+        case .file:
+            return PendingMessageJobFactory.fileUploadJobID(clientMessageID: clientMessageID)
+        case .voice:
+            return nil
+        }
+    }
 }
 
 /// MessageSendResult 扩展
@@ -1841,25 +1652,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 发送带 @ 元数据的文本消息并透传本地用例的状态流
     func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendText(text, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        forwardRows { useCase in
+            useCase.sendText(text, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll)
         }
     }
 
@@ -1879,97 +1673,29 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 发送图片消息并透传本地用例的状态流
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        forwardRows { useCase in
+            useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension)
         }
     }
 
     /// 发送语音消息并透传本地用例的状态流
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendVoice(recording: recording) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        forwardRows { useCase in
+            useCase.sendVoice(recording: recording)
         }
     }
 
     /// 发送视频消息并透传本地用例的状态流
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        forwardRows { useCase in
+            useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
         }
     }
 
     /// 发送文件消息并透传本地用例的状态流
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendFile(fileURL: fileURL) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        forwardRows { useCase in
+            useCase.sendFile(fileURL: fileURL)
         }
     }
 
@@ -1986,25 +1712,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     }
 
     func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendEmoji(emoji) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        forwardRows { useCase in
+            useCase.sendEmoji(emoji)
         }
     }
 
@@ -2024,13 +1733,24 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 重发失败消息并透传本地用例的状态流
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        forwardRows { useCase in
+            useCase.resend(messageID: messageID)
+        }
+    }
+
+    private func forwardRows(
+        _ makeStream: @escaping @MainActor (LocalChatUseCase) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    ) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let repository = try await storeProvider.repository()
                     let useCase = makeLocalUseCase(repository: repository)
+                    let stream = await MainActor.run {
+                        makeStream(useCase)
+                    }
 
-                    for try await row in useCase.resend(messageID: messageID) {
+                    for try await row in stream {
                         continuation.yield(row)
                     }
 
