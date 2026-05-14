@@ -125,11 +125,14 @@ final class ChatEmojiPanelView: UIView {
     }
 
     private func reconcileSelectedSection() {
-        if let selectedSectionID, visibleSections.contains(where: { $0.id == selectedSectionID }) {
+        let firstNonEmptySectionID = visibleSections.first { !$0.emojis.isEmpty }?.id
+        if let selectedSectionID,
+           let selectedSection = visibleSections.first(where: { $0.id == selectedSectionID }),
+           !selectedSection.emojis.isEmpty || firstNonEmptySectionID == nil {
             return
         }
 
-        selectedSectionID = visibleSections.first { !$0.emojis.isEmpty }?.id
+        selectedSectionID = firstNonEmptySectionID
             ?? visibleSections.first?.id
     }
 

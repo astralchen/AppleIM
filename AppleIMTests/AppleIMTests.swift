@@ -6454,6 +6454,49 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerUsesFullscreenCollectionViewWithInputInset() async throws {
+        let rows = (1...24).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "fullscreen_layout_\(index)"),
+                text: "Fullscreen layout message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Fullscreen Layout")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: viewController.view)
+        let inputFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+
+        #expect(abs(collectionFrame.minY - viewController.view.bounds.minY) <= 1)
+        #expect(abs(collectionFrame.maxY - viewController.view.bounds.maxY) <= 1)
+        #expect(collectionView.contentInset.bottom >= viewController.view.bounds.maxY - inputFrame.minY - 1)
+        #expect(collectionView.verticalScrollIndicatorInsets.bottom == collectionView.contentInset.bottom)
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsBottomAnchoredWhenAttachmentPreviewAppearsAfterLayoutDrift() async throws {
         let rows = (1...28).map { index in
             makeChatRow(
@@ -6557,6 +6600,47 @@ struct AppleIMTests {
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         collectionView.layoutIfNeeded()
 
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsInitialLatestMessageAboveInputBarWhenEnteringFromNavigation() async throws {
+        let rows = (1...22).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "initial_navigation_visible_\(index)"),
+                text: "模拟推送链路应立即刷新可见界面 #4ee2ef 第 \(index) 条，这是一段用于触发多行自适应高度的聊天消息内容。",
+                sortSequence: Int64(index),
+                isOutgoing: index % 5 == 0
+            )
+        }
+        let useCase = DeferredInitialPageStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Sondra")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let navigationController = UINavigationController(rootViewController: viewController)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        window.layoutIfNeeded()
+        useCase.releaseInitialPage()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
         let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
@@ -7297,6 +7381,14 @@ struct AppleIMTests {
         try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             collectionView.numberOfItems(inSection: 0) == rows.count + 1
         }
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: rows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
         window.layoutIfNeeded()
         collectionView.layoutIfNeeded()
 
@@ -7306,6 +7398,55 @@ struct AppleIMTests {
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
         #expect(lastCellFrame.maxY <= collectionFrame.maxY + 1)
         #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerAnimatesSentEmojiAppendFromBottom() async throws {
+        let rows = (1...32).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "emoji_animation_\(index)"),
+                text: "Emoji animation message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = EmojiPanelStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Emoji Animation")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+
+        inputBar.onEmojiTapped?()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub") != nil
+        }
+        window.layoutIfNeeded()
+
+        let emojiButton = try #require(button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub"))
+        emojiButton.sendActions(for: .touchUpInside)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count + 1
+                && viewController.lastScrollToBottomRequestedAnimationForTesting == true
+        }
+
+        #expect(viewController.lastScrollToBottomRequestedAnimationForTesting == true)
     }
 
     @MainActor
@@ -7340,12 +7481,8 @@ struct AppleIMTests {
         let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
-        for constraint in viewController.view.constraints where
-            ((constraint.firstItem as? UIView) === collectionView && constraint.firstAttribute == .bottom)
-                || ((constraint.secondItem as? UIView) === collectionView && constraint.secondAttribute == .bottom) {
-            constraint.isActive = false
-        }
-        collectionView.bottomAnchor.constraint(equalTo: viewController.view.bottomAnchor).isActive = true
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: viewController.view)
+        #expect(abs(collectionFrame.maxY - viewController.view.bounds.maxY) <= 1)
         window.layoutIfNeeded()
 
         inputBar.onEmojiTapped?()
@@ -7359,6 +7496,14 @@ struct AppleIMTests {
         try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             collectionView.numberOfItems(inSection: 0) == rows.count + 1
         }
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: rows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
         window.layoutIfNeeded()
         collectionView.layoutIfNeeded()
 
@@ -7366,6 +7511,74 @@ struct AppleIMTests {
         let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
         #expect(lastCellFrame.maxY <= inputBarFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsLatestMessageAboveInputBarAfterTextInputHeightGrows() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Input Growth",
+            rowPrefix: "input_growth"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+        setup.collectionView.scrollToItem(at: IndexPath(item: lastItem, section: 0), at: .bottom, animated: false)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        textView.text = """
+        输入栏高度变化
+        第二行
+        第三行
+        第四行
+        第五行
+        """
+        setup.inputBar.textViewDidChange(textView)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(setup.collectionView.cellForItem(at: IndexPath(item: lastItem, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsLatestMessageAboveInputBarWhenKeyboardMovesInputBarUp() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Keyboard Overlay",
+            rowPrefix: "keyboard_overlay"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+        setup.collectionView.scrollToItem(at: IndexPath(item: lastItem, section: 0), at: .bottom, animated: false)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        for constraint in setup.viewController.view.constraints where
+            ((constraint.firstItem as? UIView) === setup.inputBar && constraint.firstAttribute == .bottom)
+                || ((constraint.secondItem as? UIView) === setup.inputBar && constraint.secondAttribute == .bottom) {
+            constraint.isActive = false
+        }
+        setup.inputBar.bottomAnchor.constraint(
+            equalTo: setup.viewController.view.bottomAnchor,
+            constant: -300
+        ).isActive = true
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(setup.collectionView.cellForItem(at: IndexPath(item: lastItem, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
     }
 
     @MainActor
@@ -7404,6 +7617,79 @@ struct AppleIMTests {
 
         #expect(useCase.simulateIncomingCallCount == 1)
         #expect(viewModel.currentState.rows.allSatisfy { $0.isOutgoing == false })
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsIncomingMessageAboveInputBarWhenAlreadyAtBottom() async throws {
+        let initialRows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "incoming_visible_initial_\(index)"),
+                text: "Incoming visible initial \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let simulatedRows = [
+            makeChatRow(
+                id: MessageID(rawValue: "incoming_visible_append"),
+                text: "Incoming visible append",
+                sortSequence: 37,
+                isOutgoing: false
+            )
+        ]
+        let useCase = SimulatedIncomingStubChatUseCase(
+            initialRows: initialRows,
+            simulatedRows: simulatedRows
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Incoming Visible")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let buttonItem = try #require(viewController.navigationItem.rightBarButtonItem)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        collectionView.scrollToItem(at: IndexPath(item: initialRows.count - 1, section: 0), at: .bottom, animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        UIApplication.shared.sendAction(
+            try #require(buttonItem.action),
+            to: buttonItem.target,
+            from: buttonItem,
+            for: nil
+        )
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + simulatedRows.count
+        }
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: initialRows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: initialRows.count, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
     }
 
     @MainActor
@@ -11543,6 +11829,21 @@ private func assertChatCollectionCanLeaveBottomAfterUserDrag(
     collectionView.layoutIfNeeded()
 
     #expect(collectionView.contentOffset.y <= targetOffsetY + 1)
+}
+
+@MainActor
+private func latestMessageCellIsAboveInputBar(
+    collectionView: UICollectionView,
+    item: Int,
+    inputBar: ChatInputBarView,
+    in view: UIView
+) -> Bool {
+    guard let cell = collectionView.cellForItem(at: IndexPath(item: item, section: 0)) else {
+        return false
+    }
+    let cellFrame = cell.convert(cell.bounds, to: view)
+    let inputFrame = inputBar.convert(inputBar.bounds, to: view)
+    return cellFrame.maxY <= inputFrame.minY + 1
 }
 
 private func timestamp(
