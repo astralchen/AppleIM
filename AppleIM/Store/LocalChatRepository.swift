@@ -841,9 +841,9 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
 
         guard
             existingMessage.type == .image,
-            existingMessage.sendStatus == .failed,
-            !existingMessage.isRevoked,
-            !existingMessage.isDeleted
+            existingMessage.state.sendStatus == .failed,
+            !existingMessage.state.isRevoked,
+            !existingMessage.state.isDeleted
         else {
             throw ChatStoreError.messageCannotBeResent(messageID)
         }
@@ -893,9 +893,9 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
 
         guard
             existingMessage.type == expectedType,
-            existingMessage.sendStatus == .failed,
-            !existingMessage.isRevoked,
-            !existingMessage.isDeleted
+            existingMessage.state.sendStatus == .failed,
+            !existingMessage.state.isRevoked,
+            !existingMessage.state.isDeleted
         else {
             throw ChatStoreError.messageCannotBeResent(messageID)
         }

@@ -182,12 +182,12 @@ actor FailFirstUITestMessageSendService: MessageSendService {
             return .failure(.timeout)
         }
 
-        return .success(
-            MessageSendAck(
-                serverMessageID: "ui_test_server_\(message.id.rawValue)",
-                sequence: message.sortSequence,
-                serverTime: Int64(Date().timeIntervalSince1970)
+            return .success(
+                MessageSendAck(
+                    serverMessageID: "ui_test_server_\(message.id.rawValue)",
+                    sequence: message.timeline.sortSequence,
+                    serverTime: Int64(Date().timeIntervalSince1970)
+                )
             )
-        )
     }
 }

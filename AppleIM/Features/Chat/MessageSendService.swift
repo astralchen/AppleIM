@@ -162,7 +162,7 @@ nonisolated struct MockMessageSendService: MessageSendService {
             return .success(
                 MessageSendAck(
                     serverMessageID: "server_\(message.id.rawValue)",
-                    sequence: message.sortSequence,
+                    sequence: message.timeline.sortSequence,
                     serverTime: Int64(Date().timeIntervalSince1970)
                 )
             )
@@ -233,7 +233,7 @@ nonisolated struct MockMessageSendService: MessageSendService {
             return .success(
                 MessageSendAck(
                     serverMessageID: "server_\(message.id.rawValue)",
-                    sequence: message.sortSequence,
+                    sequence: message.timeline.sortSequence,
                     serverTime: Int64(Date().timeIntervalSince1970)
                 )
             )

@@ -301,9 +301,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
 
     func sendText(message: StoredMessage) async -> MessageSendResult {
         guard
-            message.type == .text,
-            let text = message.text,
-            let clientMessageID = message.clientMessageID
+            case let .text(text) = message.content,
+            let clientMessageID = message.delivery.clientMessageID
         else {
             return .failure(.ackMissing)
         }
@@ -313,7 +312,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             clientMessageID: clientMessageID,
             senderID: message.senderID.rawValue,
             text: text,
-            localTime: message.localTime
+            localTime: message.timeline.localTime
         )
 
         do {
@@ -332,9 +331,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
 
     func sendImage(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
-            message.type == .image,
-            let image = message.image,
-            let clientMessageID = message.clientMessageID,
+            case let .image(image) = message.content,
+            let clientMessageID = message.delivery.clientMessageID,
             let cdnURL = Self.nonEmptyValue(upload.cdnURL)
         else {
             return .failure(.ackMissing)
@@ -351,7 +349,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             height: image.height,
             sizeBytes: image.sizeBytes,
             format: image.format,
-            localTime: message.localTime
+            localTime: message.timeline.localTime
         )
 
         return await sendMedia(path: Self.sendImagePath, request: request)
@@ -359,9 +357,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
 
     func sendVoice(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
-            message.type == .voice,
-            let voice = message.voice,
-            let clientMessageID = message.clientMessageID,
+            case let .voice(voice) = message.content,
+            let clientMessageID = message.delivery.clientMessageID,
             let cdnURL = Self.nonEmptyValue(upload.cdnURL)
         else {
             return .failure(.ackMissing)
@@ -377,7 +374,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             durationMilliseconds: voice.durationMilliseconds,
             sizeBytes: voice.sizeBytes,
             format: voice.format,
-            localTime: message.localTime
+            localTime: message.timeline.localTime
         )
 
         return await sendMedia(path: Self.sendVoicePath, request: request)
@@ -385,9 +382,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
 
     func sendVideo(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
-            message.type == .video,
-            let video = message.video,
-            let clientMessageID = message.clientMessageID,
+            case let .video(video) = message.content,
+            let clientMessageID = message.delivery.clientMessageID,
             let cdnURL = Self.nonEmptyValue(upload.cdnURL)
         else {
             return .failure(.ackMissing)
@@ -404,7 +400,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             width: video.width,
             height: video.height,
             sizeBytes: video.sizeBytes,
-            localTime: message.localTime
+            localTime: message.timeline.localTime
         )
 
         return await sendMedia(path: Self.sendVideoPath, request: request)
@@ -412,9 +408,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
 
     func sendFile(message: StoredMessage, upload: MediaUploadAck) async -> MessageSendResult {
         guard
-            message.type == .file,
-            let file = message.file,
-            let clientMessageID = message.clientMessageID,
+            case let .file(file) = message.content,
+            let clientMessageID = message.delivery.clientMessageID,
             let cdnURL = Self.nonEmptyValue(upload.cdnURL)
         else {
             return .failure(.ackMissing)
@@ -430,7 +425,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             fileName: file.fileName,
             fileExtension: file.fileExtension,
             sizeBytes: file.sizeBytes,
-            localTime: message.localTime
+            localTime: message.timeline.localTime
         )
 
         return await sendMedia(path: Self.sendFilePath, request: request)
@@ -438,9 +433,8 @@ nonisolated struct ServerMessageSendService: MessageSendService {
 
     func sendEmoji(message: StoredMessage) async -> MessageSendResult {
         guard
-            message.type == .emoji,
-            let emoji = message.emoji,
-            let clientMessageID = message.clientMessageID
+            case let .emoji(emoji) = message.content,
+            let clientMessageID = message.delivery.clientMessageID
         else {
             return .failure(.ackMissing)
         }
@@ -457,7 +451,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
             width: emoji.width,
             height: emoji.height,
             sizeBytes: emoji.sizeBytes,
-            localTime: message.localTime
+            localTime: message.timeline.localTime
         )
 
         return await sendMedia(path: Self.sendEmojiPath, request: request)

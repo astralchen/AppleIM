@@ -277,9 +277,9 @@ nonisolated struct MessageDAO: Sendable {
 
         guard
             existingMessage.type == .text,
-            existingMessage.sendStatus == .failed,
-            !existingMessage.isRevoked,
-            !existingMessage.isDeleted
+            existingMessage.state.sendStatus == .failed,
+            !existingMessage.state.isRevoked,
+            !existingMessage.state.isDeleted
         else {
             throw ChatStoreError.messageCannotBeResent(messageID)
         }
@@ -311,21 +311,7 @@ nonisolated struct MessageDAO: Sendable {
             conversationID: input.conversationID,
             senderID: input.senderID,
             clientMessageID: clientMessageID,
-            serverMessageID: nil,
-            sequence: nil,
-            type: .text,
-            direction: .outgoing,
-            sendStatus: .sending,
-            readStatus: .read,
-            serverTime: nil,
-            isRevoked: false,
-            isDeleted: false,
-            revokeReplacementText: nil,
-            text: input.text,
-            image: nil,
-            voice: nil,
-            video: nil,
-            file: nil,
+            content: .text(input.text),
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -522,21 +508,7 @@ nonisolated struct MessageDAO: Sendable {
             conversationID: input.conversationID,
             senderID: input.senderID,
             clientMessageID: clientMessageID,
-            serverMessageID: nil,
-            sequence: nil,
-            type: .image,
-            direction: .outgoing,
-            sendStatus: .sending,
-            readStatus: .read,
-            serverTime: nil,
-            isRevoked: false,
-            isDeleted: false,
-            revokeReplacementText: nil,
-            text: nil,
-            image: input.image,
-            voice: nil,
-            video: nil,
-            file: nil,
+            content: .image(input.image),
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -688,21 +660,7 @@ nonisolated struct MessageDAO: Sendable {
             conversationID: input.conversationID,
             senderID: input.senderID,
             clientMessageID: clientMessageID,
-            serverMessageID: nil,
-            sequence: nil,
-            type: .voice,
-            direction: .outgoing,
-            sendStatus: .sending,
-            readStatus: .read,
-            serverTime: nil,
-            isRevoked: false,
-            isDeleted: false,
-            revokeReplacementText: nil,
-            text: nil,
-            image: nil,
-            voice: input.voice,
-            video: nil,
-            file: nil,
+            content: .voice(input.voice),
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -839,21 +797,7 @@ nonisolated struct MessageDAO: Sendable {
             conversationID: input.conversationID,
             senderID: input.senderID,
             clientMessageID: clientMessageID,
-            serverMessageID: nil,
-            sequence: nil,
-            type: .video,
-            direction: .outgoing,
-            sendStatus: .sending,
-            readStatus: .read,
-            serverTime: nil,
-            isRevoked: false,
-            isDeleted: false,
-            revokeReplacementText: nil,
-            text: nil,
-            image: nil,
-            voice: nil,
-            video: input.video,
-            file: nil,
+            content: .video(input.video),
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -984,21 +928,7 @@ nonisolated struct MessageDAO: Sendable {
             conversationID: input.conversationID,
             senderID: input.senderID,
             clientMessageID: clientMessageID,
-            serverMessageID: nil,
-            sequence: nil,
-            type: .file,
-            direction: .outgoing,
-            sendStatus: .sending,
-            readStatus: .read,
-            serverTime: nil,
-            isRevoked: false,
-            isDeleted: false,
-            revokeReplacementText: nil,
-            text: nil,
-            image: nil,
-            voice: nil,
-            video: nil,
-            file: input.file,
+            content: .file(input.file),
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -1123,22 +1053,7 @@ nonisolated struct MessageDAO: Sendable {
             conversationID: input.conversationID,
             senderID: input.senderID,
             clientMessageID: clientMessageID,
-            serverMessageID: nil,
-            sequence: nil,
-            type: .emoji,
-            direction: .outgoing,
-            sendStatus: .sending,
-            readStatus: .read,
-            serverTime: nil,
-            isRevoked: false,
-            isDeleted: false,
-            revokeReplacementText: nil,
-            text: nil,
-            image: nil,
-            voice: nil,
-            video: nil,
-            file: nil,
-            emoji: input.emoji,
+            content: .emoji(input.emoji),
             sortSequence: sortSequence,
             localTime: input.localTime
         )
@@ -1316,26 +1231,66 @@ nonisolated struct MessageDAO: Sendable {
             id: MessageID(rawValue: try row.requiredString("message_id")),
             conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
             senderID: UserID(rawValue: try row.requiredString("sender_id")),
-            clientMessageID: row.string("client_msg_id"),
-            serverMessageID: row.string("server_msg_id"),
-            sequence: row.int64("seq"),
-            type: type,
-            direction: direction,
-            sendStatus: sendStatus,
-            readStatus: readStatus,
-            serverTime: row.int64("server_time"),
-            isRevoked: row.bool("revoke_status"),
-            isDeleted: row.bool("is_deleted"),
-            revokeReplacementText: row.string("replace_text"),
-            text: row.string("text"),
-            image: try image(from: row, paths: paths),
-            voice: try voice(from: row, paths: paths),
-            video: try video(from: row, paths: paths),
-            file: try file(from: row, paths: paths),
-            emoji: try emoji(from: row, paths: paths),
-            sortSequence: try row.requiredInt64("sort_seq"),
-            localTime: try row.requiredInt64("local_time")
+            delivery: StoredMessageDelivery(
+                clientMessageID: row.string("client_msg_id"),
+                serverMessageID: row.string("server_msg_id"),
+                sequence: row.int64("seq")
+            ),
+            state: StoredMessageState(
+                direction: direction,
+                sendStatus: sendStatus,
+                readStatus: readStatus,
+                isRevoked: row.bool("revoke_status"),
+                isDeleted: row.bool("is_deleted"),
+                revokeReplacementText: row.string("replace_text")
+            ),
+            timeline: StoredMessageTimeline(
+                serverTime: row.int64("server_time"),
+                sortSequence: try row.requiredInt64("sort_seq"),
+                localTime: try row.requiredInt64("local_time")
+            ),
+            content: try content(from: row, type: type, paths: paths)
         )
+    }
+
+    /// 根据消息类型从聚合行中提取唯一内容分支。
+    private static func content(
+        from row: SQLiteRow,
+        type: MessageType,
+        paths: AccountStoragePaths
+    ) throws -> StoredMessageContent {
+        switch type {
+        case .text:
+            return .text(row.string("text") ?? "")
+        case .image:
+            if let image = try image(from: row, paths: paths) {
+                return .image(image)
+            }
+        case .voice:
+            if let voice = try voice(from: row, paths: paths) {
+                return .voice(voice)
+            }
+        case .video:
+            if let video = try video(from: row, paths: paths) {
+                return .video(video)
+            }
+        case .file:
+            if let file = try file(from: row, paths: paths) {
+                return .file(file)
+            }
+        case .emoji:
+            if let emoji = try emoji(from: row, paths: paths) {
+                return .emoji(emoji)
+            }
+        case .system:
+            return .system(row.string("text"))
+        case .quote:
+            return .quote(row.string("text"))
+        case .revoked:
+            return .revoked(row.string("replace_text"))
+        }
+
+        return .text(row.string("text") ?? "")
     }
 
     /// 从数据库行提取图片内容

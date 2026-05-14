@@ -85,22 +85,34 @@ nonisolated struct MockMediaUploadService: MediaUploadService {
 
     /// 上传图片消息
     nonisolated func uploadImage(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
-        upload(kind: "image", message: message, mediaID: message.image?.mediaID)
+        guard case let .image(image) = message.content else {
+            return upload(kind: "image", message: message, mediaID: nil)
+        }
+        return upload(kind: "image", message: message, mediaID: image.mediaID)
     }
 
     /// 上传语音消息
     nonisolated func uploadVoice(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
-        upload(kind: "voice", message: message, mediaID: message.voice?.mediaID)
+        guard case let .voice(voice) = message.content else {
+            return upload(kind: "voice", message: message, mediaID: nil)
+        }
+        return upload(kind: "voice", message: message, mediaID: voice.mediaID)
     }
 
     /// 上传视频消息
     nonisolated func uploadVideo(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
-        upload(kind: "video", message: message, mediaID: message.video?.mediaID)
+        guard case let .video(video) = message.content else {
+            return upload(kind: "video", message: message, mediaID: nil)
+        }
+        return upload(kind: "video", message: message, mediaID: video.mediaID)
     }
 
     /// 上传文件消息
     nonisolated func uploadFile(message: StoredMessage) -> AsyncStream<MediaUploadEvent> {
-        upload(kind: "file", message: message, mediaID: message.file?.mediaID)
+        guard case let .file(file) = message.content else {
+            return upload(kind: "file", message: message, mediaID: nil)
+        }
+        return upload(kind: "file", message: message, mediaID: file.mediaID)
     }
 
     /// 生成统一的 Mock 上传事件流

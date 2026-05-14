@@ -213,17 +213,113 @@ nonisolated struct Conversation: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 存储的消息模型
+/// 消息投递标识。
 ///
-/// 对应数据库 `message` 主表 + 内容表的聚合查询结果
-/// 包含消息主表字段和对应内容表字段
+/// - `clientMessageID`: 客户端生成的 UUID，用于发送幂等和重试映射。
+/// - `serverMessageID`: 服务端返回的正式消息 ID，用于多端同步。
+/// - `sequence`: 服务端会话内递增序号，用于排序和增量拉取。
+nonisolated struct StoredMessageDelivery: Equatable, Sendable {
+    let clientMessageID: String?
+    let serverMessageID: String?
+    let sequence: Int64?
+
+    init(
+        clientMessageID: String?,
+        serverMessageID: String?,
+        sequence: Int64?
+    ) {
+        self.clientMessageID = clientMessageID
+        self.serverMessageID = serverMessageID
+        self.sequence = sequence
+    }
+}
+
+/// 消息状态字段。
+nonisolated struct StoredMessageState: Equatable, Sendable {
+    let direction: MessageDirection
+    let sendStatus: MessageSendStatus
+    let readStatus: MessageReadStatus
+    let isRevoked: Bool
+    let isDeleted: Bool
+    let revokeReplacementText: String?
+
+    init(
+        direction: MessageDirection,
+        sendStatus: MessageSendStatus,
+        readStatus: MessageReadStatus,
+        isRevoked: Bool,
+        isDeleted: Bool,
+        revokeReplacementText: String?
+    ) {
+        self.direction = direction
+        self.sendStatus = sendStatus
+        self.readStatus = readStatus
+        self.isRevoked = isRevoked
+        self.isDeleted = isDeleted
+        self.revokeReplacementText = revokeReplacementText
+    }
+}
+
+/// 消息时间线字段。
 ///
-/// ## 重要说明
+/// `sortSequence` 是本地排序序号，优先使用 `sequence`，其次 `serverTime`，最后 `localTime`。
+nonisolated struct StoredMessageTimeline: Equatable, Sendable {
+    let serverTime: Int64?
+    let sortSequence: Int64
+    let localTime: Int64
+
+    init(
+        serverTime: Int64?,
+        sortSequence: Int64,
+        localTime: Int64
+    ) {
+        self.serverTime = serverTime
+        self.sortSequence = sortSequence
+        self.localTime = localTime
+    }
+}
+
+/// 存储消息内容。
 ///
-/// - `clientMessageID`: 客户端生成的 UUID，用于发送幂等和重试映射
-/// - `serverMessageID`: 服务端返回的正式消息 ID，用于多端同步
-/// - `sequence`: 服务端会话内递增序号，用于排序和增量拉取
-/// - `sortSequence`: 本地排序序号，优先使用 `sequence`，其次 `serverTime`，最后 `localTime`
+/// 每条消息只允许有一个内容分支，避免 `text/image/voice/...` 多个可选字段形成无效组合。
+nonisolated enum StoredMessageContent: Equatable, Sendable {
+    case text(String)
+    case image(StoredImageContent)
+    case voice(StoredVoiceContent)
+    case video(StoredVideoContent)
+    case file(StoredFileContent)
+    case emoji(StoredEmojiContent)
+    case system(String?)
+    case quote(String?)
+    case revoked(String?)
+
+    var type: MessageType {
+        switch self {
+        case .text:
+            return .text
+        case .image:
+            return .image
+        case .voice:
+            return .voice
+        case .video:
+            return .video
+        case .file:
+            return .file
+        case .emoji:
+            return .emoji
+        case .system:
+            return .system
+        case .quote:
+            return .quote
+        case .revoked:
+            return .revoked
+        }
+    }
+}
+
+/// 存储的消息模型。
+///
+/// 对应数据库 `message` 主表 + 内容表的聚合查询结果。
 nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     /// 消息 ID（本地全局唯一）
     let id: MessageID
@@ -231,90 +327,71 @@ nonisolated struct StoredMessage: Identifiable, Equatable, Sendable {
     let conversationID: ConversationID
     /// 发送者用户 ID
     let senderID: UserID
-    /// 客户端消息 ID（用于幂等）
-    let clientMessageID: String?
-    /// 服务端消息 ID（用于同步）
-    let serverMessageID: String?
-    /// 服务端序号（用于排序）
-    let sequence: Int64?
-    /// 消息类型
-    let type: MessageType
-    /// 消息方向
-    let direction: MessageDirection
-    /// 发送状态
-    let sendStatus: MessageSendStatus
-    /// 已读状态
-    let readStatus: MessageReadStatus
-    /// 服务端时间戳（毫秒）
-    let serverTime: Int64?
-    /// 是否已撤回
-    let isRevoked: Bool
-    /// 是否已删除（逻辑删除）
-    let isDeleted: Bool
-    /// 撤回后的替代文本
-    let revokeReplacementText: String?
-    /// 文本内容（仅文本消息）
-    let text: String?
-    /// 图片内容（仅图片消息）
-    let image: StoredImageContent?
-    /// 语音内容（仅语音消息）
-    let voice: StoredVoiceContent?
-    /// 视频内容（仅视频消息）
-    let video: StoredVideoContent?
-    /// 文件内容（仅文件消息）
-    let file: StoredFileContent?
-    /// 表情内容（仅表情消息）
-    let emoji: StoredEmojiContent?
-    /// 排序序号
-    let sortSequence: Int64
-    /// 本地时间戳（毫秒）
-    let localTime: Int64
+    /// 消息投递标识
+    let delivery: StoredMessageDelivery
+    /// 消息状态
+    let state: StoredMessageState
+    /// 消息时间线
+    let timeline: StoredMessageTimeline
+    /// 消息内容
+    let content: StoredMessageContent
+
+    /// 消息类型由内容分支推导，避免类型和 payload 分离后不一致。
+    var type: MessageType {
+        content.type
+    }
 
     init(
         id: MessageID,
         conversationID: ConversationID,
         senderID: UserID,
-        clientMessageID: String?,
-        serverMessageID: String?,
-        sequence: Int64?,
-        type: MessageType,
-        direction: MessageDirection,
-        sendStatus: MessageSendStatus,
-        readStatus: MessageReadStatus,
-        serverTime: Int64?,
-        isRevoked: Bool,
-        isDeleted: Bool,
-        revokeReplacementText: String?,
-        text: String?,
-        image: StoredImageContent?,
-        voice: StoredVoiceContent?,
-        video: StoredVideoContent?,
-        file: StoredFileContent?,
-        emoji: StoredEmojiContent? = nil,
-        sortSequence: Int64,
-        localTime: Int64
+        delivery: StoredMessageDelivery,
+        state: StoredMessageState,
+        timeline: StoredMessageTimeline,
+        content: StoredMessageContent
     ) {
         self.id = id
         self.conversationID = conversationID
         self.senderID = senderID
-        self.clientMessageID = clientMessageID
-        self.serverMessageID = serverMessageID
-        self.sequence = sequence
-        self.type = type
-        self.direction = direction
-        self.sendStatus = sendStatus
-        self.readStatus = readStatus
-        self.serverTime = serverTime
-        self.isRevoked = isRevoked
-        self.isDeleted = isDeleted
-        self.revokeReplacementText = revokeReplacementText
-        self.text = text
-        self.image = image
-        self.voice = voice
-        self.video = video
-        self.file = file
-        self.emoji = emoji
-        self.sortSequence = sortSequence
-        self.localTime = localTime
+        self.delivery = delivery
+        self.state = state
+        self.timeline = timeline
+        self.content = content
+    }
+
+    /// 构造本地新发出的消息，统一收敛 DAO 插入路径的默认状态。
+    init(
+        id: MessageID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        clientMessageID: String,
+        content: StoredMessageContent,
+        sortSequence: Int64,
+        localTime: Int64
+    ) {
+        self.init(
+            id: id,
+            conversationID: conversationID,
+            senderID: senderID,
+            delivery: StoredMessageDelivery(
+                clientMessageID: clientMessageID,
+                serverMessageID: nil,
+                sequence: nil
+            ),
+            state: StoredMessageState(
+                direction: .outgoing,
+                sendStatus: .sending,
+                readStatus: .read,
+                isRevoked: false,
+                isDeleted: false,
+                revokeReplacementText: nil
+            ),
+            timeline: StoredMessageTimeline(
+                serverTime: nil,
+                sortSequence: sortSequence,
+                localTime: localTime
+            ),
+            content: content
+        )
     }
 }

@@ -167,7 +167,7 @@ nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Senda
         let sequenceStartUptime = ProcessInfo.processInfo.systemUptime
         let sequences = await sequenceAllocator.allocateSequences(
             conversationID: selectedConversation.id,
-            latestStoredSequence: latestMessage?.sortSequence,
+            latestStoredSequence: latestMessage?.timeline.sortSequence,
             now: Self.currentTimestamp(),
             count: messageCount
         )

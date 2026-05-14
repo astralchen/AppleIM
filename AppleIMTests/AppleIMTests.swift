@@ -18,6 +18,35 @@ import UniformTypeIdentifiers
 @Suite(.serialized)
 struct AppleIMTests {
 
+    @Test func storedMessageContentDerivesMessageType() {
+        let image = StoredImageContent(
+            mediaID: "content_image",
+            localPath: "media/content.png",
+            thumbnailPath: "media/content_thumb.jpg",
+            width: 320,
+            height: 240,
+            sizeBytes: 4_096,
+            format: "png"
+        )
+        let emoji = StoredEmojiContent(
+            emojiID: "content_emoji",
+            packageID: "pkg_content",
+            emojiType: .customImage,
+            name: "Content Emoji",
+            localPath: "emoji/content.png",
+            thumbPath: "emoji/content_thumb.png",
+            cdnURL: nil,
+            width: 128,
+            height: 128,
+            sizeBytes: 2_048
+        )
+
+        #expect(StoredMessageContent.text("Hello").type == .text)
+        #expect(StoredMessageContent.image(image).type == .image)
+        #expect(StoredMessageContent.emoji(emoji).type == .emoji)
+        #expect(StoredMessageContent.revoked("已撤回").type == .revoked)
+    }
+
     @MainActor
     @Test func conversationListViewModelLoadsRows() async throws {
         let viewModel = ConversationListViewModel(useCase: StubConversationListUseCase())
@@ -1049,7 +1078,7 @@ struct AppleIMTests {
             )
             let latestMessage = try #require(messages.first)
 
-            #expect(latestMessage.text == conversation.lastMessageDigest)
+            #expect(try requireTextualContent(latestMessage) == conversation.lastMessageDigest)
         }
     }
 
@@ -1411,8 +1440,9 @@ struct AppleIMTests {
         let conversations = try await repository.listConversations(for: "emoji_message_user")
 
         #expect(message.type == .emoji)
-        #expect(loaded?.emoji?.emojiID == "smile")
-        #expect(loaded?.emoji?.thumbPath == "/tmp/smile-thumb.png")
+        let loadedEmoji = try requireEmojiContent(loaded)
+        #expect(loadedEmoji.emojiID == "smile")
+        #expect(loadedEmoji.thumbPath == "/tmp/smile-thumb.png")
         #expect(conversations.first { $0.id == "emoji_conversation" }?.lastMessageDigest == "[表情]")
     }
 
@@ -1741,8 +1771,8 @@ struct AppleIMTests {
         #expect(conversations.map(\.id.rawValue).contains("single_sondra"))
         #expect(conversations.first { $0.id == "single_sondra" }?.lastMessageDigest == "Sondra JSON message 120")
         #expect(storedMessages.count == 120)
-        #expect(storedMessages.first?.text == "Sondra JSON message 120")
-        #expect(storedMessages.last?.text == "Sondra JSON message 1")
+        #expect(try requireTextContent(storedMessages.first) == "Sondra JSON message 120")
+        #expect(try requireTextContent(storedMessages.last) == "Sondra JSON message 1")
         #expect(groupMembers.map(\.memberID.rawValue).contains("sondra"))
     }
 
@@ -2107,9 +2137,9 @@ struct AppleIMTests {
         let messages = try await repository.listMessages(conversationID: "message_conversation", limit: 20, beforeSortSeq: nil)
         let conversations = try await repository.listConversations(for: "message_user")
 
-        #expect(message.sendStatus == .sending)
+        #expect(message.state.sendStatus == .sending)
         #expect(messages.count == 1)
-        #expect(messages.first?.text == "Hello from the repository")
+        #expect(try requireTextContent(messages.first) == "Hello from the repository")
         #expect(conversations.first?.lastMessageDigest == "Hello from the repository")
     }
 
@@ -2243,9 +2273,9 @@ struct AppleIMTests {
         let conversations = try await repository.listConversations(for: "image_user")
 
         #expect(message.type == .image)
-        #expect(message.sendStatus == .sending)
-        #expect(message.image == image)
-        #expect(messages.first?.image == image)
+        #expect(message.state.sendStatus == .sending)
+        #expect(try requireImageContent(message) == image)
+        #expect(try requireImageContent(messages.first) == image)
         #expect(contentRows.first?.int("content_count") == 1)
         #expect(conversations.first?.lastMessageDigest == "[图片]")
     }
@@ -2294,9 +2324,9 @@ struct AppleIMTests {
         let conversations = try await repository.listConversations(for: "voice_user")
 
         #expect(message.type == .voice)
-        #expect(message.sendStatus == .sending)
-        #expect(message.voice == voice)
-        #expect(messages.first?.voice == voice)
+        #expect(message.state.sendStatus == .sending)
+        #expect(try requireVoiceContent(message) == voice)
+        #expect(try requireVoiceContent(messages.first) == voice)
         #expect(contentRows.first?.int("content_count") == 1)
         #expect(resourceRows.first?.int("resource_count") == 1)
         #expect(conversations.first?.lastMessageDigest == "[语音]")
@@ -2348,12 +2378,58 @@ struct AppleIMTests {
         let conversations = try await repository.listConversations(for: "video_user")
 
         #expect(message.type == .video)
-        #expect(message.sendStatus == .sending)
-        #expect(message.video == video)
-        #expect(messages.first?.video == video)
+        #expect(message.state.sendStatus == .sending)
+        #expect(try requireVideoContent(message) == video)
+        #expect(try requireVideoContent(messages.first) == video)
         #expect(contentRows.first?.int("content_count") == 1)
         #expect(resourceRows.first?.int("resource_count") == 1)
         #expect(conversations.first?.lastMessageDigest == "[视频]")
+    }
+
+    @Test func localChatRepositoryInsertsOutgoingFileMessageInTransaction() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "file_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "file_conversation", userID: "file_user", title: "File Target", sortTimestamp: 1)
+        )
+
+        let file = StoredFileContent(
+            mediaID: "media_file_1",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("file/report.pdf").path,
+            fileName: "report.pdf",
+            fileExtension: "pdf",
+            sizeBytes: 4_096
+        )
+        let message = try await repository.insertOutgoingFileMessage(
+            OutgoingFileMessageInput(
+                userID: "file_user",
+                conversationID: "file_conversation",
+                senderID: "file_user",
+                file: file,
+                localTime: 530,
+                messageID: "file_message_1",
+                clientMessageID: "file_client_1",
+                sortSequence: 530
+            )
+        )
+        let messages = try await repository.listMessages(conversationID: "file_conversation", limit: 20, beforeSortSeq: nil)
+        let contentRows = try await databaseContext.databaseActor.query(
+            "SELECT COUNT(*) AS content_count FROM message_file WHERE content_id = ?;",
+            parameters: [.text("file_file_message_1")],
+            paths: databaseContext.paths
+        )
+        let conversations = try await repository.listConversations(for: "file_user")
+
+        #expect(message.type == .file)
+        #expect(message.state.sendStatus == .sending)
+        #expect(try requireFileContent(message) == file)
+        #expect(try requireFileContent(messages.first) == file)
+        #expect(contentRows.first?.int("content_count") == 1)
+        #expect(conversations.first?.lastMessageDigest == "[文件] report.pdf")
     }
 
     @Test func localChatRepositoryResolvesImagePathsAfterStorageRootMoves() async throws {
@@ -2424,7 +2500,7 @@ struct AppleIMTests {
             limit: 20,
             beforeSortSeq: nil
         )
-        let reloadedImage = try #require(messages.first?.image)
+        let reloadedImage = try requireImageContent(messages.first)
 
         #expect(reloadedImage.localPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("image/original/media_image_move.png").path)
         #expect(reloadedImage.thumbnailPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("image/thumb/media_image_move.jpg").path)
@@ -2498,7 +2574,7 @@ struct AppleIMTests {
             limit: 20,
             beforeSortSeq: nil
         )
-        let reloadedVideo = try #require(messages.first?.video)
+        let reloadedVideo = try requireVideoContent(messages.first)
 
         #expect(reloadedVideo.localPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("video/media_video_move.mov").path)
         #expect(reloadedVideo.thumbnailPath == newDatabaseContext.paths.mediaDirectory.appendingPathComponent("video/thumb/media_video_move.jpg").path)
@@ -2971,8 +3047,8 @@ struct AppleIMTests {
         try await repository.markVoicePlayed(messageID: message.id)
         let playedMessage = try await repository.message(messageID: message.id)
 
-        #expect(unreadMessage?.readStatus == .unread)
-        #expect(playedMessage?.readStatus == .read)
+        #expect(unreadMessage?.state.readStatus == .unread)
+        #expect(playedMessage?.state.readStatus == .read)
     }
 
     @Test func chatUseCaseSendImageYieldsProgressThenSuccess() async throws {
@@ -3013,12 +3089,13 @@ struct AppleIMTests {
         #expect(rows.first?.statusText == "Sending")
         #expect(rows.compactMap(\.uploadProgress) == [0.25, 0.75, 1.0])
         #expect(rows.last?.statusText == nil)
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
+        let storedImage = try requireImageContent(storedMessage)
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedImage.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
         #expect(imageRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(imageRows.first?.string("cdn_url") == storedMessage?.image?.remoteURL)
+        #expect(imageRows.first?.string("cdn_url") == storedImage.remoteURL)
         #expect(resourceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(resourceRows.first?.string("remote_url") == storedMessage?.image?.remoteURL)
+        #expect(resourceRows.first?.string("remote_url") == storedImage.remoteURL)
     }
 
     @Test func chatUseCaseSendVoiceYieldsProgressThenSuccess() async throws {
@@ -3063,10 +3140,11 @@ struct AppleIMTests {
         #expect(rows.first.map(isVoiceContent) == true)
         #expect(rows.compactMap(\.uploadProgress) == [0.3, 0.6, 1.0])
         #expect(rows.last?.statusText == nil)
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.voice?.remoteURL?.contains("mock-cdn.chatbridge.local/voice") == true)
+        let storedVoice = try requireVoiceContent(storedMessage)
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedVoice.remoteURL?.contains("mock-cdn.chatbridge.local/voice") == true)
         #expect(voiceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(voiceRows.first?.string("cdn_url") == storedMessage?.voice?.remoteURL)
+        #expect(voiceRows.first?.string("cdn_url") == storedVoice.remoteURL)
     }
 
     @Test func chatUseCaseSendVideoYieldsProgressThenSuccess() async throws {
@@ -3109,10 +3187,11 @@ struct AppleIMTests {
         #expect(rows.first.flatMap(videoThumbnailPath) != nil)
         #expect(rows.compactMap(\.uploadProgress) == [0.2, 0.8, 1.0])
         #expect(rows.last?.statusText == nil)
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+        let storedVideo = try requireVideoContent(storedMessage)
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedVideo.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
         #expect(videoRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(videoRows.first?.string("cdn_url") == storedMessage?.video?.remoteURL)
+        #expect(videoRows.first?.string("cdn_url") == storedVideo.remoteURL)
     }
 
     @Test func chatUseCaseDoesNotSendTooShortVoice() async throws {
@@ -3188,18 +3267,18 @@ struct AppleIMTests {
         let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
         let storedMessages = try await repository.listMessages(conversationID: "image_retry_conversation", limit: 20, beforeSortSeq: nil)
         let resentMessage = try await repository.message(messageID: failedMessageID)
-        let retryJob = try await repository.pendingJob(id: "image_upload_\(failedMessage?.clientMessageID ?? "")")
+        let retryJob = try await repository.pendingJob(id: "image_upload_\(failedMessage?.delivery.clientMessageID ?? "")")
 
         #expect(failedRows.last?.statusText == "Failed")
         #expect(failedRows.last?.canRetry == true)
-        #expect(failedMessage?.sendStatus == .failed)
-        #expect(failedMessage?.image?.uploadStatus == .failed)
+        #expect(failedMessage?.state.sendStatus == .failed)
+        #expect(try requireImageContent(failedMessage).uploadStatus == .failed)
         #expect(recoverableJobs.count == 1)
         #expect(recoverableJobs.first?.type == .imageUpload)
         #expect(recoverableJobs.first?.payloadJSON.contains("timeout") == true)
         #expect(retryRows.last?.statusText == nil)
         #expect(storedMessages.count == 1)
-        #expect(resentMessage?.sendStatus == .success)
+        #expect(resentMessage?.state.sendStatus == .success)
         #expect(retryJob?.status == .success)
     }
 
@@ -3246,18 +3325,18 @@ struct AppleIMTests {
         let retryRows = try await collectRows(from: retryingUseCase.resend(messageID: failedMessageID))
         let storedMessages = try await repository.listMessages(conversationID: "video_retry_conversation", limit: 20, beforeSortSeq: nil)
         let resentMessage = try await repository.message(messageID: failedMessageID)
-        let retryJob = try await repository.pendingJob(id: "video_upload_\(failedMessage?.clientMessageID ?? "")")
+        let retryJob = try await repository.pendingJob(id: "video_upload_\(failedMessage?.delivery.clientMessageID ?? "")")
 
         #expect(failedRows.last?.statusText == "Failed")
         #expect(failedRows.last?.canRetry == true)
-        #expect(failedMessage?.sendStatus == .failed)
-        #expect(failedMessage?.video?.uploadStatus == .failed)
+        #expect(failedMessage?.state.sendStatus == .failed)
+        #expect(try requireVideoContent(failedMessage).uploadStatus == .failed)
         #expect(recoverableJobs.count == 1)
         #expect(recoverableJobs.first?.type == .videoUpload)
         #expect(recoverableJobs.first?.payloadJSON.contains("timeout") == true)
         #expect(retryRows.last?.statusText == nil)
         #expect(storedMessages.count == 1)
-        #expect(resentMessage?.sendStatus == .success)
+        #expect(resentMessage?.state.sendStatus == .success)
         #expect(retryJob?.status == .success)
     }
 
@@ -3303,14 +3382,14 @@ struct AppleIMTests {
 
         #expect(imageRows.last?.statusText == nil)
         #expect(videoRows.last?.statusText == nil)
-        #expect(imageMessage?.sendStatus == .success)
-        #expect(videoMessage?.sendStatus == .success)
-        #expect(imageMessage?.serverMessageID == "server_media_message")
-        #expect(videoMessage?.serverMessageID == "server_media_message")
-        #expect(imageMessage?.sequence == 919)
-        #expect(videoMessage?.sequence == 919)
-        #expect(imageMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local/image") == true)
-        #expect(videoMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+        #expect(imageMessage?.state.sendStatus == .success)
+        #expect(videoMessage?.state.sendStatus == .success)
+        #expect(imageMessage?.delivery.serverMessageID == "server_media_message")
+        #expect(videoMessage?.delivery.serverMessageID == "server_media_message")
+        #expect(imageMessage?.delivery.sequence == 919)
+        #expect(videoMessage?.delivery.sequence == 919)
+        #expect(try requireImageContent(imageMessage).remoteURL?.contains("mock-cdn.chatbridge.local/image") == true)
+        #expect(try requireVideoContent(videoMessage).remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
     }
 
     @Test func chatUseCaseQueuesMediaUploadJobWhenServerMediaSendFailsAfterUpload() async throws {
@@ -3344,17 +3423,19 @@ struct AppleIMTests {
         )
         let imageMessage = try await repository.message(messageID: try #require(imageRows.first?.id))
         let videoMessage = try await repository.message(messageID: try #require(videoRows.first?.id))
-        let imageJob = try await repository.pendingJob(id: "image_upload_\(imageMessage?.clientMessageID ?? "")")
-        let videoJob = try await repository.pendingJob(id: "video_upload_\(videoMessage?.clientMessageID ?? "")")
+        let imageJob = try await repository.pendingJob(id: "image_upload_\(imageMessage?.delivery.clientMessageID ?? "")")
+        let videoJob = try await repository.pendingJob(id: "video_upload_\(videoMessage?.delivery.clientMessageID ?? "")")
 
         #expect(imageRows.last?.statusText == "Failed")
         #expect(videoRows.last?.statusText == "Failed")
-        #expect(imageMessage?.sendStatus == .failed)
-        #expect(videoMessage?.sendStatus == .failed)
-        #expect(imageMessage?.image?.uploadStatus == .failed)
-        #expect(videoMessage?.video?.uploadStatus == .failed)
-        #expect(imageMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local/image") == true)
-        #expect(videoMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+        let uploadedImage = try requireImageContent(imageMessage)
+        let uploadedVideo = try requireVideoContent(videoMessage)
+        #expect(imageMessage?.state.sendStatus == .failed)
+        #expect(videoMessage?.state.sendStatus == .failed)
+        #expect(uploadedImage.uploadStatus == .failed)
+        #expect(uploadedVideo.uploadStatus == .failed)
+        #expect(uploadedImage.remoteURL?.contains("mock-cdn.chatbridge.local/image") == true)
+        #expect(uploadedVideo.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
         #expect(imageJob?.type == .imageUpload)
         #expect(videoJob?.type == .videoUpload)
         #expect(imageJob?.payloadJSON.contains("timeout") == true)
@@ -3909,7 +3990,7 @@ struct AppleIMTests {
         let updatedMessage = try await repository.message(messageID: insertedMessage.id)
         let missingMessage = try await repository.message(messageID: "missing_message")
 
-        #expect(updatedMessage?.sendStatus == .success)
+        #expect(updatedMessage?.state.sendStatus == .success)
         #expect(missingMessage == nil)
     }
 
@@ -4012,13 +4093,15 @@ struct AppleIMTests {
 
         #expect(row.id.rawValue.hasPrefix("simulated_push_incoming_"))
         #expect(row.isOutgoing == false)
-        #expect(storedMessage.direction == .incoming)
-        #expect(secondStoredMessage.direction == .incoming)
-        #expect(storedMessage.text?.isEmpty == false)
-        #expect(secondStoredMessage.text?.isEmpty == false)
-        #expect(storedMessage.text != secondStoredMessage.text)
-        #expect(storedMessage.sortSequence >= 101)
-        #expect(secondStoredMessage.sortSequence > storedMessage.sortSequence)
+        let storedText = try requireTextContent(storedMessage)
+        let secondStoredText = try requireTextContent(secondStoredMessage)
+        #expect(storedMessage.state.direction == .incoming)
+        #expect(secondStoredMessage.state.direction == .incoming)
+        #expect(storedText.isEmpty == false)
+        #expect(secondStoredText.isEmpty == false)
+        #expect(storedText != secondStoredText)
+        #expect(storedMessage.timeline.sortSequence >= 101)
+        #expect(secondStoredMessage.timeline.sortSequence > storedMessage.timeline.sortSequence)
         #expect(page.rows.contains { $0.id == row.id })
         #expect(page.rows.contains { $0.id == secondRow.id })
     }
@@ -4073,11 +4156,11 @@ struct AppleIMTests {
         for row in rows {
             storedMessages.append(try #require(try await repository.message(messageID: row.id)))
         }
-        let sortedSequences = storedMessages.map(\.sortSequence).sorted()
+        let sortedSequences = storedMessages.map(\.timeline.sortSequence).sorted()
 
         #expect(rows.count >= 2)
         #expect(Set(rows.map(\.id)).count == rows.count)
-        #expect(Set(storedMessages.map(\.sortSequence)).count == storedMessages.count)
+        #expect(Set(storedMessages.map(\.timeline.sortSequence)).count == storedMessages.count)
         #expect(sortedSequences[1] > sortedSequences[0])
     }
 
@@ -4120,13 +4203,13 @@ struct AppleIMTests {
             let conversations = try await repository.listConversations(for: "simulated_read_user")
             let storedMessage = try await repository.message(messageID: row.id)
             let conversation = conversations.first { $0.id == "simulated_read_conversation" }
-            return conversation?.unreadCount == 0 && storedMessage?.readStatus == .read
+            return conversation?.unreadCount == 0 && storedMessage?.state.readStatus == .read
         }
         let conversations = try await repository.listConversations(for: "simulated_read_user")
         let storedMessage = try #require(try await repository.message(messageID: row.id))
         let conversation = try #require(conversations.first { $0.id == "simulated_read_conversation" })
         #expect(conversation.unreadCount == 0)
-        #expect(storedMessage.readStatus == .read)
+        #expect(storedMessage.state.readStatus == .read)
     }
 
     @Test func localChatUseCaseRequestsCurrentConversationWhenTriggeringChatPush() async throws {
@@ -4242,7 +4325,7 @@ struct AppleIMTests {
         #expect(currentMessages.count == rows.count)
         #expect(Set(currentMessages.map(\.id)) == Set(rows.map(\.id)))
         #expect(otherMessages.isEmpty)
-        #expect(currentMessages.allSatisfy { $0.direction == .incoming })
+        #expect(currentMessages.allSatisfy { $0.state.direction == .incoming })
         #expect(currentMessages.allSatisfy { $0.senderID == "chat_current_push_peer" })
         #expect(rows.allSatisfy { $0.isOutgoing == false })
     }
@@ -4518,7 +4601,7 @@ struct AppleIMTests {
         #expect(draftAfterFirstRow == "draft before send")
         #expect(try await iterator.next() == nil)
         #expect(try await repository.draft(conversationID: "chat_send_conversation", userID: "chat_send_user") == nil)
-        #expect(storedMessage?.sendStatus == .success)
+        #expect(storedMessage?.state.sendStatus == .success)
     }
 
     @Test func serverMessageSendServiceMapsTextAckToSendResult() async throws {
@@ -4660,6 +4743,19 @@ struct AppleIMTests {
         #expect(missingURLResult == .failure(.ackMissing))
     }
 
+    @Test func serverMessageSendServiceRejectsMismatchedStoredMessageContent() async throws {
+        let service = ServerMessageSendService(httpClient: RecordingHTTPClient())
+        let textMessage = makeStoredTextMessage()
+        let imageMessage = makeStoredImageMessage()
+        let upload = MediaUploadAck(mediaID: "image_media", cdnURL: "https://cdn.example/image.png", md5: nil)
+
+        let textAsImage = await service.sendImage(message: textMessage, upload: upload)
+        let imageAsText = await service.sendText(message: imageMessage)
+
+        #expect(textAsImage == .failure(.ackMissing))
+        #expect(imageAsText == .failure(.ackMissing))
+    }
+
     @Test func tokenRefreshingHTTPClientRefreshesAfterUnauthorizedAndRetriesWithUpdatedToken() async throws {
         let tokenBox = TokenBox(token: "expired_token")
         let httpClient = ExpiringTextHTTPClient(
@@ -4754,10 +4850,10 @@ struct AppleIMTests {
 
         let rows = try await collectRows(from: useCase.sendText("Queue after refresh fail"))
         let failedMessage = try await repository.message(messageID: rows[0].id)!
-        let pendingJob = try #require(try await repository.pendingJob(id: PendingMessageJobFactory.messageResendJobID(clientMessageID: failedMessage.clientMessageID ?? "")))
+        let pendingJob = try #require(try await repository.pendingJob(id: PendingMessageJobFactory.messageResendJobID(clientMessageID: failedMessage.delivery.clientMessageID ?? "")))
 
         #expect(rows.map(\.statusText) == ["Sending", "Failed"])
-        #expect(failedMessage.sendStatus == .failed)
+        #expect(failedMessage.state.sendStatus == .failed)
         #expect(pendingJob.type == .messageResend)
         #expect(pendingJob.payloadJSON.contains("unknown"))
         #expect(await httpClient.textSendCallCount == 1)
@@ -4794,10 +4890,10 @@ struct AppleIMTests {
         let storedMessage = try await repository.message(messageID: rows[0].id)
 
         #expect(rows.map(\.statusText) == ["Sending", nil])
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.serverMessageID == "server_ack_message")
-        #expect(storedMessage?.sequence == 909)
-        #expect(storedMessage?.serverTime == 1_777_777_909)
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedMessage?.delivery.serverMessageID == "server_ack_message")
+        #expect(storedMessage?.delivery.sequence == 909)
+        #expect(storedMessage?.timeline.serverTime == 1_777_777_909)
     }
 
     @Test func chatUseCaseQueuesPendingJobForServerAckFailureAndResendsWithSameClientMessageID() async throws {
@@ -4822,7 +4918,7 @@ struct AppleIMTests {
         let failedRows = try await collectRows(from: failingUseCase.sendText("Retry with same client id"))
         let failedMessageID = failedRows[0].id
         let failedMessage = try await repository.message(messageID: failedMessageID)!
-        let pendingJob = try #require(try await repository.pendingJob(id: PendingMessageJobFactory.messageResendJobID(clientMessageID: failedMessage.clientMessageID ?? "")))
+        let pendingJob = try #require(try await repository.pendingJob(id: PendingMessageJobFactory.messageResendJobID(clientMessageID: failedMessage.delivery.clientMessageID ?? "")))
 
         let successClient = RecordingHTTPClient(
             response: ServerTextMessageSendResponse(
@@ -4848,9 +4944,9 @@ struct AppleIMTests {
         #expect(pendingJob.payloadJSON.contains("ackMissing"))
         #expect(retryRows.map(\.statusText) == ["Sending", nil])
         #expect(storedMessages.count == 1)
-        #expect(resentMessage?.clientMessageID == failedMessage.clientMessageID)
-        #expect(resentMessage?.serverMessageID == "server_retry_ack")
-        #expect(retryRequest?.clientMessageID == failedMessage.clientMessageID)
+        #expect(resentMessage?.delivery.clientMessageID == failedMessage.delivery.clientMessageID)
+        #expect(resentMessage?.delivery.serverMessageID == "server_retry_ack")
+        #expect(retryRequest?.clientMessageID == failedMessage.delivery.clientMessageID)
     }
 
     @Test func chatUseCaseDoesNotSendBlankText() async throws {
@@ -4914,8 +5010,8 @@ struct AppleIMTests {
         #expect(failedRows.last?.canRetry == true)
         #expect(retryRows.map(\.statusText) == ["Sending", nil])
         #expect(storedMessages.count == 1)
-        #expect(resentMessage.sendStatus == .success)
-        #expect(resentMessage.clientMessageID == failedMessage.clientMessageID)
+        #expect(resentMessage.state.sendStatus == .success)
+        #expect(resentMessage.delivery.clientMessageID == failedMessage.delivery.clientMessageID)
     }
 
     @Test func pendingJobRepositoryUpsertsAndRestoresUnfinishedJobs() async throws {
@@ -5024,10 +5120,10 @@ struct AppleIMTests {
         let job = recoverableJobs.first
 
         #expect(rows.map(\.statusText) == ["Sending", "Failed"])
-        #expect(failedMessage.sendStatus == .failed)
+        #expect(failedMessage.state.sendStatus == .failed)
         #expect(recoverableJobs.count == 1)
         #expect(job?.type == .messageResend)
-        #expect(job?.bizKey == failedMessage.clientMessageID)
+        #expect(job?.bizKey == failedMessage.delivery.clientMessageID)
         #expect(job?.maxRetryCount == 4)
         #expect((job?.nextRetryAt ?? 0) >= startedAt + 3)
         #expect(job?.payloadJSON.contains(failedMessage.id.rawValue) == true)
@@ -5085,7 +5181,7 @@ struct AppleIMTests {
         #expect(job?.status == .pending)
         #expect(job?.retryCount == 1)
         #expect(job?.nextRetryAt == 1_020)
-        #expect(storedMessage?.sendStatus == .failed)
+        #expect(storedMessage?.state.sendStatus == .failed)
     }
 
     @Test func pendingMessageRetryRunnerMarksJobSuccessAfterRecoveredAck() async throws {
@@ -5135,8 +5231,8 @@ struct AppleIMTests {
 
         #expect(result.successCount == 1)
         #expect(job?.status == .success)
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.serverMessageID == "server_retry_success_message")
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedMessage?.delivery.serverMessageID == "server_retry_success_message")
     }
 
     @Test func pendingMessageRetryRunnerStopsAtRetryLimit() async throws {
@@ -5252,9 +5348,10 @@ struct AppleIMTests {
 
         #expect(result.successCount == 1)
         #expect(job?.status == .success)
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.image?.uploadStatus == .success)
-        #expect(storedMessage?.image?.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
+        let storedImage = try requireImageContent(storedMessage)
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedImage.uploadStatus == .success)
+        #expect(storedImage.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
     }
 
     @Test func pendingMessageRetryRunnerRecoversVideoUploadJob() async throws {
@@ -5321,9 +5418,10 @@ struct AppleIMTests {
 
         #expect(result.successCount == 1)
         #expect(job?.status == .success)
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.video?.uploadStatus == .success)
-        #expect(storedMessage?.video?.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
+        let storedVideo = try requireVideoContent(storedMessage)
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedVideo.uploadStatus == .success)
+        #expect(storedVideo.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
     }
 
     @Test func pendingMessageRetryRunnerStopsImageUploadAtRetryLimit() async throws {
@@ -5391,8 +5489,8 @@ struct AppleIMTests {
         #expect(result.exhaustedCount == 1)
         #expect(job?.status == .failed)
         #expect(job?.retryCount == 1)
-        #expect(storedMessage?.sendStatus == .failed)
-        #expect(storedMessage?.image?.uploadStatus == .failed)
+        #expect(storedMessage?.state.sendStatus == .failed)
+        #expect(try requireImageContent(storedMessage).uploadStatus == .failed)
     }
 
     @Test func crashRecoveryRestoresSendingTextMessageAsPendingJob() async throws {
@@ -5427,7 +5525,7 @@ struct AppleIMTests {
         let job = try await repository.pendingJob(id: "message_resend_crash_text_client")
 
         #expect(result == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
-        #expect(storedMessage?.sendStatus == .pending)
+        #expect(storedMessage?.state.sendStatus == .pending)
         #expect(job?.status == .pending)
         #expect(job?.type == .messageResend)
         #expect(job?.bizKey == "crash_text_client")
@@ -5490,8 +5588,8 @@ struct AppleIMTests {
         )
 
         #expect(result == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
-        #expect(storedMessage?.sendStatus == .pending)
-        #expect(storedMessage?.image?.uploadStatus == .pending)
+        #expect(storedMessage?.state.sendStatus == .pending)
+        #expect(try requireImageContent(storedMessage).uploadStatus == .pending)
         #expect(mediaRows.first?.int("upload_status") == MediaUploadStatus.pending.rawValue)
         #expect(job?.status == .pending)
         #expect(job?.type == .imageUpload)
@@ -5559,7 +5657,7 @@ struct AppleIMTests {
 
         #expect(firstResult == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
         #expect(secondResult == MessageCrashRecoveryResult(scannedMessageCount: 0, recoveredMessageCount: 0, pendingJobCount: 0, failedMessageCount: 0))
-        #expect(storedMessage?.sendStatus == .pending)
+        #expect(storedMessage?.state.sendStatus == .pending)
         #expect(job?.status == .success)
         #expect(job?.payloadJSON == #"{"terminal":true}"#)
         #expect(job?.maxRetryCount == 1)
@@ -5613,8 +5711,8 @@ struct AppleIMTests {
 
         let storedMessage = try await repository.message(messageID: message.id)
 
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.serverMessageID == "server_network_crash_message")
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedMessage?.delivery.serverMessageID == "server_network_crash_message")
         #expect(coordinator.lastCrashRecoveryResult?.recoveredMessageCount == 1)
         #expect(coordinator.lastRunResult?.successCount == 1)
     }
@@ -5677,8 +5775,8 @@ struct AppleIMTests {
 
         let storedMessage = try await repository.message(messageID: message.id)
 
-        #expect(storedMessage?.sendStatus == .success)
-        #expect(storedMessage?.serverMessageID == "server_network_recovery_message")
+        #expect(storedMessage?.state.sendStatus == .success)
+        #expect(storedMessage?.delivery.serverMessageID == "server_network_recovery_message")
         #expect(coordinator.lastRunResult?.successCount == 1)
     }
 
@@ -5757,9 +5855,9 @@ struct AppleIMTests {
         let reloadedMessage = try await repository.message(messageID: "revoke_message")!
         let conversations = try await repository.listConversations(for: "revoke_user")
 
-        #expect(revokedMessage.isRevoked)
-        #expect(reloadedMessage.isRevoked)
-        #expect(reloadedMessage.revokeReplacementText == "你撤回了一条消息")
+        #expect(revokedMessage.state.isRevoked)
+        #expect(reloadedMessage.state.isRevoked)
+        #expect(reloadedMessage.state.revokeReplacementText == "你撤回了一条消息")
         #expect(conversations.first?.lastMessageDigest == "你撤回了一条消息")
     }
 
@@ -5873,9 +5971,9 @@ struct AppleIMTests {
 
         let conversations = try await repository.listConversations(for: "message_read_user")
         let storedMessage = try await repository.message(messageID: message.id)
-        #expect(unreadMessage?.readStatus == .unread)
+        #expect(unreadMessage?.state.readStatus == .unread)
         #expect(conversations.first?.unreadCount == 0)
-        #expect(storedMessage?.readStatus == .read)
+        #expect(storedMessage?.state.readStatus == .read)
     }
 
     @Test func chatUseCaseMarksIncomingVoicePlayedAndClearsUnreadDot() async throws {
@@ -5929,7 +6027,7 @@ struct AppleIMTests {
         #expect(initialPage.rows.first.map(isUnplayedVoiceContent) == true)
         #expect(initialPage.rows.first.flatMap(voiceLocalPath) == voice.localPath)
         #expect(playedRow.map(isUnplayedVoiceContent) == false)
-        #expect(storedMessage?.readStatus == .read)
+        #expect(storedMessage?.state.readStatus == .read)
     }
 
     @MainActor
@@ -9678,8 +9776,8 @@ struct AppleIMTests {
         #expect(result.fetchedCount == 1)
         #expect(result.insertedCount == 1)
         #expect(result.skippedDuplicateCount == 0)
-        #expect(messages.map(\.text) == ["First sync message"])
-        #expect(messages.first?.sendStatus == .success)
+        #expect(try messages.map { try requireTextContent($0) } == ["First sync message"])
+        #expect(messages.first?.state.sendStatus == .success)
         #expect(checkpoint?.cursor == "cursor_10")
         #expect(checkpoint?.sequence == 10)
     }
@@ -9816,7 +9914,7 @@ struct AppleIMTests {
         #expect(result.fetchedCount == 5)
         #expect(result.insertedCount == 2)
         #expect(result.skippedDuplicateCount == 3)
-        #expect(messages.map(\.text) == ["Unique 2", "Unique 1"])
+        #expect(try messages.map { try requireTextContent($0) } == ["Unique 2", "Unique 1"])
     }
 
     @Test func incomingSyncMessageSchedulesLocalNotification() async throws {
@@ -10239,7 +10337,7 @@ struct AppleIMTests {
         let messages = try await repository.listMessages(conversationID: "sync_summary_conversation", limit: 20, beforeSortSeq: nil)
         let conversations = try await repository.listConversations(for: "sync_summary_user")
 
-        #expect(messages.map(\.text) == ["Latest by seq", "Older by seq"])
+        #expect(try messages.map { try requireTextContent($0) } == ["Latest by seq", "Older by seq"])
         #expect(conversations.first?.lastMessageDigest == "Latest by seq")
         #expect(conversations.first?.unreadCount == 2)
     }
@@ -10367,7 +10465,7 @@ struct AppleIMTests {
         #expect(result.skippedDuplicateCount == 0)
         #expect(result.initialCheckpoint == nil)
         #expect(result.finalCheckpoint.cursor == "cursor_2")
-        #expect(messages.map(\.text) == ["Second page", "First page"])
+        #expect(try messages.map { try requireTextContent($0) } == ["Second page", "First page"])
         #expect(checkpoint?.cursor == "cursor_2")
         #expect(checkpoint?.sequence == 2)
         #expect(requestedCheckpoints.map(\.?.cursor) == [nil, "cursor_1"])
@@ -10451,7 +10549,7 @@ struct AppleIMTests {
 
         #expect(result.initialCheckpoint?.cursor == "cursor_10")
         #expect(result.finalCheckpoint.cursor == "cursor_30")
-        #expect(messages.map(\.text) == ["Caught up latest", "Caught up newer", "Already synced"])
+        #expect(try messages.map { try requireTextContent($0) } == ["Caught up latest", "Caught up newer", "Already synced"])
         #expect(conversations.first?.lastMessageDigest == "Caught up latest")
         #expect(requestedCheckpoints.first??.cursor == "cursor_10")
     }
@@ -10547,7 +10645,7 @@ struct AppleIMTests {
         #expect(result.fetchedCount == 5)
         #expect(result.insertedCount == 2)
         #expect(result.skippedDuplicateCount == 3)
-        #expect(messages.map(\.text) == ["Unique second batch", "Unique first batch"])
+        #expect(try messages.map { try requireTextContent($0) } == ["Unique second batch", "Unique first batch"])
     }
 
     @Test func syncEngineStopsWhenHasMoreExceedsMaxBatches() async throws {
@@ -10595,7 +10693,7 @@ struct AppleIMTests {
         let checkpoint = try await repository.syncCheckpoint(for: SyncEngineActor.messageBizKey)
 
         #expect(caughtError == .exceededMaxBatches(2))
-        #expect(messages.map(\.text) == ["Still has more"])
+        #expect(try messages.map { try requireTextContent($0) } == ["Still has more"])
         #expect(checkpoint?.cursor == "cursor_limit")
     }
 
@@ -13924,6 +14022,73 @@ private func collectRows(from stream: AsyncThrowingStream<ChatMessageRowState, E
     return rows
 }
 
+private func requireTextContent(_ message: StoredMessage?) throws -> String {
+    let message = try #require(message)
+    guard case let .text(text) = message.content else {
+        Issue.record("期望文本消息内容，实际为 \(message.content)")
+        return ""
+    }
+    return text
+}
+
+private func requireTextualContent(_ message: StoredMessage?) throws -> String {
+    let message = try #require(message)
+    switch message.content {
+    case let .text(text):
+        return text
+    case let .system(text), let .quote(text), let .revoked(text):
+        return text ?? ""
+    case .image, .voice, .video, .file, .emoji:
+        Issue.record("期望可显示文本内容，实际为 \(message.content)")
+        return ""
+    }
+}
+
+private func requireImageContent(_ message: StoredMessage?) throws -> StoredImageContent {
+    let message = try #require(message)
+    guard case let .image(image) = message.content else {
+        Issue.record("期望图片消息内容，实际为 \(message.content)")
+        return StoredImageContent(mediaID: "", localPath: "", thumbnailPath: "", width: 0, height: 0, sizeBytes: 0, format: "")
+    }
+    return image
+}
+
+private func requireVoiceContent(_ message: StoredMessage?) throws -> StoredVoiceContent {
+    let message = try #require(message)
+    guard case let .voice(voice) = message.content else {
+        Issue.record("期望语音消息内容，实际为 \(message.content)")
+        return StoredVoiceContent(mediaID: "", localPath: "", durationMilliseconds: 0, sizeBytes: 0, format: "")
+    }
+    return voice
+}
+
+private func requireVideoContent(_ message: StoredMessage?) throws -> StoredVideoContent {
+    let message = try #require(message)
+    guard case let .video(video) = message.content else {
+        Issue.record("期望视频消息内容，实际为 \(message.content)")
+        return StoredVideoContent(mediaID: "", localPath: "", thumbnailPath: "", durationMilliseconds: 0, width: 0, height: 0, sizeBytes: 0)
+    }
+    return video
+}
+
+private func requireFileContent(_ message: StoredMessage?) throws -> StoredFileContent {
+    let message = try #require(message)
+    guard case let .file(file) = message.content else {
+        Issue.record("期望文件消息内容，实际为 \(message.content)")
+        return StoredFileContent(mediaID: "", localPath: "", fileName: "", fileExtension: nil, sizeBytes: 0)
+    }
+    return file
+}
+
+private func requireEmojiContent(_ message: StoredMessage?) throws -> StoredEmojiContent {
+    let message = try #require(message)
+    guard case let .emoji(emoji) = message.content else {
+        Issue.record("期望表情消息内容，实际为 \(message.content)")
+        return StoredEmojiContent(emojiID: "", packageID: nil, emojiType: .system, name: nil, localPath: nil, thumbPath: nil, cdnURL: nil, width: nil, height: nil, sizeBytes: nil)
+    }
+    return emoji
+}
+
 private func makeStoredTextMessage(
     messageID: MessageID = "local_message",
     conversationID: ConversationID = "local_conversation",
@@ -13932,27 +14097,12 @@ private func makeStoredTextMessage(
     text: String = "Hello",
     localTime: Int64 = 100
 ) -> StoredMessage {
-    StoredMessage(
-        id: messageID,
+    makeOutgoingStoredMessage(
+        messageID: messageID,
         conversationID: conversationID,
         senderID: senderID,
         clientMessageID: clientMessageID,
-        serverMessageID: nil,
-        sequence: nil,
-        type: .text,
-        direction: .outgoing,
-        sendStatus: .sending,
-        readStatus: .read,
-        serverTime: nil,
-        isRevoked: false,
-        isDeleted: false,
-        revokeReplacementText: nil,
-        text: text,
-        image: nil,
-        voice: nil,
-        video: nil,
-        file: nil,
-        sortSequence: localTime,
+        content: .text(text),
         localTime: localTime
     )
 }
@@ -13964,23 +14114,12 @@ private func makeStoredImageMessage(
     clientMessageID: String? = "local_image_client_message",
     localTime: Int64 = 100
 ) -> StoredMessage {
-    StoredMessage(
-        id: messageID,
+    makeOutgoingStoredMessage(
+        messageID: messageID,
         conversationID: conversationID,
         senderID: senderID,
         clientMessageID: clientMessageID,
-        serverMessageID: nil,
-        sequence: nil,
-        type: .image,
-        direction: .outgoing,
-        sendStatus: .sending,
-        readStatus: .read,
-        serverTime: nil,
-        isRevoked: false,
-        isDeleted: false,
-        revokeReplacementText: nil,
-        text: nil,
-        image: StoredImageContent(
+        content: .image(StoredImageContent(
             mediaID: "image_media",
             localPath: "media/image.png",
             thumbnailPath: "media/image_thumb.jpg",
@@ -13989,11 +14128,7 @@ private func makeStoredImageMessage(
             sizeBytes: 4_096,
             md5: "local-image-md5",
             format: "png"
-        ),
-        voice: nil,
-        video: nil,
-        file: nil,
-        sortSequence: localTime,
+        )),
         localTime: localTime
     )
 }
@@ -14005,33 +14140,18 @@ private func makeStoredVoiceMessage(
     clientMessageID: String? = "local_voice_client_message",
     localTime: Int64 = 100
 ) -> StoredMessage {
-    StoredMessage(
-        id: messageID,
+    makeOutgoingStoredMessage(
+        messageID: messageID,
         conversationID: conversationID,
         senderID: senderID,
         clientMessageID: clientMessageID,
-        serverMessageID: nil,
-        sequence: nil,
-        type: .voice,
-        direction: .outgoing,
-        sendStatus: .sending,
-        readStatus: .read,
-        serverTime: nil,
-        isRevoked: false,
-        isDeleted: false,
-        revokeReplacementText: nil,
-        text: nil,
-        image: nil,
-        voice: StoredVoiceContent(
+        content: .voice(StoredVoiceContent(
             mediaID: "voice_media",
             localPath: "media/voice.m4a",
             durationMilliseconds: 1_800,
             sizeBytes: 2_048,
             format: "m4a"
-        ),
-        video: nil,
-        file: nil,
-        sortSequence: localTime,
+        )),
         localTime: localTime
     )
 }
@@ -14043,25 +14163,12 @@ private func makeStoredVideoMessage(
     clientMessageID: String? = "local_video_client_message",
     localTime: Int64 = 100
 ) -> StoredMessage {
-    StoredMessage(
-        id: messageID,
+    makeOutgoingStoredMessage(
+        messageID: messageID,
         conversationID: conversationID,
         senderID: senderID,
         clientMessageID: clientMessageID,
-        serverMessageID: nil,
-        sequence: nil,
-        type: .video,
-        direction: .outgoing,
-        sendStatus: .sending,
-        readStatus: .read,
-        serverTime: nil,
-        isRevoked: false,
-        isDeleted: false,
-        revokeReplacementText: nil,
-        text: nil,
-        image: nil,
-        voice: nil,
-        video: StoredVideoContent(
+        content: .video(StoredVideoContent(
             mediaID: "video_media",
             localPath: "media/video.mov",
             thumbnailPath: "media/video_thumb.jpg",
@@ -14070,9 +14177,7 @@ private func makeStoredVideoMessage(
             height: 360,
             sizeBytes: 8_192,
             md5: "local-video-md5"
-        ),
-        file: nil,
-        sortSequence: localTime,
+        )),
         localTime: localTime
     )
 }
@@ -14084,35 +14189,54 @@ private func makeStoredFileMessage(
     clientMessageID: String? = "local_file_client_message",
     localTime: Int64 = 100
 ) -> StoredMessage {
-    StoredMessage(
-        id: messageID,
+    makeOutgoingStoredMessage(
+        messageID: messageID,
         conversationID: conversationID,
         senderID: senderID,
         clientMessageID: clientMessageID,
-        serverMessageID: nil,
-        sequence: nil,
-        type: .file,
-        direction: .outgoing,
-        sendStatus: .sending,
-        readStatus: .read,
-        serverTime: nil,
-        isRevoked: false,
-        isDeleted: false,
-        revokeReplacementText: nil,
-        text: nil,
-        image: nil,
-        voice: nil,
-        video: nil,
-        file: StoredFileContent(
+        content: .file(StoredFileContent(
             mediaID: "file_media",
             localPath: "media/report.pdf",
             fileName: "report.pdf",
             fileExtension: "pdf",
             sizeBytes: 16_384,
             md5: "local-file-md5"
-        ),
-        sortSequence: localTime,
+        )),
         localTime: localTime
+    )
+}
+
+private func makeOutgoingStoredMessage(
+    messageID: MessageID,
+    conversationID: ConversationID,
+    senderID: UserID,
+    clientMessageID: String?,
+    content: StoredMessageContent,
+    localTime: Int64
+) -> StoredMessage {
+    StoredMessage(
+        id: messageID,
+        conversationID: conversationID,
+        senderID: senderID,
+        delivery: StoredMessageDelivery(
+            clientMessageID: clientMessageID,
+            serverMessageID: nil,
+            sequence: nil
+        ),
+        state: StoredMessageState(
+            direction: .outgoing,
+            sendStatus: .sending,
+            readStatus: .read,
+            isRevoked: false,
+            isDeleted: false,
+            revokeReplacementText: nil
+        ),
+        timeline: StoredMessageTimeline(
+            serverTime: nil,
+            sortSequence: localTime,
+            localTime: localTime
+        ),
+        content: content
     )
 }
 

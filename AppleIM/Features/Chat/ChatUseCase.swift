@@ -255,7 +255,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
         let visibleMessages = Array(messages.prefix(boundedLimit))
         let rows = visibleMessages
-            .sorted { $0.sortSequence < $1.sortSequence }
+            .sorted { $0.timeline.sortSequence < $1.timeline.sortSequence }
             .map { row(from: $0, currentUserID: userID) }
 
         return ChatMessagePage(
@@ -875,7 +875,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         for message: StoredMessage,
         failureReason: MessageSendFailureReason?
     ) throws -> PendingJobInput? {
-        guard pendingJobRepository != nil, let clientMessageID = message.clientMessageID else {
+        guard pendingJobRepository != nil, let clientMessageID = message.delivery.clientMessageID else {
             return nil
         }
 
@@ -894,7 +894,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     ///
     /// - Parameter message: 消息对象
     private func markResendJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
+        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
             return
         }
 
@@ -1218,8 +1218,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     ) throws -> PendingJobInput? {
         guard
             pendingJobRepository != nil,
-            let clientMessageID = message.clientMessageID,
-            let image = message.image
+            let clientMessageID = message.delivery.clientMessageID,
+            case let .image(image) = message.content
         else {
             return nil
         }
@@ -1238,7 +1238,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
     /// 标记图片上传恢复任务成功
     private func markImageUploadJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
+        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
             return
         }
 
@@ -1256,8 +1256,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     ) throws -> PendingJobInput? {
         guard
             pendingJobRepository != nil,
-            let clientMessageID = message.clientMessageID,
-            let video = message.video
+            let clientMessageID = message.delivery.clientMessageID,
+            case let .video(video) = message.content
         else {
             return nil
         }
@@ -1281,8 +1281,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     ) throws -> PendingJobInput? {
         guard
             pendingJobRepository != nil,
-            let clientMessageID = message.clientMessageID,
-            let file = message.file
+            let clientMessageID = message.delivery.clientMessageID,
+            case let .file(file) = message.content
         else {
             return nil
         }
@@ -1301,7 +1301,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
     /// 标记视频上传恢复任务成功
     private func markVideoUploadJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
+        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
             return
         }
 
@@ -1314,7 +1314,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
     /// 标记文件上传恢复任务成功
     private func markFileUploadJobSuccess(for message: StoredMessage) async throws {
-        guard let pendingJobRepository, let clientMessageID = message.clientMessageID else {
+        guard let pendingJobRepository, let clientMessageID = message.delivery.clientMessageID else {
             return
         }
 
@@ -1342,7 +1342,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         uploadProgress: Double? = nil
     ) -> ChatMessageRowState {
         let isOutgoing = message.senderID == currentUserID
-        let isRevoked = message.isRevoked
+        let isRevoked = message.state.isRevoked
         let senderAvatarURL = isOutgoing ? currentUserAvatarURL : conversationAvatarURL
 
         return ChatMessageRowState(
@@ -1352,19 +1352,19 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 isOutgoing: isOutgoing,
                 isRevoked: isRevoked
             ),
-            sortSequence: message.sortSequence,
-            sentAt: message.localTime,
-            timeText: Self.timeText(from: message.localTime),
+            sortSequence: message.timeline.sortSequence,
+            sentAt: message.timeline.localTime,
+            timeText: Self.timeText(from: message.timeline.localTime),
             statusText: isRevoked ? nil : Self.statusText(for: message),
             uploadProgress: uploadProgress,
             senderAvatarURL: senderAvatarURL,
             isOutgoing: isOutgoing,
             canRetry: isOutgoing
                 && (message.type == .text || message.type == .image || message.type == .video || message.type == .emoji)
-                && message.sendStatus == .failed
+                && message.state.sendStatus == .failed
                 && !isRevoked,
-            canDelete: !message.isDeleted,
-            canRevoke: isOutgoing && message.type == .text && message.sendStatus == .success && !isRevoked
+            canDelete: !message.state.isDeleted,
+            canRevoke: isOutgoing && message.type == .text && message.state.sendStatus == .success && !isRevoked
         )
     }
 
@@ -1375,76 +1375,66 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         isRevoked: Bool
     ) -> ChatMessageRowContent {
         if isRevoked {
-            return .revoked(message.revokeReplacementText ?? "你撤回了一条消息")
+            return .revoked(message.state.revokeReplacementText ?? "你撤回了一条消息")
         }
 
-        switch message.type {
-        case .image:
-            if let image = message.image {
-                return .image(
-                    ChatMessageRowContent.ImageContent(
-                        thumbnailPath: image.thumbnailPath
-                    )
+        switch message.content {
+        case let .image(image):
+            return .image(
+                ChatMessageRowContent.ImageContent(
+                    thumbnailPath: image.thumbnailPath
                 )
-            }
-        case .voice:
-            if let voice = message.voice {
-                return .voice(
-                    ChatMessageRowContent.VoiceContent(
-                        localPath: voice.localPath,
-                        durationMilliseconds: voice.durationMilliseconds,
-                        isUnplayed: !isOutgoing && message.readStatus == .unread,
-                        isPlaying: false
-                    )
+            )
+        case let .voice(voice):
+            return .voice(
+                ChatMessageRowContent.VoiceContent(
+                    localPath: voice.localPath,
+                    durationMilliseconds: voice.durationMilliseconds,
+                    isUnplayed: !isOutgoing && message.state.readStatus == .unread,
+                    isPlaying: false
                 )
-            }
-        case .video:
-            if let video = message.video {
-                return .video(
-                    ChatMessageRowContent.VideoContent(
-                        thumbnailPath: video.thumbnailPath,
-                        localPath: video.localPath,
-                        durationMilliseconds: video.durationMilliseconds
-                    )
+            )
+        case let .video(video):
+            return .video(
+                ChatMessageRowContent.VideoContent(
+                    thumbnailPath: video.thumbnailPath,
+                    localPath: video.localPath,
+                    durationMilliseconds: video.durationMilliseconds
                 )
-            }
-        case .file:
-            if let file = message.file {
-                return .file(
-                    ChatMessageRowContent.FileContent(
-                        fileName: file.fileName,
-                        fileExtension: file.fileExtension,
-                        localPath: file.localPath,
-                        sizeBytes: file.sizeBytes
-                    )
+            )
+        case let .file(file):
+            return .file(
+                ChatMessageRowContent.FileContent(
+                    fileName: file.fileName,
+                    fileExtension: file.fileExtension,
+                    localPath: file.localPath,
+                    sizeBytes: file.sizeBytes
                 )
-            }
-        case .emoji:
-            if let emoji = message.emoji {
-                return .emoji(
-                    ChatMessageRowContent.EmojiContent(
-                        emojiID: emoji.emojiID,
-                        name: emoji.name,
-                        localPath: emoji.localPath,
-                        thumbPath: emoji.thumbPath,
-                        cdnURL: emoji.cdnURL
-                    )
+            )
+        case let .emoji(emoji):
+            return .emoji(
+                ChatMessageRowContent.EmojiContent(
+                    emojiID: emoji.emojiID,
+                    name: emoji.name,
+                    localPath: emoji.localPath,
+                    thumbPath: emoji.thumbPath,
+                    cdnURL: emoji.cdnURL
                 )
-            }
-        case .text, .system, .quote, .revoked:
-            break
+            )
+        case let .text(text):
+            return .text(text)
+        case let .system(text), let .quote(text), let .revoked(text):
+            return .text(text ?? "")
         }
-
-        return .text(message.text ?? "")
     }
 
     /// 生成发出消息状态文本
     nonisolated private static func statusText(for message: StoredMessage) -> String? {
-        guard message.direction == .outgoing else {
+        guard message.state.direction == .outgoing else {
             return nil
         }
 
-        switch message.sendStatus {
+        switch message.state.sendStatus {
         case .pending:
             return "Pending"
         case .sending:
