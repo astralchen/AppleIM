@@ -101,7 +101,7 @@ protocol ChatUseCase: Sendable {
     func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error>
     /// 标记语音已播放
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState?
-    /// 触发统一模拟后台推送，并返回命中当前会话的消息行
+    /// 触发当前会话的后台推送对方消息
     func simulateIncomingMessages() async throws -> [ChatMessageRowState]
     /// 重发消息
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error>
@@ -181,7 +181,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     /// 重试策略
     private let retryPolicy: MessageRetryPolicy
     /// 统一模拟后台推送服务
-    private let simulatedIncomingPushService: SimulatedIncomingPushService?
+    private let simulatedIncomingPushService: (any SimulatedIncomingPushing)?
     /// 聊天链路耗时日志
     private let logger = AppLogger(category: .chat)
 
@@ -198,7 +198,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         mediaFileStore: (any MediaFileStoring)? = nil,
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         retryPolicy: MessageRetryPolicy = MessageRetryPolicy(),
-        simulatedIncomingPushService: SimulatedIncomingPushService? = nil
+        simulatedIncomingPushService: (any SimulatedIncomingPushing)? = nil
     ) {
         self.userID = userID
         self.conversationID = conversationID
@@ -691,20 +691,21 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         )
     }
 
-    /// 通过统一模拟后台推送入口写入消息，并返回命中当前会话的行状态。
+    /// 通过统一后台推送入口向当前会话写入对方消息。
     func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
         guard let pushService = simulatedIncomingPushService else {
             return []
         }
 
         let startUptime = ProcessInfo.processInfo.systemUptime
-        guard let pushResult = try await pushService.simulateIncomingPush() else {
+        let request = SimulatedIncomingPushRequest(target: .conversation(conversationID))
+        guard let pushResult = try await pushService.simulateIncomingPush(request) else {
             return []
         }
 
         guard pushResult.conversationID == conversationID else {
             logger.info(
-                "Chat simulateIncoming missedCurrentConversation targetID=\(Self.shortLogID(pushResult.conversationID.rawValue)) currentID=\(Self.shortLogID(conversationID.rawValue)) count=\(pushResult.insertedCount) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                "Chat peerPush missedCurrentConversation targetID=\(Self.shortLogID(pushResult.conversationID.rawValue)) currentID=\(Self.shortLogID(conversationID.rawValue)) count=\(pushResult.insertedCount) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
             )
             return []
         }
@@ -718,11 +719,11 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 do {
                     try await conversationRepository.markConversationRead(conversationID: resultConversationID, userID: userID)
                     logger.info(
-                        "Chat simulateIncoming markedRead messageID=\(Self.shortLogID(resultMessageID?.rawValue ?? "nil")) elapsed=\(AppLogger.elapsedMilliseconds(since: readStartUptime))"
+                        "Chat peerPush markedRead messageID=\(Self.shortLogID(resultMessageID?.rawValue ?? "nil")) elapsed=\(AppLogger.elapsedMilliseconds(since: readStartUptime))"
                     )
                 } catch {
                     logger.error(
-                        "Chat simulateIncoming markReadFailed messageID=\(Self.shortLogID(resultMessageID?.rawValue ?? "nil")) error=\(String(describing: type(of: error)))"
+                        "Chat peerPush markReadFailed messageID=\(Self.shortLogID(resultMessageID?.rawValue ?? "nil")) error=\(String(describing: type(of: error)))"
                     )
                 }
             }
@@ -730,7 +731,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
         let rows = pushResult.messages.map { row(from: $0) }
         logger.info(
-            "Chat simulateIncoming rowsReturned conversationID=\(Self.shortLogID(conversationID.rawValue)) count=\(rows.count) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            "Chat peerPush rowsReturned conversationID=\(Self.shortLogID(conversationID.rawValue)) count=\(rows.count) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
         return rows
     }
@@ -1775,7 +1776,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     /// 媒体上传服务
     private let mediaUploadService: any MediaUploadService
     /// 统一模拟后台推送服务
-    private let simulatedIncomingPushService: SimulatedIncomingPushService
+    private let simulatedIncomingPushService: any SimulatedIncomingPushing
 
     var observedUserID: UserID? {
         userID
@@ -1795,7 +1796,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         sendService: any MessageSendService,
         mediaFileStore: any MediaFileStoring,
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
-        simulatedIncomingPushService: SimulatedIncomingPushService? = nil
+        simulatedIncomingPushService: (any SimulatedIncomingPushing)? = nil
     ) {
         self.userID = userID
         self.conversationID = conversationID
@@ -2018,7 +2019,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         return try await useCase.markVoicePlayed(messageID: messageID)
     }
 
-    /// 触发统一模拟后台推送。
+    /// 触发当前会话的后台推送对方消息。
     func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
         let repository = try await storeProvider.repository()
         let useCase = makeLocalUseCase(repository: repository)

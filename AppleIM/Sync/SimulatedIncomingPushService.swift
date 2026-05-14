@@ -50,6 +50,11 @@ nonisolated struct SimulatedIncomingPushResult: Equatable, Sendable {
     let finalConversation: Conversation
 }
 
+/// 聊天等上层用例依赖的后台推送能力。
+protocol SimulatedIncomingPushing: Sendable {
+    func simulateIncomingPush(_ request: SimulatedIncomingPushRequest) async throws -> SimulatedIncomingPushResult?
+}
+
 /// 为模拟后台推送批量分配单调递增序号。
 ///
 /// 单个 actor 方法内不包含 await，避免读取和写入序号之间发生可重入交错。
@@ -72,7 +77,7 @@ private actor SimulatedIncomingPushSequenceAllocator {
 }
 
 /// 统一模拟后台推送服务。
-nonisolated struct SimulatedIncomingPushService: Sendable {
+nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Sendable {
     private static let simulatedIncomingTextSamples = [
         "模拟收到一条后台推送消息",
         "后台推送抵达一条新的测试消息",

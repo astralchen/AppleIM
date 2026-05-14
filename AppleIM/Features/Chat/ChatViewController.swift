@@ -328,11 +328,11 @@ final class ChatViewController: UIViewController {
             action: #selector(simulateIncomingTapped)
         )
         simulateIncomingButton.accessibilityIdentifier = "chat.simulateIncomingButton"
-        simulateIncomingButton.accessibilityLabel = "模拟接收消息"
+        simulateIncomingButton.accessibilityLabel = "后台推送对方消息"
         navigationItem.rightBarButtonItem = simulateIncomingButton
     }
 
-    /// 模拟接收一条对方消息。
+    /// 触发后台推送一条对方消息。
     @objc private func simulateIncomingTapped() {
         viewModel.simulateIncomingMessage()
     }

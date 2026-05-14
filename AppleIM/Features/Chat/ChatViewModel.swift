@@ -43,7 +43,7 @@ final class ChatViewModel {
     private var draftTask: Task<Void, Never>?
     /// 消息操作任务（重发、删除、撤回）
     private var mutationTask: Task<Void, Never>?
-    /// 模拟接收消息任务
+    /// 后台推送对方消息任务
     private var simulatedIncomingTasks: [UUID: Task<Void, Never>] = [:]
     /// 仓储变更触发的轻量刷新任务
     private var storeRefreshTask: Task<Void, Never>?
@@ -635,13 +635,13 @@ final class ChatViewModel {
         }
     }
 
-    /// 触发统一模拟后台推送。
+    /// 触发当前会话的后台推送对方消息。
     ///
     /// 每次点击都保留独立任务，避免连续点击时互相取消。
     func simulateIncomingMessage() {
         let taskID = UUID()
         let startUptime = ProcessInfo.processInfo.systemUptime
-        logger.info("ChatViewModel simulatedPush tapped taskID=\(Self.shortLogID(taskID.uuidString))")
+        logger.info("ChatViewModel peerPush tapped taskID=\(Self.shortLogID(taskID.uuidString))")
         simulatedIncomingTasks[taskID] = Task { [weak self] in
             guard let self else { return }
             defer {
@@ -653,7 +653,7 @@ final class ChatViewModel {
                 guard !Task.isCancelled else { return }
                 upsert(rows)
                 logger.info(
-                    "ChatViewModel simulatedPush optimisticPublished taskID=\(Self.shortLogID(taskID.uuidString)) rows=\(rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                    "ChatViewModel peerPush optimisticPublished taskID=\(Self.shortLogID(taskID.uuidString)) rows=\(rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
                 )
             } catch is CancellationError {
                 return

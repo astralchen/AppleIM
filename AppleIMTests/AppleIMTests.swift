@@ -4129,6 +4129,124 @@ struct AppleIMTests {
         #expect(storedMessage.readStatus == .read)
     }
 
+    @Test func localChatUseCaseRequestsCurrentConversationWhenTriggeringChatPush() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "chat_push_request_user")
+        let conversationID = ConversationID(rawValue: "chat_push_request_conversation")
+        let message = IncomingSyncMessage(
+            messageID: "chat_push_request_message",
+            conversationID: conversationID,
+            senderID: "chat_push_request_peer",
+            serverMessageID: "server_chat_push_request_message",
+            sequence: 101,
+            text: "后台推送对方消息",
+            serverTime: 101,
+            direction: .incoming,
+            conversationTitle: "Chat Push Request",
+            conversationType: .single
+        )
+        let pusher = CapturingSimulatedIncomingPusher(
+            result: SimulatedIncomingPushResult(
+                conversationID: conversationID,
+                messages: [message],
+                insertedCount: 1,
+                finalConversation: Conversation(
+                    id: conversationID,
+                    type: .single,
+                    title: "Chat Push Request",
+                    avatarURL: nil,
+                    lastMessageDigest: message.text,
+                    lastMessageTimeText: "Now",
+                    unreadCount: 1,
+                    isPinned: false,
+                    isMuted: false,
+                    draftText: nil,
+                    sortTimestamp: message.sequence
+                )
+            )
+        )
+        let useCase = LocalChatUseCase(
+            userID: "chat_push_request_user",
+            conversationID: conversationID,
+            repository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            simulatedIncomingPushService: pusher
+        )
+
+        let rows = try await useCase.simulateIncomingMessages()
+        let requests = await pusher.requests
+
+        #expect(requests == [SimulatedIncomingPushRequest(target: .conversation(conversationID))])
+        #expect(rows.map(\.id) == [message.messageID])
+        #expect(rows.allSatisfy { $0.isOutgoing == false })
+    }
+
+    @MainActor
+    @Test func storeBackedChatUseCasePushesOnlyIntoCurrentConversation() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "chat_current_push_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "chat_current_push_conversation",
+                userID: "chat_current_push_user",
+                title: "Current Push",
+                targetID: "chat_current_push_peer",
+                sortTimestamp: 100
+            )
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "chat_other_push_conversation",
+                userID: "chat_current_push_user",
+                title: "Other Push",
+                targetID: "chat_other_push_peer",
+                sortTimestamp: 200
+            )
+        )
+        let useCase = StoreBackedChatUseCase(
+            userID: "chat_current_push_user",
+            conversationID: "chat_current_push_conversation",
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: AccountMediaFileStore(accountID: "chat_current_push_user", storageService: storageService)
+        )
+
+        let rows = try await useCase.simulateIncomingMessages()
+        let currentMessages = try await repository.listMessages(
+            conversationID: "chat_current_push_conversation",
+            limit: 10,
+            beforeSortSeq: nil
+        )
+        let otherMessages = try await repository.listMessages(
+            conversationID: "chat_other_push_conversation",
+            limit: 10,
+            beforeSortSeq: nil
+        )
+
+        #expect(rows.isEmpty == false)
+        #expect(currentMessages.count == rows.count)
+        #expect(Set(currentMessages.map(\.id)) == Set(rows.map(\.id)))
+        #expect(otherMessages.isEmpty)
+        #expect(currentMessages.allSatisfy { $0.direction == .incoming })
+        #expect(currentMessages.allSatisfy { $0.senderID == "chat_current_push_peer" })
+        #expect(rows.allSatisfy { $0.isOutgoing == false })
+    }
+
     @Test func chatUseCaseMapsSenderAvatarURLsByMessageDirection() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -7915,6 +8033,7 @@ struct AppleIMTests {
         viewController.loadViewIfNeeded()
         let buttonItem = try #require(viewController.navigationItem.rightBarButtonItem)
         #expect(buttonItem.accessibilityIdentifier == "chat.simulateIncomingButton")
+        #expect(buttonItem.accessibilityLabel == "后台推送对方消息")
 
         try await waitForCondition {
             await MainActor.run {
@@ -10951,6 +11070,22 @@ private final class SimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatU
     func delete(messageID: MessageID) async throws {}
 
     func revoke(messageID: MessageID) async throws {}
+}
+
+private actor CapturingSimulatedIncomingPusher: SimulatedIncomingPushing {
+    private let result: SimulatedIncomingPushResult?
+    private(set) var requests: [SimulatedIncomingPushRequest] = []
+
+    init(result: SimulatedIncomingPushResult?) {
+        self.result = result
+    }
+
+    func simulateIncomingPush(
+        _ request: SimulatedIncomingPushRequest = SimulatedIncomingPushRequest()
+    ) async throws -> SimulatedIncomingPushResult? {
+        requests.append(request)
+        return result
+    }
 }
 
 private final class MissedSimulatedIncomingStubChatUseCase: @unchecked Sendable, ChatUseCase {
