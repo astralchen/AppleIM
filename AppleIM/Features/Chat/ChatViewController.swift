@@ -84,6 +84,10 @@ final class ChatViewController: UIViewController {
     private var isSwitchingEmojiInputToKeyboard = false
     /// 自定义输入面板切换到系统键盘期间是否需要保持列表贴底。
     private var shouldStickToBottomDuringKeyboardInputSwitch = false
+    /// 输入栏一次高度变化跨越 will/did 两个回调，这里暂存变化前的滚动状态。
+    private var pendingInputBarLayoutTransaction: MessageLayoutTransaction?
+    /// 动画贴底校正代次；用户开始拖动后让旧的延迟校正失效。
+    private var bottomPositionCorrectionGeneration = 0
 #if DEBUG
     /// 测试用：记录最近一次贴底滚动是否请求动画。
     private(set) var lastScrollToBottomRequestedAnimationForTesting: Bool?
@@ -95,6 +99,14 @@ final class ChatViewController: UIViewController {
         case photoLibrary
         /// 表情面板。
         case emoji
+    }
+
+    /// 一次会影响消息可见区域的布局变化。
+    private struct MessageLayoutTransaction {
+        /// 变化发生前是否应该维持底部消息可见。
+        let shouldStickToBottom: Bool
+        /// 不贴底时保留用户当前阅读位置，避免输入栏变化把历史消息推走。
+        let previousContentOffset: CGPoint
     }
 
     /// 消息 collection view
@@ -386,12 +398,19 @@ final class ChatViewController: UIViewController {
             self?.sendPendingVoicePreview()
         }
         inputBarView.onHeightWillChange = { [weak self] in
-            self?.shouldStickToBottomForLayoutChange() ?? false
+            guard let self else { return false }
+            let transaction = self.beginMessageLayoutTransaction()
+            self.pendingInputBarLayoutTransaction = transaction
+            return transaction.shouldStickToBottom
         }
         inputBarView.onHeightDidChange = { [weak self] shouldStickToBottom in
-            self?.updateCollectionViewOverlayInsets()
-            guard shouldStickToBottom else { return }
-            self?.scrollToBottom(animated: false)
+            guard let self else { return }
+            let transaction = self.pendingInputBarLayoutTransaction ?? MessageLayoutTransaction(
+                shouldStickToBottom: shouldStickToBottom,
+                previousContentOffset: self.collectionView.contentOffset
+            )
+            self.pendingInputBarLayoutTransaction = nil
+            self.completeMessageLayoutTransaction(transaction, animated: false)
         }
     }
 
@@ -457,6 +476,10 @@ final class ChatViewController: UIViewController {
         let shouldStickToBottom = isCompletingCustomInputKeyboardSwitch
             ? shouldStickToBottomDuringKeyboardInputSwitch
             : shouldStickToBottomForLayoutChange()
+        let layoutTransaction = MessageLayoutTransaction(
+            shouldStickToBottom: shouldStickToBottom,
+            previousContentOffset: collectionView.contentOffset
+        )
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
         let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt
             ?? UIView.AnimationOptions.curveEaseInOut.rawValue
@@ -482,11 +505,7 @@ final class ChatViewController: UIViewController {
             if isCompletingEmojiKeyboardSwitch {
                 self.emojiPanelView.alpha = 0
             }
-            self.view.layoutIfNeeded()
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(layoutTransaction, animated: false)
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
@@ -501,10 +520,7 @@ final class ChatViewController: UIViewController {
                 self.isSwitchingEmojiInputToKeyboard = false
                 self.shouldStickToBottomDuringKeyboardInputSwitch = false
             }
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(layoutTransaction, animated: false)
         }
 
         UIView.animate(
@@ -579,7 +595,7 @@ final class ChatViewController: UIViewController {
 
     /// 展示图片库输入面板
     private func showPhotoLibraryInput() {
-        let shouldStickToBottom = shouldStickToBottomForLayoutChange()
+        let layoutTransaction = beginMessageLayoutTransaction()
         isSwitchingPhotoLibraryInputToKeyboard = false
         isSwitchingEmojiInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
@@ -589,20 +605,20 @@ final class ChatViewController: UIViewController {
             switchCustomInputPanel(
                 from: .emoji,
                 to: .photoLibrary,
-                shouldStickToBottom: shouldStickToBottom
+                transaction: layoutTransaction
             )
             inputBarView.showPhotoLibraryInput()
             return
         }
 
         hideEmojiInput(animated: false)
-        setPhotoLibraryInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
+        setPhotoLibraryInputVisible(true, animated: true, transaction: layoutTransaction)
         inputBarView.showPhotoLibraryInput()
     }
 
     /// 展示表情输入面板
     private func showEmojiInput() {
-        let shouldStickToBottom = shouldStickToBottomForLayoutChange()
+        let layoutTransaction = beginMessageLayoutTransaction()
         isSwitchingPhotoLibraryInputToKeyboard = false
         isSwitchingEmojiInputToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
@@ -612,14 +628,14 @@ final class ChatViewController: UIViewController {
             switchCustomInputPanel(
                 from: .photoLibrary,
                 to: .emoji,
-                shouldStickToBottom: shouldStickToBottom
+                transaction: layoutTransaction
             )
             inputBarView.showEmojiInput()
             return
         }
 
         hidePhotoLibraryInput(animated: false)
-        setEmojiInputVisible(true, animated: true, shouldStickToBottom: shouldStickToBottom)
+        setEmojiInputVisible(true, animated: true, transaction: layoutTransaction)
         inputBarView.showEmojiInput()
     }
 
@@ -651,7 +667,7 @@ final class ChatViewController: UIViewController {
         setPhotoLibraryInputVisible(
             false,
             animated: animated,
-            shouldStickToBottom: shouldStickToBottomForLayoutChange(),
+            transaction: beginMessageLayoutTransaction(),
             completion: completion
         )
     }
@@ -661,7 +677,7 @@ final class ChatViewController: UIViewController {
         setEmojiInputVisible(
             false,
             animated: animated,
-            shouldStickToBottom: shouldStickToBottomForLayoutChange(),
+            transaction: beginMessageLayoutTransaction(),
             completion: completion
         )
     }
@@ -670,7 +686,7 @@ final class ChatViewController: UIViewController {
     private func switchCustomInputPanel(
         from source: CustomInputPanel,
         to target: CustomInputPanel,
-        shouldStickToBottom: Bool
+        transaction: MessageLayoutTransaction
     ) {
         switch target {
         case .photoLibrary:
@@ -710,19 +726,12 @@ final class ChatViewController: UIViewController {
             guard let self else { return }
             sourceView.alpha = 0
             targetView.alpha = 1
-            self.view.layoutIfNeeded()
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(transaction, animated: false)
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
             self.hideInactiveCustomInputPanel(source)
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(transaction, animated: false)
         }
 
         UIView.animate(
@@ -751,7 +760,7 @@ final class ChatViewController: UIViewController {
     private func setPhotoLibraryInputVisible(
         _ isVisible: Bool,
         animated: Bool,
-        shouldStickToBottom: Bool,
+        transaction: MessageLayoutTransaction,
         completion externalCompletion: (() -> Void)? = nil
     ) {
         guard photoLibraryInputView.isHidden == isVisible else {
@@ -773,11 +782,7 @@ final class ChatViewController: UIViewController {
         let layoutChanges = { [weak self] in
             guard let self else { return }
             self.photoLibraryInputView.alpha = isVisible ? 1 : 0
-            self.view.layoutIfNeeded()
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(transaction, animated: false)
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
@@ -785,10 +790,7 @@ final class ChatViewController: UIViewController {
                 self.photoLibraryInputView.isHidden = true
                 self.photoLibraryInputView.resetDismissGestureState()
             }
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(transaction, animated: false)
             externalCompletion?()
         }
 
@@ -810,7 +812,7 @@ final class ChatViewController: UIViewController {
     private func setEmojiInputVisible(
         _ isVisible: Bool,
         animated: Bool,
-        shouldStickToBottom: Bool,
+        transaction: MessageLayoutTransaction,
         completion externalCompletion: (() -> Void)? = nil
     ) {
         guard emojiPanelView.isHidden == isVisible else {
@@ -831,21 +833,14 @@ final class ChatViewController: UIViewController {
         let layoutChanges = { [weak self] in
             guard let self else { return }
             self.emojiPanelView.alpha = isVisible ? 1 : 0
-            self.view.layoutIfNeeded()
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(transaction, animated: false)
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
             if !isVisible {
                 self.emojiPanelView.isHidden = true
             }
-            self.updateCollectionViewOverlayInsets()
-            if shouldStickToBottom {
-                self.scrollToBottom(animated: false)
-            }
+            self.completeMessageLayoutTransaction(transaction, animated: false)
             externalCompletion?()
         }
 
@@ -865,15 +860,11 @@ final class ChatViewController: UIViewController {
 
     /// 应用图片库面板下滑过程中的整体位移
     private func applyPhotoLibraryDismissPanTranslation(_ translationY: CGFloat) {
-        let shouldStickToBottom = shouldStickToBottomForLayoutChange()
+        let layoutTransaction = beginMessageLayoutTransaction()
         let clampedTranslation = max(0, translationY)
         inputBarPhotoLibraryBottomConstraint?.constant = -8
         photoLibraryInputBottomConstraint?.constant = clampedTranslation
-        view.layoutIfNeeded()
-        updateCollectionViewOverlayInsets()
-        if shouldStickToBottom {
-            scrollToBottom(animated: false)
-        }
+        completeMessageLayoutTransaction(layoutTransaction, animated: false)
     }
 
     /// 发送当前文本和待发送附件
@@ -1070,7 +1061,7 @@ final class ChatViewController: UIViewController {
         let previousRowIDs = lastRenderedRowIDs
         let previousContentHeight = collectionView.contentSize.height
         let previousContentOffsetY = collectionView.contentOffset.y
-        let wasNearBottom = shouldStickToBottomForLayoutChange()
+        let layoutTransaction = beginMessageLayoutTransaction()
 
         // Diffable data source 的 item identifier 使用消息 ID；内容变化通过 changedRowIDs 触发 reload。
         let newRowIDs = state.rows.map { $0.id.rawValue }
@@ -1129,9 +1120,12 @@ final class ChatViewController: UIViewController {
                         _ = self.resolveInitialBottomPositioningIfPossible()
                     }
                 }
-            } else if wasNearBottom || shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows) {
+            } else if layoutTransaction.shouldStickToBottom || shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows) {
                 // 新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: didAppendNewMessage)
+            } else {
+                // 删除、撤回或收到对方消息时，用户若已经离开底部，保留原阅读位置。
+                self.preserveMessageContentOffsetIfNeeded(layoutTransaction)
             }
 
             self.logger.debug(
@@ -1467,9 +1461,15 @@ final class ChatViewController: UIViewController {
 
         guard collectionView.contentInset != targetInsets else { return }
         let previousContentOffset = collectionView.contentOffset
+        let scrollViewVisibleBottomBeforeInset = collectionView.contentOffset.y
+            + collectionView.bounds.height
+            - collectionView.adjustedContentInset.bottom
+        let wasAtScrollViewBottomBeforeInset = scrollViewVisibleBottomBeforeInset >= collectionView.contentSize.height - 80
         let shouldReanchorToBottom = !isUserControllingMessageScroll
             && !lastRenderedRowIDs.isEmpty
-            && (shouldMaintainBottomPosition || isNearBottom())
+            // inputBar 被键盘或外部约束抬高时，新的覆盖区域会让 isNearBottom 变 false；
+            // 因此还要看 inset 变化前 scroll view 自己是否已经在底部。
+            && (shouldMaintainBottomPosition || isNearBottom() || wasAtScrollViewBottomBeforeInset)
         let shouldPreserveContentOffset = !needsInitialBottomPositioning && !shouldMaintainBottomPosition
         collectionView.contentInset = targetInsets
         collectionView.verticalScrollIndicatorInsets = targetInsets
@@ -1505,9 +1505,39 @@ final class ChatViewController: UIViewController {
         return messageVisibleBottomY() >= contentBottomY - 80
     }
 
+    /// 开始一次会影响输入区域覆盖范围的布局事务。
+    private func beginMessageLayoutTransaction() -> MessageLayoutTransaction {
+        MessageLayoutTransaction(
+            shouldStickToBottom: shouldStickToBottomForLayoutChange(),
+            previousContentOffset: collectionView.contentOffset
+        )
+    }
+
+    /// 完成布局事务：贴底阅读时露出最新消息，离底阅读时不抢走历史位置。
+    private func completeMessageLayoutTransaction(_ transaction: MessageLayoutTransaction, animated: Bool) {
+        view.layoutIfNeeded()
+        updateCollectionViewOverlayInsets()
+        if transaction.shouldStickToBottom {
+            scrollToBottom(animated: animated)
+        } else {
+            preserveMessageContentOffsetIfNeeded(transaction)
+        }
+    }
+
+    /// 用户手动离底后，输入栏或面板变化只能刷新 inset，不能把列表推回底部。
+    private func preserveMessageContentOffsetIfNeeded(_ transaction: MessageLayoutTransaction) {
+        guard
+            !needsInitialBottomPositioning,
+            !transaction.shouldStickToBottom,
+            collectionView.contentOffset != transaction.previousContentOffset
+        else { return }
+        collectionView.setContentOffset(transaction.previousContentOffset, animated: false)
+    }
+
     /// 判断本次布局变化是否应该保持贴底。
     private func shouldStickToBottomForLayoutChange() -> Bool {
         guard !isUserControllingMessageScroll else { return false }
+        // 只有用户本来就在底部附近时才进入贴底维护，避免收到消息打断查看历史。
         let shouldStick = shouldMaintainBottomPosition || isNearBottom()
         if shouldStick {
             shouldMaintainBottomPosition = true
@@ -1534,7 +1564,7 @@ final class ChatViewController: UIViewController {
             collectionView.layoutIfNeeded()
             updateCollectionViewOverlayInsets()
             positionLatestMessageAtVisibleBottom(animated: true)
-            scheduleAnimatedBottomPositionCorrection()
+            scheduleAnimatedBottomPositionCorrection(latestMessageID: lastRenderedRowIDs.last)
             return
         }
         for pass in 0..<3 {
@@ -1544,14 +1574,38 @@ final class ChatViewController: UIViewController {
         }
     }
 
-    /// 动画贴底后再做一次无动画校正，覆盖自适应 cell 在动画期间更新高度导致的细小偏移。
-    private func scheduleAnimatedBottomPositionCorrection() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self, !self.isUserControllingMessageScroll, !self.lastRenderedRowIDs.isEmpty else { return }
-            self.collectionView.layoutIfNeeded()
-            self.updateCollectionViewOverlayInsets()
-            self.positionLatestMessageAtVisibleBottom(animated: false)
+    /// 动画贴底后安排无动画校正，覆盖图片/视频自适应高度晚于滚动动画稳定的情况。
+    private func scheduleAnimatedBottomPositionCorrection(latestMessageID: String?) {
+        guard let latestMessageID else { return }
+        bottomPositionCorrectionGeneration += 1
+        let correctionGeneration = bottomPositionCorrectionGeneration
+        DispatchQueue.main.async { [weak self] in
+            self?.performAnimatedBottomPositionCorrectionIfNeeded(
+                generation: correctionGeneration,
+                latestMessageID: latestMessageID
+            )
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.performAnimatedBottomPositionCorrectionIfNeeded(
+                generation: correctionGeneration,
+                latestMessageID: latestMessageID
+            )
+        }
+    }
+
+    /// 执行动画后的贴底校正；只认同一条最新消息，避免旧动画抢回后续阅读位置。
+    private func performAnimatedBottomPositionCorrectionIfNeeded(generation: Int, latestMessageID: String) {
+        guard
+            generation == bottomPositionCorrectionGeneration,
+            !isUserControllingMessageScroll,
+            lastRenderedRowIDs.last == latestMessageID
+        else { return }
+
+        // 图片/视频 cell 从估算高度变成真实缩略图高度后，列表可能瞬间“不接近底部”；
+        // 这属于布局尚未稳定，不代表用户主动离底，所以不能再用 isNearBottom 拦截校正。
+        collectionView.layoutIfNeeded()
+        updateCollectionViewOverlayInsets()
+        positionLatestMessageAtVisibleBottom(animated: false)
     }
 
     /// 按当前 inset 把最新消息对齐到消息可见区域底部。
@@ -1625,6 +1679,7 @@ extension ChatViewController: UICollectionViewDelegate {
     /// 用户开始拖动时取消程序化贴底动画，避免新消息追加后的滚动动画抢回手势。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         collectionView.layer.removeAllAnimations()
+        bottomPositionCorrectionGeneration += 1
         isUserControllingMessageScroll = true
         shouldMaintainBottomPosition = false
     }
@@ -1635,7 +1690,7 @@ extension ChatViewController: UICollectionViewDelegate {
             shouldMaintainBottomPosition = false
         }
 
-        guard !snapshotRenderCoordinator.isApplying else { return }
+        guard !snapshotRenderCoordinator.isApplying, !needsInitialBottomPositioning else { return }
 
         let topThreshold = -scrollView.adjustedContentInset.top + 120
 

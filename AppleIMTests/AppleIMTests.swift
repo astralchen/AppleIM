@@ -6634,6 +6634,92 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsSentImageAboveInputBarAfterThumbnailSizing() async throws {
+        let directory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let thumbnailURL = directory.appendingPathComponent("sent-portrait.jpg")
+        try makeJPEGData(width: 180, height: 320, quality: 0.9).write(to: thumbnailURL, options: [.atomic])
+
+        let initialRows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "sent_image_initial_\(index)"),
+                text: "Sent image initial \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = ImageSendingStubChatUseCase(
+            initialRows: initialRows,
+            thumbnailPath: thumbnailURL.path
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Sent Image")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        collectionView.scrollToItem(at: IndexPath(item: initialRows.count - 1, section: 0), at: .bottom, animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        viewModel.sendImage(data: samplePNGData(), preferredFileExtension: "jpg")
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + 1
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let disturbedOffsetY = max(
+            -collectionView.adjustedContentInset.top,
+            collectionView.contentOffset.y - 360
+        )
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: disturbedOffsetY),
+            animated: false
+        )
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+        #expect(
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: initialRows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            ) == false
+        )
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        #expect(
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: initialRows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        )
+    }
+
+    @MainActor
     @Test func chatViewModelSendsComposerImageThenText() async throws {
         let useCase = ComposerSendingStubChatUseCase()
         let viewModel = ChatViewModel(useCase: useCase, title: "Composer")
@@ -7318,6 +7404,27 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarNotifiesHeightChangeWhenTransientStatusAppears() {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        var didAskForBottomStick = false
+        var didFinishHeightChange = false
+
+        inputBar.onHeightWillChange = {
+            didAskForBottomStick = true
+            return true
+        }
+        inputBar.onHeightDidChange = { shouldStickToBottom in
+            didFinishHeightChange = shouldStickToBottom
+        }
+
+        inputBar.showTransientStatus("Voice too short")
+        inputBar.layoutIfNeeded()
+
+        #expect(didAskForBottomStick)
+        #expect(didFinishHeightChange)
+    }
+
+    @MainActor
     @Test func chatInputBarClearingVoicePreviewRestoresVoiceButton() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
 
@@ -7954,6 +8061,143 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsLatestMessageAboveInputBarAfterDeletingLastMessageWithGrownInput() async throws {
+        let rows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "delete_input_growth_\(index)"),
+                text: "Delete input growth \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = MessageActionStubChatUseCase(initialRows: rows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Delete Input Growth")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        collectionView.scrollToItem(at: IndexPath(item: rows.count - 1, section: 0), at: .bottom, animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        textView.text = """
+        删除最后一条前输入栏增高
+        第二行
+        第三行
+        第四行
+        """
+        inputBar.textViewDidChange(textView)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        viewModel.delete(messageID: rows.last?.id ?? "")
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count - 1
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 2, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsRevokedBottomMessageAboveInputBarWithEmojiPanelOpen() async throws {
+        let rows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "revoke_emoji_panel_\(index)"),
+                text: "Revoke emoji panel \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        var revokedRows = rows
+        revokedRows[revokedRows.count - 1] = makeRevokedChatRow(
+            id: rows.last?.id ?? "",
+            text: "你撤回了一条消息",
+            sortSequence: Int64(rows.count)
+        )
+        let useCase = MessageActionStubChatUseCase(initialRows: rows, revokedRows: revokedRows)
+        let viewModel = ChatViewModel(useCase: useCase, title: "Revoke Emoji Panel")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        inputBar.onEmojiTapped?()
+        collectionView.scrollToItem(at: IndexPath(item: rows.count - 1, section: 0), at: .bottom, animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        viewModel.revoke(messageID: rows.last?.id ?? "")
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let lastCell = collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)) else {
+                return false
+            }
+            return findLabel(withText: "你撤回了一条消息", in: lastCell) != nil
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
+        let inputFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsLatestMessageAboveInputBarWhenTransientStatusAppears() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Transient Status",
+            rowPrefix: "transient_status"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+        setup.collectionView.scrollToItem(at: IndexPath(item: lastItem, section: 0), at: .bottom, animated: false)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        setup.inputBar.showTransientStatus("Voice too short")
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(setup.collectionView.cellForItem(at: IndexPath(item: lastItem, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
     @Test func chatViewControllerRestoresBottomAlignmentWhenNearBottomLayoutDrifts() async throws {
         let setup = try await makeScrollableChatViewController(
             title: "Initial Layout Drift",
@@ -8130,6 +8374,164 @@ struct AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsIncomingMessageAboveInputBarWithEmojiPanelOpen() async throws {
+        let initialRows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "incoming_emoji_panel_initial_\(index)"),
+                text: "Incoming emoji panel initial \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let simulatedRows = [
+            makeChatRow(
+                id: MessageID(rawValue: "incoming_emoji_panel_append"),
+                text: "Incoming emoji panel append",
+                sortSequence: 37,
+                isOutgoing: false
+            )
+        ]
+        let useCase = SimulatedIncomingStubChatUseCase(
+            initialRows: initialRows,
+            simulatedRows: simulatedRows
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Incoming Emoji Panel")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let buttonItem = try #require(viewController.navigationItem.rightBarButtonItem)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
+        inputBar.onEmojiTapped?()
+        window.layoutIfNeeded()
+        #expect(emojiPanel.isHidden == false)
+
+        collectionView.scrollToItem(at: IndexPath(item: initialRows.count - 1, section: 0), at: .bottom, animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        UIApplication.shared.sendAction(
+            try #require(buttonItem.action),
+            to: buttonItem.target,
+            from: buttonItem,
+            for: nil
+        )
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + simulatedRows.count
+        }
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: initialRows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
+    }
+
+    @MainActor
+    @Test func chatViewControllerDoesNotAutoScrollIncomingMessageWhenUserLeftBottom() async throws {
+        let initialRows = (1...44).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "incoming_left_bottom_initial_\(index)"),
+                text: "Incoming left bottom initial \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let simulatedRows = [
+            makeChatRow(
+                id: MessageID(rawValue: "incoming_left_bottom_append"),
+                text: "Incoming left bottom append",
+                sortSequence: 45,
+                isOutgoing: false
+            )
+        ]
+        let useCase = SimulatedIncomingStubChatUseCase(
+            initialRows: initialRows,
+            simulatedRows: simulatedRows
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Incoming Left Bottom")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let buttonItem = try #require(viewController.navigationItem.rightBarButtonItem)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let lastInitialItem = initialRows.count - 1
+        collectionView.scrollToItem(at: IndexPath(item: lastInitialItem, section: 0), at: .bottom, animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let bottomOffsetY = collectionView.contentOffset.y
+        viewController.scrollViewWillBeginDragging(collectionView)
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: bottomOffsetY - 220),
+            animated: false
+        )
+        viewController.scrollViewDidEndDragging(collectionView, willDecelerate: false)
+        let offsetBeforeIncoming = collectionView.contentOffset.y
+
+        UIApplication.shared.sendAction(
+            try #require(buttonItem.action),
+            to: buttonItem.target,
+            from: buttonItem,
+            for: nil
+        )
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + simulatedRows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        #expect(collectionView.contentOffset.y <= offsetBeforeIncoming + 1)
+        #expect(collectionView.cellForItem(at: IndexPath(item: initialRows.count, section: 0)) == nil)
+
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "left-bottom-photo",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+        #expect(collectionView.contentOffset.y <= offsetBeforeIncoming + 1)
+    }
+
+    @MainActor
     @Test func chatViewControllerAllowsScrollingAfterSimulatedIncomingButtonAppend() async throws {
         let initialRows = (1...40).map { index in
             makeChatRow(
@@ -8186,10 +8588,12 @@ struct AppleIMTests {
             -collectionView.adjustedContentInset.top,
             collectionView.contentOffset.y - 240
         )
+        viewController.scrollViewWillBeginDragging(collectionView)
         collectionView.setContentOffset(
             CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
             animated: false
         )
+        viewController.scrollViewDidEndDragging(collectionView, willDecelerate: false)
         try await Task.sleep(nanoseconds: 400_000_000)
 
         #expect(collectionView.contentOffset.y <= targetOffsetY + 1)
@@ -11707,9 +12111,16 @@ private final class TextSendingTimeStubChatUseCase: @unchecked Sendable, ChatUse
 
 private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private(set) var sentImageCount = 0
+    private let initialRows: [ChatMessageRowState]
+    private let thumbnailPath: String
+
+    init(initialRows: [ChatMessageRowState] = [], thumbnailPath: String = "/tmp/chat-thumb.jpg") {
+        self.initialRows = initialRows
+        self.thumbnailPath = thumbnailPath
+    }
 
     func loadInitialMessages() async throws -> ChatMessagePage {
-        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        ChatMessagePage(rows: initialRows, hasMore: false, nextBeforeSortSequence: initialRows.first?.sortSequence)
     }
 
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
@@ -11737,7 +12148,7 @@ private final class ImageSendingStubChatUseCase: @unchecked Sendable, ChatUseCas
                     id: "image_stub_message",
                     content: .image(
                         ChatMessageRowContent.ImageContent(
-                            thumbnailPath: "/tmp/chat-thumb.jpg"
+                            thumbnailPath: thumbnailPath
                         )
                     ),
                     sortSequence: 1,

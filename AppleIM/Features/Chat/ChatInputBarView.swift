@@ -280,14 +280,23 @@ final class ChatInputBarView: UIView {
     /// - Parameter message: 要显示的消息文本
     func showTransientStatus(_ message: String) {
         statusHideTask?.cancel()
-        recordingStatusLabel.isHidden = false
-        recordingStatusLabel.text = message
-        recordingStatusLabel.textColor = .secondaryLabel
+        let wasHidden = recordingStatusLabel.isHidden
+        let changes = { [weak self] in
+            guard let self else { return }
+            self.recordingStatusLabel.isHidden = false
+            self.recordingStatusLabel.text = message
+            self.recordingStatusLabel.textColor = .secondaryLabel
+        }
+        if wasHidden {
+            performHeightChange(animated: false, changes: changes)
+        } else {
+            changes()
+        }
 
         statusHideTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_400_000_000)
             guard !Task.isCancelled else { return }
-            self?.recordingStatusLabel.isHidden = true
+            self?.hideTransientStatusIfNeeded()
         }
     }
 
@@ -1000,20 +1009,10 @@ final class ChatInputBarView: UIView {
         voicePreviewSendButton.accessibilityIdentifier = isHidden ? nil : "chat.voicePreviewSendButton"
 
         let animations = { [weak self] in
-            self?.voicePreviewCapsuleView.isHidden = isHidden
-            self?.superview?.layoutIfNeeded()
+            guard let self else { return }
+            self.voicePreviewCapsuleView.isHidden = isHidden
         }
-
-        if animated {
-            UIView.animate(
-                withDuration: 0.18,
-                delay: 0,
-                options: [.beginFromCurrentState, .allowUserInteraction],
-                animations: animations
-            )
-        } else {
-            animations()
-        }
+        performHeightChange(animated: animated, duration: 0.18, changes: animations)
     }
 
     /// 根据内容更新文本输入高度
@@ -1043,6 +1042,44 @@ final class ChatInputBarView: UIView {
         if animated {
             UIView.animate(
                 withDuration: 0.18,
+                delay: 0,
+                options: [.beginFromCurrentState, .allowUserInteraction],
+                animations: layoutChanges,
+                completion: completion
+            )
+        } else {
+            layoutChanges()
+            completion(true)
+        }
+    }
+
+    /// 隐藏临时状态时也通知控制器，因为状态标签是竖向栈的一部分。
+    private func hideTransientStatusIfNeeded() {
+        guard !recordingStatusLabel.isHidden else { return }
+        performHeightChange(animated: false) { [weak self] in
+            guard let self else { return }
+            self.recordingStatusLabel.isHidden = true
+        }
+    }
+
+    /// 统一通知输入栏整体高度变化，控制器据此维护消息底部不被输入栏遮挡。
+    private func performHeightChange(
+        animated: Bool,
+        duration: TimeInterval = 0.2,
+        changes: @escaping () -> Void
+    ) {
+        let shouldStickToBottom = onHeightWillChange?() ?? false
+        let layoutChanges = { [weak self] in
+            changes()
+            self?.superview?.layoutIfNeeded()
+        }
+        let completion: (Bool) -> Void = { [weak self] _ in
+            self?.onHeightDidChange?(shouldStickToBottom)
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: duration,
                 delay: 0,
                 options: [.beginFromCurrentState, .allowUserInteraction],
                 animations: layoutChanges,
