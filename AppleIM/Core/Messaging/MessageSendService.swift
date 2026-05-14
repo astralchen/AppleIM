@@ -2,8 +2,8 @@
 //  MessageSendService.swift
 //  AppleIM
 //
-//  消息发送服务
-//  定义消息发送接口和重试策略
+//  消息发送领域接口
+//  定义消息发送结果、重试策略和发送服务协议
 
 import Foundation
 

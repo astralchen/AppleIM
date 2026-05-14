@@ -388,7 +388,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 监听仓储层会话变更，保持列表停留时的未读数与摘要同步。
     private func bindConversationStoreNotifications() {
-        NotificationCenter.default.publisher(for: .chatStoreConversationsDidChange)
+        NotificationCenter.default.chatStoreConversationChangesPublisher()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self, isVisible else { return }

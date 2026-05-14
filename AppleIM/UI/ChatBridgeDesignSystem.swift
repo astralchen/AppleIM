@@ -687,8 +687,8 @@ struct ConversationListCellContentConfiguration: UIContentConfiguration {
 /// 会话列表单元格内容视图
 @MainActor
 final class ConversationListCellContentView: UIView, UIContentView {
-    /// 头像图片缓存
-    private static let avatarImageCache = NSCache<NSString, UIImage>()
+    /// 头像加载服务，可在测试中替换。
+    static var avatarImageLoader: any AvatarImageLoading = DefaultAvatarImageLoader.shared
 
     /// 行内容容器
     private let cardView = UIView()
@@ -717,7 +717,7 @@ final class ConversationListCellContentView: UIView, UIContentView {
     /// 行底部分割线
     private let separatorView = UIView()
     /// 当前头像加载任务
-    private var avatarDataTask: URLSessionDataTask?
+    private var avatarLoadTask: (any AvatarImageLoadTask)?
     /// 当前期望展示的头像 URL
     private var expectedAvatarURL: String?
     private var currentConfiguration: ConversationListCellContentConfiguration
@@ -751,7 +751,7 @@ final class ConversationListCellContentView: UIView, UIContentView {
     }
 
     deinit {
-        avatarDataTask?.cancel()
+        avatarLoadTask?.cancel()
     }
 
     /// 当前内容配置
@@ -962,63 +962,23 @@ final class ConversationListCellContentView: UIView, UIContentView {
         }
 
         expectedAvatarURL = avatarURL
-        let cacheKey = avatarURL as NSString
-
-        if let cachedImage = Self.avatarImageCache.object(forKey: cacheKey) {
-            avatarImageView.image = cachedImage
-            avatarImageView.isHidden = false
-            return
-        }
-
-        if let localImage = Self.localAvatarImage(from: avatarURL) {
-            Self.avatarImageCache.setObject(localImage, forKey: cacheKey)
-            avatarImageView.image = localImage
-            avatarImageView.isHidden = false
-            return
-        }
-
-        guard let url = URL(string: avatarURL), ["http", "https"].contains(url.scheme?.lowercased()) else {
-            return
-        }
-
-        avatarDataTask = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let data else {
+        avatarLoadTask = Self.avatarImageLoader.loadImage(from: avatarURL) { [weak self] image in
+            guard let self, self.expectedAvatarURL == avatarURL, let image else {
                 return
             }
 
-            DispatchQueue.main.async {
-                guard let self, self.expectedAvatarURL == avatarURL, let image = UIImage(data: data) else {
-                    return
-                }
-
-                Self.avatarImageCache.setObject(image, forKey: avatarURL as NSString)
-                self.avatarImageView.image = image
-                self.avatarImageView.isHidden = false
-            }
+            self.avatarImageView.image = image
+            self.avatarImageView.isHidden = false
         }
-        avatarDataTask?.resume()
     }
 
     /// 取消头像请求并恢复默认头像状态
     private func resetAvatarImage() {
-        avatarDataTask?.cancel()
-        avatarDataTask = nil
+        avatarLoadTask?.cancel()
+        avatarLoadTask = nil
         expectedAvatarURL = nil
         avatarImageView.image = nil
         avatarImageView.isHidden = true
-    }
-
-    /// 从本地路径或 file URL 加载头像
-    private static func localAvatarImage(from value: String) -> UIImage? {
-        if let url = URL(string: value), url.isFileURL {
-            return UIImage(contentsOfFile: url.path)
-        }
-
-        guard !value.hasPrefix("http://"), !value.hasPrefix("https://") else {
-            return nil
-        }
-
-        return UIImage(contentsOfFile: value)
     }
 
     /// 根据标题生成头像首字母

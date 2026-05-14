@@ -241,9 +241,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         messagesNavigationController.tabBarItem = messagesTabBarItem
         messagesNavigationController.viewControllers = [conversationListViewController]
 
-        let contactNavigationController = UINavigationController(
-            rootViewController: dependencies.makeContactListViewController()
+        let contactNavigationController = UINavigationController()
+        let contactRouter = MainAppRouter(
+            navigationController: contactNavigationController,
+            dependencies: dependencies
         )
+        let contactListViewController = dependencies.makeContactListViewController(router: contactRouter)
+        contactNavigationController.viewControllers = [contactListViewController]
         contactNavigationController.tabBarItem = UITabBarItem(
             title: "通讯录",
             image: UIImage(systemName: "person.2"),

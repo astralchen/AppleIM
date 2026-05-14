@@ -1808,30 +1808,30 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 加载首屏消息
     func loadInitialMessages() async throws -> ChatMessagePage {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.loadInitialMessages()
+        try await withLocalUseCase { useCase in
+            try await useCase.loadInitialMessages()
+        }
     }
 
     /// 按游标加载更早消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
+        try await withLocalUseCase { useCase in
+            try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
+        }
     }
 
     /// 加载当前会话草稿
     func loadDraft() async throws -> String? {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.loadDraft()
+        try await withLocalUseCase { useCase in
+            try await useCase.loadDraft()
+        }
     }
 
     /// 保存当前会话草稿
     func saveDraft(_ text: String) async throws {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        try await useCase.saveDraft(text)
+        try await withLocalUseCase { useCase in
+            try await useCase.saveDraft(text)
+        }
     }
 
     /// 发送文本消息并透传本地用例的状态流
@@ -1841,196 +1841,128 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 发送带 @ 元数据的文本消息并透传本地用例的状态流
     func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendText(text, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        localUseCaseStream { useCase in
+            useCase.sendText(text, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll)
         }
     }
 
     /// 加载群聊上下文
     func loadGroupContext() async throws -> GroupChatContext? {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.loadGroupContext()
+        try await withLocalUseCase { useCase in
+            try await useCase.loadGroupContext()
+        }
     }
 
     /// 更新群公告
     func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement? {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.updateGroupAnnouncement(text)
+        try await withLocalUseCase { useCase in
+            try await useCase.updateGroupAnnouncement(text)
+        }
     }
 
     /// 发送图片消息并透传本地用例的状态流
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        localUseCaseStream { useCase in
+            useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension)
         }
     }
 
     /// 发送语音消息并透传本地用例的状态流
     func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendVoice(recording: recording) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        localUseCaseStream { useCase in
+            useCase.sendVoice(recording: recording)
         }
     }
 
     /// 发送视频消息并透传本地用例的状态流
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        localUseCaseStream { useCase in
+            useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
         }
     }
 
     /// 发送文件消息并透传本地用例的状态流
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendFile(fileURL: fileURL) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        localUseCaseStream { useCase in
+            useCase.sendFile(fileURL: fileURL)
         }
     }
 
     func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.loadEmojiPanelState()
+        try await withLocalUseCase { useCase in
+            try await useCase.loadEmojiPanelState()
+        }
     }
 
     func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.toggleEmojiFavorite(emojiID: emojiID, isFavorite: isFavorite)
+        try await withLocalUseCase { useCase in
+            try await useCase.toggleEmojiFavorite(emojiID: emojiID, isFavorite: isFavorite)
+        }
     }
 
     func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
-
-                    for try await row in useCase.sendEmoji(emoji) {
-                        continuation.yield(row)
-                    }
-
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
+        localUseCaseStream { useCase in
+            useCase.sendEmoji(emoji)
         }
     }
 
     /// 标记语音消息已播放
     func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.markVoicePlayed(messageID: messageID)
+        try await withLocalUseCase { useCase in
+            try await useCase.markVoicePlayed(messageID: messageID)
+        }
     }
 
     /// 触发当前会话的后台推送对方消息。
     func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        return try await useCase.simulateIncomingMessages()
+        try await withLocalUseCase { useCase in
+            try await useCase.simulateIncomingMessages()
+        }
     }
 
     /// 重发失败消息并透传本地用例的状态流
     func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        localUseCaseStream { useCase in
+            useCase.resend(messageID: messageID)
+        }
+    }
+
+    /// 删除消息
+    func delete(messageID: MessageID) async throws {
+        try await withLocalUseCase { useCase in
+            try await useCase.delete(messageID: messageID)
+        }
+    }
+
+    /// 撤回消息
+    func revoke(messageID: MessageID) async throws {
+        try await withLocalUseCase { useCase in
+            try await useCase.revoke(messageID: messageID)
+        }
+    }
+
+    /// 对最新 repository 解析出的本地用例执行一次异步操作。
+    private func withLocalUseCase<Result>(
+        _ operation: (LocalChatUseCase) async throws -> Result
+    ) async throws -> Result {
+        let repository = try await storeProvider.repository()
+        let useCase = makeLocalUseCase(repository: repository)
+        return try await operation(useCase)
+    }
+
+    /// 透传本地用例产生的消息状态流，同时保留取消语义。
+    private func localUseCaseStream(
+        _ makeStream: @escaping @MainActor @Sendable (LocalChatUseCase) -> AsyncThrowingStream<ChatMessageRowState, Error>
+    ) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let repository = try await storeProvider.repository()
-                    let useCase = makeLocalUseCase(repository: repository)
+                    let useCase = try await withLocalUseCase { useCase in
+                        useCase
+                    }
 
-                    for try await row in useCase.resend(messageID: messageID) {
+                    let stream = await makeStream(useCase)
+                    for try await row in stream {
                         continuation.yield(row)
                     }
 
@@ -2044,20 +1976,6 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
                 task.cancel()
             }
         }
-    }
-
-    /// 删除消息
-    func delete(messageID: MessageID) async throws {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        try await useCase.delete(messageID: messageID)
-    }
-
-    /// 撤回消息
-    func revoke(messageID: MessageID) async throws {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
-        try await useCase.revoke(messageID: messageID)
     }
 
     /// 基于最新 repository 创建本地聊天用例

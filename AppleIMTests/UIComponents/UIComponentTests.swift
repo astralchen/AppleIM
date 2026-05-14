@@ -5,6 +5,21 @@ import UIKit
 @testable import AppleIM
 
 extension AppleIMTests {
+    @Test func temporaryMediaFileManagerCreatesAndRemovesTemporaryFile() {
+        let manager = DefaultTemporaryMediaFileManager()
+        let url = manager.makeTemporaryFileURL(prefix: "ChatBridgeTestVideoPick", fileExtension: "mov")
+        defer {
+            manager.removeFileIfExists(at: url)
+        }
+
+        #expect(manager.fileExists(at: url) == false)
+        #expect(manager.createEmptyFile(at: url) == true)
+        #expect(manager.fileExists(at: url) == true)
+
+        manager.removeFileIfExists(at: url)
+        #expect(manager.fileExists(at: url) == false)
+    }
+
     @MainActor
     @Test func chatInputBarAttachmentPreviewControlsSendState() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
