@@ -230,34 +230,74 @@ extension AccountViewController: UICollectionViewDelegate {
 /// 账号资料列表单元
 @MainActor
 private final class AccountProfileCell: UICollectionViewListCell {
-    /// 当前挂载的资料视图
-    private var profileView: AccountProfileHeaderView?
-
     /// 配置资料内容
     func configure(state: AccountViewState) {
-        contentConfiguration = nil
-        profileView?.removeFromSuperview()
-
-        let profileView = AccountProfileHeaderView(state: state)
-        profileView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(profileView)
-        self.profileView = profileView
+        contentConfiguration = AccountProfileContentConfiguration(state: state)
         accessibilityIdentifier = "account.profileHeader"
         isAccessibilityElement = false
-
-        NSLayoutConstraint.activate([
-            profileView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
-            profileView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
-            profileView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
-            profileView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
-        ])
     }
 
     /// 清理复用状态
     override func prepareForReuse() {
         super.prepareForReuse()
-        profileView?.removeFromSuperview()
-        profileView = nil
+        contentConfiguration = nil
+    }
+}
+
+/// 账号资料内容配置。
+@MainActor
+struct AccountProfileContentConfiguration: UIContentConfiguration {
+    let state: AccountViewState
+
+    func makeContentView() -> UIView & UIContentView {
+        AccountProfileContentView(configuration: self)
+    }
+
+    func updated(for state: UIConfigurationState) -> AccountProfileContentConfiguration {
+        self
+    }
+}
+
+/// 账号资料内容视图。
+@MainActor
+private final class AccountProfileContentView: UIView, UIContentView {
+    private let profileView = AccountProfileHeaderView()
+    private var currentConfiguration: AccountProfileContentConfiguration
+
+    var configuration: UIContentConfiguration {
+        get { currentConfiguration }
+        set {
+            guard let configuration = newValue as? AccountProfileContentConfiguration else { return }
+            currentConfiguration = configuration
+            profileView.configure(state: configuration.state)
+        }
+    }
+
+    init(configuration: AccountProfileContentConfiguration) {
+        currentConfiguration = configuration
+        super.init(frame: .zero)
+        configureView()
+        profileView.configure(state: configuration.state)
+    }
+
+    required init?(coder: NSCoder) {
+        currentConfiguration = AccountProfileContentConfiguration(
+            state: AccountViewState(displayName: "", userID: "", avatarURL: nil)
+        )
+        super.init(coder: coder)
+        configureView()
+    }
+
+    private func configureView() {
+        profileView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(profileView)
+
+        NSLayoutConstraint.activate([
+            profileView.topAnchor.constraint(equalTo: topAnchor, constant: 16),
+            profileView.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            profileView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+            profileView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
+        ])
     }
 }
 
@@ -272,18 +312,19 @@ private final class AccountProfileHeaderView: UIView {
     private let userIDLabel = UILabel()
 
     /// 初始化资料头部
-    init(state: AccountViewState) {
-        super.init(frame: .zero)
-        configure(state: state)
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
     }
 
     /// 禁用 storyboard 初始化
     required init?(coder: NSCoder) {
-        fatalError("Storyboard initialization is not supported.")
+        super.init(coder: coder)
+        configureView()
     }
 
     /// 配置视图层级
-    private func configure(state: AccountViewState) {
+    private func configureView() {
         accessibilityIdentifier = "account.profileHeader"
 
         avatarImageView.translatesAutoresizingMaskIntoConstraints = false
@@ -294,14 +335,12 @@ private final class AccountProfileHeaderView: UIView {
         avatarImageView.accessibilityIdentifier = "account.avatarImageView"
 
         displayNameLabel.translatesAutoresizingMaskIntoConstraints = false
-        displayNameLabel.text = state.displayName
         displayNameLabel.textColor = .label
         displayNameLabel.font = .preferredFont(forTextStyle: .title3)
         displayNameLabel.adjustsFontForContentSizeCategory = true
         displayNameLabel.numberOfLines = 0
 
         userIDLabel.translatesAutoresizingMaskIntoConstraints = false
-        userIDLabel.text = state.userID.rawValue
         userIDLabel.textColor = .secondaryLabel
         userIDLabel.font = .preferredFont(forTextStyle: .subheadline)
         userIDLabel.adjustsFontForContentSizeCategory = true
@@ -336,5 +375,11 @@ private final class AccountProfileHeaderView: UIView {
             stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
             stackView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+    }
+
+    /// 应用账号资料状态。
+    func configure(state: AccountViewState) {
+        displayNameLabel.text = state.displayName
+        userIDLabel.text = state.userID.rawValue
     }
 }

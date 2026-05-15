@@ -591,7 +591,7 @@ extension AppleIMTests {
             setup.window.rootViewController = nil
         }
 
-        setup.inputBar.onEmojiTapped?()
+        setup.inputBar.requestEmojiInput()
         setup.window.layoutIfNeeded()
 
         try assertChatCollectionCanLeaveBottomAfterUserDrag(
@@ -612,7 +612,7 @@ extension AppleIMTests {
             setup.window.rootViewController = nil
         }
 
-        setup.inputBar.onPhotoTapped?()
+        setup.inputBar.requestPhotoLibraryInput()
         setup.window.layoutIfNeeded()
 
         try assertChatCollectionCanLeaveBottomAfterUserDrag(
@@ -676,7 +676,7 @@ extension AppleIMTests {
                 isLoading: false
             )
         ], animated: false)
-        inputBar.onPhotoTapped?()
+        inputBar.requestPhotoLibraryInput()
         window.layoutIfNeeded()
         collectionView.layoutIfNeeded()
         collectionView.scrollToItem(at: IndexPath(item: rows.count - 1, section: 0), at: .bottom, animated: false)
@@ -693,7 +693,7 @@ extension AppleIMTests {
             animated: false
         )
 
-        photoPanel.onDismissPanChanged?(96)
+        photoPanel.notifyDismissPanChanged(96)
         window.layoutIfNeeded()
         collectionView.layoutIfNeeded()
 
@@ -736,7 +736,7 @@ extension AppleIMTests {
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
 
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub") != nil
         }
@@ -799,7 +799,7 @@ extension AppleIMTests {
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
 
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub") != nil
         }
@@ -851,7 +851,7 @@ extension AppleIMTests {
         #expect(abs(collectionFrame.maxY - viewController.view.bounds.maxY) <= 1)
         window.layoutIfNeeded()
 
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
             button(in: emojiPanel, identifier: "chat.emojiItem.favorite_stub") != nil
         }
@@ -1003,7 +1003,7 @@ extension AppleIMTests {
         window.layoutIfNeeded()
 
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         collectionView.scrollToItem(at: IndexPath(item: rows.count - 1, section: 0), at: .bottom, animated: false)
         window.layoutIfNeeded()
         collectionView.layoutIfNeeded()
@@ -1270,7 +1270,7 @@ extension AppleIMTests {
         let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         window.layoutIfNeeded()
         #expect(emojiPanel.isHidden == false)
 
@@ -1558,7 +1558,7 @@ extension AppleIMTests {
         let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
         let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
 
-        inputBar.onPhotoTapped?()
+        inputBar.requestPhotoLibraryInput()
         window.layoutIfNeeded()
 
         let frameBeforeKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
@@ -1604,7 +1604,7 @@ extension AppleIMTests {
         let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
 
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         window.layoutIfNeeded()
         #expect(emojiPanel.isHidden == false)
 
@@ -1651,11 +1651,11 @@ extension AppleIMTests {
         let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: viewController.view))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
 
-        inputBar.onPhotoTapped?()
+        inputBar.requestPhotoLibraryInput()
         window.layoutIfNeeded()
         #expect(photoPanel.isHidden == false)
 
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         window.layoutIfNeeded()
 
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
@@ -1698,11 +1698,11 @@ extension AppleIMTests {
         let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: viewController.view))
         let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: viewController.view))
 
-        inputBar.onEmojiTapped?()
+        inputBar.requestEmojiInput()
         window.layoutIfNeeded()
         #expect(emojiPanel.isHidden == false)
 
-        inputBar.onPhotoTapped?()
+        inputBar.requestPhotoLibraryInput()
         window.layoutIfNeeded()
 
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)

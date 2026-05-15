@@ -367,66 +367,47 @@ final class ChatViewController: UIViewController {
 
     /// 绑定输入栏按钮和文本变化回调
     private func configureInputBarCallbacks() {
-        inputBarView.onTextChanged = { [weak self] text in
-            self?.viewModel.composerTextChanged(text)
-        }
-        inputBarView.onSend = { [weak self] text in
-            self?.sendComposer(text: text)
-        }
-        inputBarView.onPhotoTapped = { [weak self] in
-            self?.showPhotoLibraryInput()
-        }
-        inputBarView.onEmojiTapped = { [weak self] in
-            self?.showEmojiInput()
-        }
-        inputBarView.onKeyboardInputRequested = { [weak self] in
-            self?.showKeyboardInput()
-        }
-        inputBarView.onAttachmentRemoved = { [weak self] id in
-            self?.removePendingAttachment(id: id)
-            self?.photoLibraryInputView.removeSelection(assetID: id)
-        }
-        inputBarView.onVoiceTouchDown = { [weak self] in
-            self?.voiceButtonTouchDown()
-        }
-        inputBarView.onVoiceTouchDragExit = { [weak self] in
-            self?.voiceButtonTouchDragExit()
-        }
-        inputBarView.onVoiceTouchDragEnter = { [weak self] in
-            self?.voiceButtonTouchDragEnter()
-        }
-        inputBarView.onVoiceTouchUpInside = { [weak self] in
-            self?.voiceButtonTouchUpInside()
-        }
-        inputBarView.onVoiceTouchUpOutside = { [weak self] in
-            self?.voiceButtonTouchUpOutside()
-        }
-        inputBarView.onVoiceTouchCancel = { [weak self] in
-            self?.voiceButtonTouchCancel()
-        }
-        inputBarView.onVoicePreviewCancel = { [weak self] in
-            self?.cancelPendingVoicePreview()
-        }
-        inputBarView.onVoicePreviewPlayToggle = { [weak self] in
-            self?.togglePendingVoicePreviewPlayback()
-        }
-        inputBarView.onVoicePreviewSend = { [weak self] in
-            self?.sendPendingVoicePreview()
-        }
-        inputBarView.onHeightWillChange = { [weak self] in
-            guard let self else { return false }
-            let transaction = self.beginMessageLayoutTransaction()
-            self.pendingInputBarLayoutTransaction = transaction
-            return transaction.shouldStickToBottom
-        }
-        inputBarView.onHeightDidChange = { [weak self] shouldStickToBottom in
-            guard let self else { return }
-            let transaction = self.pendingInputBarLayoutTransaction ?? MessageLayoutTransaction(
-                shouldStickToBottom: shouldStickToBottom,
-                previousContentOffset: self.collectionView.contentOffset
-            )
-            self.pendingInputBarLayoutTransaction = nil
-            self.completeMessageLayoutTransaction(transaction, animated: false)
+        inputBarView.layoutDelegate = self
+        inputBarView.addTarget(self, action: #selector(inputBarActionTriggered(_:)), for: .primaryActionTriggered)
+        inputBarView.addTarget(self, action: #selector(inputBarActionTriggered(_:)), for: .editingChanged)
+    }
+
+    /// 处理输入栏按 Apple SDK target-action 形式发布的动作。
+    @objc private func inputBarActionTriggered(_ sender: ChatInputBarView) {
+        guard let action = sender.lastAction else { return }
+
+        switch action {
+        case let .textChanged(text):
+            viewModel.composerTextChanged(text)
+        case let .send(text):
+            sendComposer(text: text)
+        case .photoTapped:
+            showPhotoLibraryInput()
+        case .emojiTapped:
+            showEmojiInput()
+        case .keyboardInputRequested:
+            showKeyboardInput()
+        case let .attachmentRemoved(id):
+            removePendingAttachment(id: id)
+            photoLibraryInputView.removeSelection(assetID: id)
+        case .voiceTouchDown:
+            voiceButtonTouchDown()
+        case .voiceTouchDragExit:
+            voiceButtonTouchDragExit()
+        case .voiceTouchDragEnter:
+            voiceButtonTouchDragEnter()
+        case .voiceTouchUpInside:
+            voiceButtonTouchUpInside()
+        case .voiceTouchUpOutside:
+            voiceButtonTouchUpOutside()
+        case .voiceTouchCancel:
+            voiceButtonTouchCancel()
+        case .voicePreviewCancel:
+            cancelPendingVoicePreview()
+        case .voicePreviewPlayToggle:
+            togglePendingVoicePreviewPlayback()
+        case .voicePreviewSend:
+            sendPendingVoicePreview()
         }
     }
 
@@ -552,62 +533,27 @@ final class ChatViewController: UIViewController {
     /// 创建并绑定图片库输入面板
     private func makePhotoLibraryInputView() -> ChatPhotoLibraryInputView {
         let inputView = ChatPhotoLibraryInputView(frame: .zero)
-
-        inputView.onSelectionStarted = { [weak self] preview in
-            self?.upsertPendingAttachmentPreview(
-                ChatPendingAttachmentPreviewItem(
-                    id: preview.id,
-                    image: preview.image,
-                    title: preview.title,
-                    durationText: preview.durationText,
-                    isVideo: preview.isVideo,
-                    isLoading: true
-                )
-            )
-        }
-        inputView.onSelectionPrepared = { [weak self] preparedMedia in
-            self?.pendingComposerMediaByID[preparedMedia.id] = preparedMedia.media
-            self?.upsertPendingAttachmentPreview(
-                ChatPendingAttachmentPreviewItem(
-                    id: preparedMedia.id,
-                    image: preparedMedia.preview.image,
-                    title: preparedMedia.preview.title,
-                    durationText: preparedMedia.preview.durationText,
-                    isVideo: preparedMedia.preview.isVideo,
-                    isLoading: false
-                )
-            )
-        }
-        inputView.onSelectionRemoved = { [weak self] id in
-            self?.removePendingAttachment(id: id)
-        }
-        inputView.onSelectionFailed = { [weak self] id, message in
-            self?.removePendingAttachment(id: id)
-            self?.showTransientRecordingMessage(message)
-        }
-        inputView.onSelectionLimitReached = { [weak self] message in
-            self?.showTransientRecordingMessage(message)
-        }
-        inputView.onDismissPanChanged = { [weak self] translationY in
-            self?.applyPhotoLibraryDismissPanTranslation(translationY)
-        }
-        inputView.onDismissRequested = { [weak self] in
-            self?.hidePhotoLibraryInput(animated: true)
-        }
-
+        inputView.inputDelegate = self
         return inputView
     }
 
     /// 创建并绑定表情输入面板
     private func makeEmojiPanelView() -> ChatEmojiPanelView {
         let panelView = ChatEmojiPanelView(frame: .zero)
-        panelView.onEmojiSelected = { [weak self] emoji in
-            self?.viewModel.sendEmoji(emoji)
-        }
-        panelView.onFavoriteToggled = { [weak self] emoji, isFavorite in
-            self?.viewModel.toggleEmojiFavorite(emojiID: emoji.emojiID, isFavorite: isFavorite)
-        }
+        panelView.addTarget(self, action: #selector(emojiPanelActionTriggered(_:)), for: .primaryActionTriggered)
         return panelView
+    }
+
+    /// 处理表情面板按 target-action 形式发布的动作。
+    @objc private func emojiPanelActionTriggered(_ sender: ChatEmojiPanelView) {
+        guard let action = sender.lastAction else { return }
+
+        switch action {
+        case let .selected(emoji):
+            viewModel.sendEmoji(emoji)
+        case let .favoriteToggled(emoji, isFavorite):
+            viewModel.toggleEmojiFavorite(emojiID: emoji.emojiID, isFavorite: isFavorite)
+        }
     }
 
     /// 展示图片库输入面板
@@ -1854,6 +1800,75 @@ final class ChatViewController: UIViewController {
                 - visibleMessageHeight
         )
         return min(max(proposedOffsetY, minOffsetY), maxOffsetY)
+    }
+}
+
+/// 聊天输入栏高度变化协调
+extension ChatViewController: ChatInputBarLayoutDelegate {
+    func chatInputBarWillChangeHeight(_ inputBar: ChatInputBarView) -> Bool {
+        let transaction = beginMessageLayoutTransaction()
+        pendingInputBarLayoutTransaction = transaction
+        return transaction.shouldStickToBottom
+    }
+
+    func chatInputBar(_ inputBar: ChatInputBarView, didChangeHeightKeepingBottom shouldStickToBottom: Bool) {
+        let transaction = pendingInputBarLayoutTransaction ?? MessageLayoutTransaction(
+            shouldStickToBottom: shouldStickToBottom,
+            previousContentOffset: collectionView.contentOffset
+        )
+        pendingInputBarLayoutTransaction = nil
+        completeMessageLayoutTransaction(transaction, animated: false)
+    }
+}
+
+/// 图片库输入面板生命周期回调
+extension ChatViewController: ChatPhotoLibraryInputViewDelegate {
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didStartSelection preview: ChatPhotoLibrarySelectionPreview) {
+        upsertPendingAttachmentPreview(
+            ChatPendingAttachmentPreviewItem(
+                id: preview.id,
+                image: preview.image,
+                title: preview.title,
+                durationText: preview.durationText,
+                isVideo: preview.isVideo,
+                isLoading: true
+            )
+        )
+    }
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didPrepareSelection preparedMedia: ChatPhotoLibraryPreparedMedia) {
+        pendingComposerMediaByID[preparedMedia.id] = preparedMedia.media
+        upsertPendingAttachmentPreview(
+            ChatPendingAttachmentPreviewItem(
+                id: preparedMedia.id,
+                image: preparedMedia.preview.image,
+                title: preparedMedia.preview.title,
+                durationText: preparedMedia.preview.durationText,
+                isVideo: preparedMedia.preview.isVideo,
+                isLoading: false
+            )
+        )
+    }
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didRemoveSelection id: String) {
+        removePendingAttachment(id: id)
+    }
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didFailSelection id: String, message: String) {
+        removePendingAttachment(id: id)
+        showTransientRecordingMessage(message)
+    }
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didReachSelectionLimit message: String) {
+        showTransientRecordingMessage(message)
+    }
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didChangeDismissPanTranslation translationY: CGFloat) {
+        applyPhotoLibraryDismissPanTranslation(translationY)
+    }
+
+    func chatPhotoLibraryInputViewDidRequestDismiss(_ inputView: ChatPhotoLibraryInputView) {
+        hidePhotoLibraryInput(animated: true)
     }
 }
 

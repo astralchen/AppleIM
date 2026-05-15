@@ -126,41 +126,26 @@ extension AppleIMTests {
     @MainActor
     @Test func chatInputBarPreviewSendDoesNotTriggerTextSend() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
-        var textSendCount = 0
-        var voicePreviewSendCount = 0
-        inputBar.onSend = { _ in
-            textSendCount += 1
-        }
-        inputBar.onVoicePreviewSend = {
-            voicePreviewSendCount += 1
-        }
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
 
         inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
         button(in: inputBar, identifier: "chat.voicePreviewSendButton")?.sendActions(for: .touchUpInside)
 
-        #expect(textSendCount == 0)
-        #expect(voicePreviewSendCount == 1)
+        #expect(recorder.actions == [.voicePreviewSend])
     }
 
     @MainActor
     @Test func chatInputBarNotifiesHeightChangeWhenTransientStatusAppears() {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
-        var didAskForBottomStick = false
-        var didFinishHeightChange = false
-
-        inputBar.onHeightWillChange = {
-            didAskForBottomStick = true
-            return true
-        }
-        inputBar.onHeightDidChange = { shouldStickToBottom in
-            didFinishHeightChange = shouldStickToBottom
-        }
+        let delegate = ChatInputBarLayoutDelegateRecorder(shouldStickToBottom: true)
+        inputBar.layoutDelegate = delegate
 
         inputBar.showTransientStatus("Voice too short")
         inputBar.layoutIfNeeded()
 
-        #expect(didAskForBottomStick)
-        #expect(didFinishHeightChange)
+        #expect(delegate.willChangeCount == 1)
+        #expect(delegate.didChangeValues == [true])
     }
 
     @MainActor
@@ -178,10 +163,8 @@ extension AppleIMTests {
     @MainActor
     @Test func chatInputBarRemovesSelectedAttachmentPreviewItem() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
-        var removedIDs: [String] = []
-        inputBar.onAttachmentRemoved = { id in
-            removedIDs.append(id)
-        }
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
 
         inputBar.setPendingAttachmentPreviews([
             ChatPendingAttachmentPreviewItem(
@@ -205,14 +188,14 @@ extension AppleIMTests {
 
         button(in: inputBar, identifier: "chat.removeAttachmentButton.photo-1")?.sendActions(for: .touchUpInside)
 
-        #expect(removedIDs == ["photo-1"])
+        #expect(recorder.actions == [.attachmentRemoved("photo-1")])
         #expect(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-1") == nil)
         #expect(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-2") != nil)
         #expect(button(in: inputBar, identifier: "chat.sendButton")?.isEnabled == true)
 
         button(in: inputBar, identifier: "chat.removeAttachmentButton.photo-2")?.sendActions(for: .touchUpInside)
 
-        #expect(removedIDs == ["photo-1", "photo-2"])
+        #expect(recorder.actions == [.attachmentRemoved("photo-1"), .attachmentRemoved("photo-2")])
         #expect(findView(in: inputBar, identifier: "chat.pendingAttachmentPreview")?.isHidden == true)
         #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == true)
     }
@@ -337,6 +320,8 @@ extension AppleIMTests {
         #expect(findView(ofType: UITableView.self, in: viewController.view) == nil)
 
         let collectionView = try #require(findView(in: viewController.view, identifier: "account.collectionView") as? UICollectionView)
+        let profileCell = try #require(collectionView.cellForItem(at: IndexPath(row: 0, section: 0)))
+        #expect(profileCell.contentConfiguration is AccountProfileContentConfiguration)
         collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 0, section: 1))
         collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 1, section: 1))
 
@@ -428,17 +413,15 @@ extension AppleIMTests {
     @Test func chatInputBarDefersSystemKeyboardWhileLeavingPhotoLibraryInput() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
-        var keyboardInputRequestCount = 0
-        inputBar.onKeyboardInputRequested = {
-            keyboardInputRequestCount += 1
-        }
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
 
         inputBar.showPhotoLibraryInput()
 
         #expect(inputBar.textViewShouldBeginEditing(textView) == false)
-        #expect(keyboardInputRequestCount == 1)
+        #expect(recorder.actions == [.keyboardInputRequested])
         #expect(inputBar.textViewShouldBeginEditing(textView) == false)
-        #expect(keyboardInputRequestCount == 1)
+        #expect(recorder.actions == [.keyboardInputRequested])
 
         inputBar.showKeyboardInput()
 
@@ -449,17 +432,15 @@ extension AppleIMTests {
     @Test func chatInputBarDefersSystemKeyboardWhileLeavingEmojiInput() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
-        var keyboardInputRequestCount = 0
-        inputBar.onKeyboardInputRequested = {
-            keyboardInputRequestCount += 1
-        }
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
 
         inputBar.showEmojiInput()
 
         #expect(inputBar.textViewShouldBeginEditing(textView) == false)
-        #expect(keyboardInputRequestCount == 1)
+        #expect(recorder.actions == [.keyboardInputRequested])
         #expect(inputBar.textViewShouldBeginEditing(textView) == false)
-        #expect(keyboardInputRequestCount == 1)
+        #expect(recorder.actions == [.keyboardInputRequested])
 
         inputBar.showKeyboardInput()
 
@@ -499,6 +480,25 @@ extension AppleIMTests {
 
         #expect(findView(in: panelView, identifier: "chat.emojiItem.favorite_stub") != nil)
         #expect(findView(in: panelView, identifier: "chat.emojiItem.package_stub") == nil)
+    }
+
+    @MainActor
+    @Test func chatEmojiPanelPublishesControlActionsForSelectionAndFavoriteToggle() throws {
+        let panelView = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
+        let recorder = ChatEmojiPanelActionRecorder()
+        panelView.addTarget(recorder, action: #selector(ChatEmojiPanelActionRecorder.record(_:)), for: .primaryActionTriggered)
+        let state = makeEmojiPanelState(
+            recentEmojis: [makeEmojiAsset(emojiID: "recent_stub", name: "Recent Stub")],
+            favoriteEmojis: [],
+            packageEmojis: []
+        )
+
+        panelView.render(state)
+        button(in: panelView, identifier: "chat.emojiItem.recent_stub")?.sendActions(for: .touchUpInside)
+        button(in: panelView, identifier: "chat.emojiFavorite.recent_stub")?.sendActions(for: .touchUpInside)
+
+        #expect(recorder.actions.map(\.emojiID) == ["recent_stub", "recent_stub"])
+        #expect(recorder.actions.map(\.kind) == [.selected, .favoriteToggled])
     }
 
     @MainActor
@@ -543,6 +543,17 @@ extension AppleIMTests {
         #expect(darkComponents.alpha >= 0.65)
         #expect(lightComponents.red < darkComponents.red)
         #expect(highContrastComponents.alpha > lightComponents.alpha)
+    }
+
+    @MainActor
+    @Test func chatPhotoLibraryInputUsesDelegateForDismissPanReset() throws {
+        let photoPanel = ChatPhotoLibraryInputView(frame: CGRect(x: 0, y: 0, width: 390, height: 342))
+        let delegate = ChatPhotoLibraryInputDelegateRecorder()
+        photoPanel.inputDelegate = delegate
+
+        photoPanel.resetDismissGestureState()
+
+        #expect(delegate.dismissPanTranslations == [0])
     }
 
     @MainActor
@@ -1094,4 +1105,65 @@ extension AppleIMTests {
         let data = try Data(contentsOf: url)
         #expect(data == Data([0x01, 0x02, 0x03]))
     }
+}
+
+@MainActor
+private final class ChatInputBarActionRecorder: NSObject {
+    private(set) var actions: [ChatInputBarAction] = []
+
+    @objc func record(_ sender: ChatInputBarView) {
+        guard let action = sender.lastAction else { return }
+        actions.append(action)
+    }
+}
+
+@MainActor
+private final class ChatInputBarLayoutDelegateRecorder: ChatInputBarLayoutDelegate {
+    private let shouldStickToBottom: Bool
+    private(set) var willChangeCount = 0
+    private(set) var didChangeValues: [Bool] = []
+
+    init(shouldStickToBottom: Bool) {
+        self.shouldStickToBottom = shouldStickToBottom
+    }
+
+    func chatInputBarWillChangeHeight(_ inputBar: ChatInputBarView) -> Bool {
+        willChangeCount += 1
+        return shouldStickToBottom
+    }
+
+    func chatInputBar(_ inputBar: ChatInputBarView, didChangeHeightKeepingBottom shouldStickToBottom: Bool) {
+        didChangeValues.append(shouldStickToBottom)
+    }
+}
+
+@MainActor
+private final class ChatEmojiPanelActionRecorder: NSObject {
+    private(set) var actions: [ChatEmojiPanelAction] = []
+
+    @objc func record(_ sender: ChatEmojiPanelView) {
+        guard let action = sender.lastAction else { return }
+        actions.append(action)
+    }
+}
+
+@MainActor
+private final class ChatPhotoLibraryInputDelegateRecorder: ChatPhotoLibraryInputViewDelegate {
+    private(set) var dismissPanTranslations: [CGFloat] = []
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didChangeDismissPanTranslation translationY: CGFloat) {
+        dismissPanTranslations.append(translationY)
+    }
+
+    func chatPhotoLibraryInputViewDidRequestDismiss(_ inputView: ChatPhotoLibraryInputView) {}
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didStartSelection preview: ChatPhotoLibrarySelectionPreview) {}
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didPrepareSelection preparedMedia: ChatPhotoLibraryPreparedMedia) {}
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didRemoveSelection id: String) {}
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didFailSelection id: String, message: String) {}
+
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didReachSelectionLimit message: String) {}
 }

@@ -173,10 +173,15 @@ iOS 15-25：
 
 组件原则：
 
-- UI 组件只接收展示状态和事件回调。
+- UI 组件只接收展示状态、用户动作和必要的布局协调对象。
 - 不直接持有 Repository / Store。
 - 不新增 ViewState 字段来保存纯装饰状态。
 - 可访问性 identifier 保持稳定，避免 UI 测试易碎。
+- 交互型复合控件继承 `UIControl`，通过 target-action 与 `sendActions(for:)` 发布用户事件；带 payload 的动作由控件暴露只读 `lastAction` 或 `currentValue` 供 target 读取。
+- 非用户事件但需要外部协调的能力使用 `weak delegate`，例如输入栏高度变化、相册面板拖拽关闭进度和异步选择生命周期。
+- Cell、资料头和纯展示模块使用 `UIContentConfiguration` + `UIContentView` 表达内容，避免在 Cell 复用过程中临时创建和移除子视图。
+- `UICollectionView` Cell 优先使用 `UICollectionView.CellRegistration` 和 diffable data source，减少手写 reuse identifier 与复用状态遗漏。
+- 按钮外观统一从 `ChatBridgeDesignSystem` 获取 `UIButton.Configuration`，通过 `configurationUpdateHandler` 表达 normal、highlighted、disabled 等状态。
 
 ---
 

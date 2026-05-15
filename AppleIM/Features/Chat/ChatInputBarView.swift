@@ -5,6 +5,50 @@
 
 import UIKit
 
+/// 聊天输入栏对外发布的用户动作。
+@MainActor
+enum ChatInputBarAction: Equatable {
+    /// 文本发生变化。
+    case textChanged(String)
+    /// 请求发送当前文本或附件组合。
+    case send(String)
+    /// 请求展示相册输入面板。
+    case photoTapped
+    /// 请求展示表情输入面板。
+    case emojiTapped
+    /// 请求从自定义输入面板切回系统键盘。
+    case keyboardInputRequested
+    /// 移除待发送附件。
+    case attachmentRemoved(String)
+    /// 语音按钮按下。
+    case voiceTouchDown
+    /// 语音按钮拖出。
+    case voiceTouchDragExit
+    /// 语音按钮拖回。
+    case voiceTouchDragEnter
+    /// 语音按钮内部松开。
+    case voiceTouchUpInside
+    /// 语音按钮外部松开。
+    case voiceTouchUpOutside
+    /// 语音按钮触摸取消。
+    case voiceTouchCancel
+    /// 取消待发送语音预览。
+    case voicePreviewCancel
+    /// 播放或暂停待发送语音预览。
+    case voicePreviewPlayToggle
+    /// 发送待发送语音预览。
+    case voicePreviewSend
+}
+
+/// 聊天输入栏布局变化协调。
+@MainActor
+protocol ChatInputBarLayoutDelegate: AnyObject {
+    /// 输入栏高度变化前询问外层是否需要保持消息列表贴底。
+    func chatInputBarWillChangeHeight(_ inputBar: ChatInputBarView) -> Bool
+    /// 输入栏高度变化后通知外层完成消息列表位置修正。
+    func chatInputBar(_ inputBar: ChatInputBarView, didChangeHeightKeepingBottom shouldStickToBottom: Bool)
+}
+
 /// 待处理附件预览项
 ///
 /// 用于在输入框上方展示待发送的图片或视频预览
@@ -39,52 +83,16 @@ struct ChatPendingAttachmentPreviewItem {
 ///
 /// - 标记为 `@MainActor`，所有方法和属性访问都在主线程
 ///
-/// ## 回调事件
+/// ## 事件模型
 ///
-/// - `onTextChanged`: 文本变化
-/// - `onSend`: 发送消息
-/// - `onPhotoTapped`: 点击相册按钮
-/// - `onEmojiTapped`: 点击表情菜单项
-/// - `onKeyboardInputRequested`: 从相册面板切回系统键盘输入
-/// - `onAttachmentRemoved`: 移除附件
-/// - `onVoiceTouchDown/DragExit/DragEnter/TouchUpInside/TouchUpOutside/TouchCancel`: 语音按钮触摸事件
-/// - `onHeightWillChange/DidChange`: 高度变化事件
+/// - 用户动作通过 `UIControl` target-action 发布，读取 `lastAction` 获取动作载荷。
+/// - 高度变化通过 `ChatInputBarLayoutDelegate` 协调。
 @MainActor
-final class ChatInputBarView: UIView {
-    /// 文本变化回调
-    var onTextChanged: ((String) -> Void)?
-    /// 发送当前输入内容回调
-    var onSend: ((String) -> Void)?
-    /// 点击相册按钮回调
-    var onPhotoTapped: (() -> Void)?
-    /// 点击表情菜单项回调
-    var onEmojiTapped: (() -> Void)?
-    /// 请求恢复系统键盘输入回调
-    var onKeyboardInputRequested: (() -> Void)?
-    /// 移除待发送附件回调
-    var onAttachmentRemoved: ((String) -> Void)?
-    /// 语音按钮按下回调
-    var onVoiceTouchDown: (() -> Void)?
-    /// 语音按钮拖出回调
-    var onVoiceTouchDragExit: (() -> Void)?
-    /// 语音按钮拖回回调
-    var onVoiceTouchDragEnter: (() -> Void)?
-    /// 语音按钮内部松开回调
-    var onVoiceTouchUpInside: (() -> Void)?
-    /// 语音按钮外部松开回调
-    var onVoiceTouchUpOutside: (() -> Void)?
-    /// 语音按钮触摸取消回调
-    var onVoiceTouchCancel: (() -> Void)?
-    /// 取消待发送语音预览回调
-    var onVoicePreviewCancel: (() -> Void)?
-    /// 播放或暂停待发送语音预览回调
-    var onVoicePreviewPlayToggle: (() -> Void)?
-    /// 发送待发送语音预览回调
-    var onVoicePreviewSend: (() -> Void)?
-    /// 高度变化前回调，返回是否需要保持贴底
-    var onHeightWillChange: (() -> Bool)?
-    /// 高度变化完成回调
-    var onHeightDidChange: ((Bool) -> Void)?
+final class ChatInputBarView: UIControl {
+    /// 最近一次发布的用户动作。
+    private(set) var lastAction: ChatInputBarAction?
+    /// 布局变化协调代理。
+    weak var layoutDelegate: ChatInputBarLayoutDelegate?
 
     /// 玻璃质感输入栏容器
     private let glassContainerView = GlassContainerView(cornerRadius: ChatBridgeDesignSystem.RadiusToken.inputBar)
@@ -785,9 +793,7 @@ final class ChatInputBarView: UIView {
 
         for item in pendingAttachmentPreviewItems {
             let itemView = PendingAttachmentPreviewItemView(item: item)
-            itemView.onRemove = { [weak self] id in
-                self?.removeAttachmentPreviewItem(id: id)
-            }
+            itemView.addTarget(self, action: #selector(attachmentPreviewRemoveTriggered(_:)), for: .primaryActionTriggered)
             attachmentPreviewStackView.addArrangedSubview(itemView)
         }
     }
@@ -808,43 +814,49 @@ final class ChatInputBarView: UIView {
         rebuildAttachmentPreviewItems()
         setAttachmentPreviewHidden(pendingAttachmentPreviewItems.isEmpty, animated: true)
         renderTrailingActionState()
-        onAttachmentRemoved?(id)
+        emit(.attachmentRemoved(id), for: .primaryActionTriggered)
+    }
+
+    /// 处理附件预览项移除动作。
+    @objc private func attachmentPreviewRemoveTriggered(_ sender: UIControl) {
+        guard let itemView = sender as? PendingAttachmentPreviewItemView else { return }
+        removeAttachmentPreviewItem(id: itemView.itemID)
     }
 
     /// 语音按钮按下事件
     @objc private func voiceButtonTouchDown() {
         guard canRecordVoice else { return }
-        onVoiceTouchDown?()
+        emit(.voiceTouchDown, for: .primaryActionTriggered)
     }
 
     /// 语音按钮拖出事件
     @objc private func voiceButtonTouchDragExit() {
         guard isRecording || canRecordVoice else { return }
-        onVoiceTouchDragExit?()
+        emit(.voiceTouchDragExit, for: .primaryActionTriggered)
     }
 
     /// 语音按钮拖回事件
     @objc private func voiceButtonTouchDragEnter() {
         guard isRecording || canRecordVoice else { return }
-        onVoiceTouchDragEnter?()
+        emit(.voiceTouchDragEnter, for: .primaryActionTriggered)
     }
 
     /// 语音按钮内部松开事件
     @objc private func voiceButtonTouchUpInside() {
         guard isRecording || canRecordVoice else { return }
-        onVoiceTouchUpInside?()
+        emit(.voiceTouchUpInside, for: .primaryActionTriggered)
     }
 
     /// 语音按钮外部松开事件
     @objc private func voiceButtonTouchUpOutside() {
         guard isRecording || canRecordVoice else { return }
-        onVoiceTouchUpOutside?()
+        emit(.voiceTouchUpOutside, for: .primaryActionTriggered)
     }
 
     /// 语音按钮触摸取消事件
     @objc private func voiceButtonTouchCancel() {
         guard isRecording || canRecordVoice else { return }
-        onVoiceTouchCancel?()
+        emit(.voiceTouchCancel, for: .primaryActionTriggered)
     }
 
     /// 发送按钮点击事件
@@ -856,25 +868,25 @@ final class ChatInputBarView: UIView {
     /// 录音停止按钮点击事件
     @objc private func recordingStopButtonTapped() {
         guard isRecording else { return }
-        onVoiceTouchUpInside?()
+        emit(.voiceTouchUpInside, for: .primaryActionTriggered)
     }
 
     /// 待发送语音取消按钮点击事件
     @objc private func voicePreviewCancelButtonTapped() {
         guard hasPendingVoicePreview else { return }
-        onVoicePreviewCancel?()
+        emit(.voicePreviewCancel, for: .primaryActionTriggered)
     }
 
     /// 待发送语音播放按钮点击事件
     @objc private func voicePreviewPlayButtonTapped() {
         guard hasPendingVoicePreview else { return }
-        onVoicePreviewPlayToggle?()
+        emit(.voicePreviewPlayToggle, for: .primaryActionTriggered)
     }
 
     /// 待发送语音发送按钮点击事件
     @objc private func voicePreviewSendButtonTapped() {
         guard hasPendingVoicePreview else { return }
-        onVoicePreviewSend?()
+        emit(.voicePreviewSend, for: .primaryActionTriggered)
     }
 
     /// 发送当前输入组合
@@ -886,8 +898,8 @@ final class ChatInputBarView: UIView {
         renderTextViewPlaceholder()
         renderTrailingActionState()
         updateTextViewHeight(animated: true)
-        onTextChanged?("")
-        onSend?(trimmedText)
+        emit(.textChanged(""), for: .editingChanged)
+        emit(.send(trimmedText), for: .primaryActionTriggered)
     }
 
     /// 渲染尾部按钮的发送或录音状态
@@ -917,14 +929,15 @@ final class ChatInputBarView: UIView {
     private func setAttachmentPreviewHidden(_ isHidden: Bool, animated: Bool) {
         guard attachmentPreviewView.isHidden != isHidden else { return }
 
-        let shouldStickToBottom = onHeightWillChange?() ?? false
+        let shouldStickToBottom = layoutDelegate?.chatInputBarWillChangeHeight(self) ?? false
         let layoutChanges = { [weak self] in
             guard let self else { return }
             self.attachmentPreviewView.isHidden = isHidden
             self.superview?.layoutIfNeeded()
         }
         let completion: (Bool) -> Void = { [weak self] _ in
-            self?.onHeightDidChange?(shouldStickToBottom)
+            guard let self else { return }
+            self.layoutDelegate?.chatInputBar(self, didChangeHeightKeepingBottom: shouldStickToBottom)
         }
 
         if animated {
@@ -1027,7 +1040,7 @@ final class ChatInputBarView: UIView {
             return
         }
 
-        let shouldStickToBottom = onHeightWillChange?() ?? false
+        let shouldStickToBottom = layoutDelegate?.chatInputBarWillChangeHeight(self) ?? false
         textView.isScrollEnabled = measuredHeight > maxHeight
         textInputHeightConstraint?.constant = targetHeight
 
@@ -1036,7 +1049,8 @@ final class ChatInputBarView: UIView {
             self.superview?.layoutIfNeeded()
         }
         let completion: (Bool) -> Void = { [weak self] _ in
-            self?.onHeightDidChange?(shouldStickToBottom)
+            guard let self else { return }
+            self.layoutDelegate?.chatInputBar(self, didChangeHeightKeepingBottom: shouldStickToBottom)
         }
 
         if animated {
@@ -1068,13 +1082,14 @@ final class ChatInputBarView: UIView {
         duration: TimeInterval = 0.2,
         changes: @escaping () -> Void
     ) {
-        let shouldStickToBottom = onHeightWillChange?() ?? false
+        let shouldStickToBottom = layoutDelegate?.chatInputBarWillChangeHeight(self) ?? false
         let layoutChanges = { [weak self] in
             changes()
             self?.superview?.layoutIfNeeded()
         }
         let completion: (Bool) -> Void = { [weak self] _ in
-            self?.onHeightDidChange?(shouldStickToBottom)
+            guard let self else { return }
+            self.layoutDelegate?.chatInputBar(self, didChangeHeightKeepingBottom: shouldStickToBottom)
         }
 
         if animated {
@@ -1118,6 +1133,22 @@ final class ChatInputBarView: UIView {
         return "\(elapsedText)/\(totalText)"
     }
 
+    /// 发布输入栏用户动作。
+    private func emit(_ action: ChatInputBarAction, for controlEvents: UIControl.Event) {
+        lastAction = action
+        sendActions(for: controlEvents)
+    }
+
+    /// 请求展示表情输入面板。
+    func requestEmojiInput() {
+        emit(.emojiTapped, for: .primaryActionTriggered)
+    }
+
+    /// 请求展示相册输入面板。
+    func requestPhotoLibraryInput() {
+        emit(.photoTapped, for: .primaryActionTriggered)
+    }
+
     /// 创建更多操作菜单
     private func makeMoreMenu() -> UIMenu {
         let emojiAction = UIAction(
@@ -1125,7 +1156,7 @@ final class ChatInputBarView: UIView {
             image: UIImage(systemName: "face.smiling")
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.onEmojiTapped?()
+                self?.requestEmojiInput()
             }
         }
         let photoAction = UIAction(
@@ -1133,7 +1164,7 @@ final class ChatInputBarView: UIView {
             image: UIImage(systemName: "photo.on.rectangle")
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.onPhotoTapped?()
+                self?.requestPhotoLibraryInput()
             }
         }
 
@@ -1148,7 +1179,7 @@ extension ChatInputBarView: UITextViewDelegate {
         if isShowingPhotoLibraryInput || isShowingEmojiInput {
             if !isWaitingForKeyboardInputTransition {
                 isWaitingForKeyboardInputTransition = true
-                onKeyboardInputRequested?()
+                emit(.keyboardInputRequested, for: .primaryActionTriggered)
             }
             return false
         }
@@ -1163,18 +1194,15 @@ extension ChatInputBarView: UITextViewDelegate {
         renderTextViewPlaceholder()
         renderTrailingActionState()
         updateTextViewHeight(animated: true)
-        onTextChanged?(textView.text)
+        emit(.textChanged(textView.text), for: .editingChanged)
     }
 }
 
 /// 待发送附件预览项视图
 @MainActor
-private final class PendingAttachmentPreviewItemView: UIView {
-    /// 移除附件回调
-    var onRemove: ((String) -> Void)?
-
+private final class PendingAttachmentPreviewItemView: UIControl {
     /// 附件 ID
-    private let itemID: String
+    fileprivate let itemID: String
     /// 附件缩略图
     private let imageView = UIImageView()
     /// 底部遮罩
@@ -1309,7 +1337,7 @@ private final class PendingAttachmentPreviewItemView: UIView {
     /// 点击移除附件按钮
     @objc private func removeButtonTapped() {
         guard removeButton.isEnabled else { return }
-        onRemove?(itemID)
+        sendActions(for: .primaryActionTriggered)
     }
 }
 

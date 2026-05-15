@@ -5,39 +5,82 @@
 
 import UIKit
 
+/// 表情面板对外发布的用户动作。
+@MainActor
+enum ChatEmojiPanelAction: Equatable {
+    /// 选择表情。
+    case selected(EmojiAssetRecord)
+    /// 切换收藏状态。
+    case favoriteToggled(EmojiAssetRecord, Bool)
+
+    /// 动作类型，便于测试和调用方做轻量判断。
+    enum Kind: Equatable {
+        case selected
+        case favoriteToggled
+    }
+
+    /// 动作关联的表情 ID。
+    var emojiID: String {
+        switch self {
+        case let .selected(emoji), let .favoriteToggled(emoji, _):
+            return emoji.emojiID
+        }
+    }
+
+    /// 动作类型。
+    var kind: Kind {
+        switch self {
+        case .selected:
+            return .selected
+        case .favoriteToggled:
+            return .favoriteToggled
+        }
+    }
+}
+
 /// 聊天表情输入面板。
 @MainActor
-final class ChatEmojiPanelView: UIView {
+final class ChatEmojiPanelView: UIControl {
     static let panelHeight: CGFloat = 280
 
-    var onEmojiSelected: ((EmojiAssetRecord) -> Void)?
-    var onFavoriteToggled: ((EmojiAssetRecord, Bool) -> Void)?
+    /// 最近一次发布的用户动作。
+    private(set) var lastAction: ChatEmojiPanelAction?
 
     private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
     private let sectionButtonStackView = UIStackView()
-    private let scrollView = UIScrollView()
-    private let contentStackView = UIStackView()
+    private let collectionView: UICollectionView
     private let emptyLabel = UILabel()
 
-    private var state = ChatEmojiPanelState.empty
+    private var panelState = ChatEmojiPanelState.empty
     private var visibleSections: [Section] = []
     private var selectedSectionID: Section.ID?
     private var renderedSectionIDs: [Section.ID] = []
     private var sectionButtonsByID: [Section.ID: UIButton] = [:]
     private var renderedGridSignature: GridSignature?
+    private var dataSource: UICollectionViewDiffableDataSource<Int, EmojiAssetRecord>?
 
     override init(frame: CGRect) {
+        let layout = UICollectionViewFlowLayout()
+        layout.minimumLineSpacing = 10
+        layout.minimumInteritemSpacing = 8
+        layout.sectionInset = UIEdgeInsets(top: 12, left: 12, bottom: 20, right: 12)
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(frame: frame)
         configureView()
     }
 
     required init?(coder: NSCoder) {
+        let layout = UICollectionViewFlowLayout()
+        layout.minimumLineSpacing = 10
+        layout.minimumInteritemSpacing = 8
+        layout.sectionInset = UIEdgeInsets(top: 12, left: 12, bottom: 20, right: 12)
+        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
         super.init(coder: coder)
         configureView()
     }
 
     func render(_ state: ChatEmojiPanelState) {
-        self.state = state
+        self.panelState = state
         rebuildSections()
         reconcileSelectedSection()
         rebuildSectionButtons()
@@ -52,8 +95,7 @@ final class ChatEmojiPanelView: UIView {
 
         blurView.translatesAutoresizingMaskIntoConstraints = false
         sectionButtonStackView.translatesAutoresizingMaskIntoConstraints = false
-        scrollView.translatesAutoresizingMaskIntoConstraints = false
-        contentStackView.translatesAutoresizingMaskIntoConstraints = false
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
 
         sectionButtonStackView.axis = .horizontal
@@ -61,13 +103,12 @@ final class ChatEmojiPanelView: UIView {
         sectionButtonStackView.distribution = .fillEqually
         sectionButtonStackView.spacing = 8
 
-        contentStackView.axis = .vertical
-        contentStackView.spacing = 10
-        contentStackView.layoutMargins = UIEdgeInsets(top: 12, left: 12, bottom: 20, right: 12)
-        contentStackView.isLayoutMarginsRelativeArrangement = true
-
-        scrollView.alwaysBounceVertical = true
-        scrollView.keyboardDismissMode = .none
+        collectionView.backgroundColor = .clear
+        collectionView.alwaysBounceVertical = true
+        collectionView.keyboardDismissMode = .none
+        collectionView.delegate = self
+        collectionView.accessibilityIdentifier = "chat.emojiGrid"
+        configureDataSource()
 
         emptyLabel.font = .preferredFont(forTextStyle: .subheadline)
         emptyLabel.adjustsFontForContentSizeCategory = true
@@ -78,8 +119,7 @@ final class ChatEmojiPanelView: UIView {
 
         addSubview(blurView)
         addSubview(sectionButtonStackView)
-        addSubview(scrollView)
-        scrollView.addSubview(contentStackView)
+        addSubview(collectionView)
         addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
@@ -93,33 +133,46 @@ final class ChatEmojiPanelView: UIView {
             sectionButtonStackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
             sectionButtonStackView.heightAnchor.constraint(equalToConstant: 32),
 
-            scrollView.topAnchor.constraint(equalTo: sectionButtonStackView.bottomAnchor, constant: 8),
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            collectionView.topAnchor.constraint(equalTo: sectionButtonStackView.bottomAnchor, constant: 8),
+            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            contentStackView.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
-            contentStackView.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
-            contentStackView.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
-            contentStackView.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
-            contentStackView.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor),
-
-            emptyLabel.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
-            emptyLabel.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            emptyLabel.centerXAnchor.constraint(equalTo: collectionView.centerXAnchor),
+            emptyLabel.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor),
             emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
             emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24)
         ])
     }
 
+    /// 配置表情网格数据源。
+    private func configureDataSource() {
+        let cellRegistration = UICollectionView.CellRegistration<ChatEmojiItemCell, EmojiAssetRecord> { [weak self] cell, _, emoji in
+            cell.configure(emoji: emoji)
+            cell.onSelect = { [weak self] emoji in
+                self?.emit(.selected(emoji))
+            }
+            cell.onFavoriteToggle = { [weak self] emoji, isFavorite in
+                self?.emit(.favoriteToggled(emoji, isFavorite))
+            }
+        }
+
+        dataSource = UICollectionViewDiffableDataSource<Int, EmojiAssetRecord>(
+            collectionView: collectionView
+        ) { collectionView, indexPath, emoji in
+            collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: emoji)
+        }
+    }
+
     private func rebuildSections() {
         visibleSections = [
-            Section(id: .recent, title: "最近", emojis: state.recentEmojis),
-            Section(id: .favorites, title: "收藏", emojis: state.favoriteEmojis)
-        ] + state.packages.map { package in
+            Section(id: .recent, title: "最近", emojis: panelState.recentEmojis),
+            Section(id: .favorites, title: "收藏", emojis: panelState.favoriteEmojis)
+        ] + panelState.packages.map { package in
             Section(
                 id: .package(package.packageID),
                 title: package.title,
-                emojis: state.packageEmojisByPackageID[package.packageID] ?? []
+                emojis: panelState.packageEmojisByPackageID[package.packageID] ?? []
             )
         }
     }
@@ -213,95 +266,14 @@ final class ChatEmojiPanelView: UIView {
             favoriteStates: emojis.map(\.isFavorite)
         )
         emptyLabel.isHidden = !emojis.isEmpty
-        emptyLabel.text = state.isLoading ? "Loading emoji..." : (state.errorMessage ?? "No emoji")
+        emptyLabel.text = panelState.isLoading ? "Loading emoji..." : (panelState.errorMessage ?? "No emoji")
         guard force || gridSignature != renderedGridSignature else { return }
         renderedGridSignature = gridSignature
 
-        contentStackView.arrangedSubviews.forEach { view in
-            contentStackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
-        guard !emojis.isEmpty else { return }
-
-        let columns = 4
-        var rowStack: UIStackView?
-        for (index, emoji) in emojis.enumerated() {
-            if index % columns == 0 {
-                let stack = UIStackView()
-                stack.axis = .horizontal
-                stack.alignment = .fill
-                stack.distribution = .fillEqually
-                stack.spacing = 8
-                contentStackView.addArrangedSubview(stack)
-                rowStack = stack
-            }
-
-            rowStack?.addArrangedSubview(makeEmojiItemView(emoji))
-        }
-
-        if let rowStack {
-            let remainder = emojis.count % columns
-            if remainder > 0 {
-                for _ in remainder..<columns {
-                    rowStack.addArrangedSubview(UIView())
-                }
-            }
-        }
-    }
-
-    private func makeEmojiItemView(_ emoji: EmojiAssetRecord) -> UIView {
-        let container = UIView()
-        let button = UIButton(type: .system)
-        let favoriteButton = UIButton(type: .system)
-
-        container.translatesAutoresizingMaskIntoConstraints = false
-        button.translatesAutoresizingMaskIntoConstraints = false
-        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
-
-        var buttonConfiguration = UIButton.Configuration.plain()
-        buttonConfiguration.imagePlacement = .top
-        buttonConfiguration.imagePadding = 4
-        buttonConfiguration.title = emoji.name ?? "Emoji"
-        buttonConfiguration.image = emoji.thumbPath
-            .flatMap(UIImage.init(contentsOfFile:))
-            ?? emoji.localPath.flatMap(UIImage.init(contentsOfFile:))
-            ?? UIImage(systemName: "face.smiling")
-        buttonConfiguration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
-        buttonConfiguration.baseForegroundColor = .label
-        button.configuration = buttonConfiguration
-        button.accessibilityIdentifier = "chat.emojiItem.\(emoji.emojiID)"
-        button.addAction(UIAction { [weak self] _ in
-            self?.onEmojiSelected?(emoji)
-        }, for: .touchUpInside)
-
-        var favoriteConfiguration = UIButton.Configuration.plain()
-        favoriteConfiguration.image = UIImage(systemName: emoji.isFavorite ? "star.fill" : "star")
-        favoriteConfiguration.baseForegroundColor = emoji.isFavorite ? .systemYellow : .tertiaryLabel
-        favoriteConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
-        favoriteButton.configuration = favoriteConfiguration
-        favoriteButton.accessibilityIdentifier = "chat.emojiFavorite.\(emoji.emojiID)"
-        favoriteButton.addAction(UIAction { [weak self] _ in
-            self?.onFavoriteToggled?(emoji, !emoji.isFavorite)
-        }, for: .touchUpInside)
-
-        container.addSubview(button)
-        container.addSubview(favoriteButton)
-
-        NSLayoutConstraint.activate([
-            button.topAnchor.constraint(equalTo: container.topAnchor),
-            button.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            button.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            button.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            button.heightAnchor.constraint(equalToConstant: 74),
-
-            favoriteButton.topAnchor.constraint(equalTo: container.topAnchor),
-            favoriteButton.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            favoriteButton.widthAnchor.constraint(equalToConstant: 28),
-            favoriteButton.heightAnchor.constraint(equalToConstant: 28)
-        ])
-
-        return container
+        var snapshot = NSDiffableDataSourceSnapshot<Int, EmojiAssetRecord>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(emojis, toSection: 0)
+        dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
     private var selectedSection: Section? {
@@ -342,5 +314,106 @@ final class ChatEmojiPanelView: UIView {
         let localPaths: [String?]
         let thumbPaths: [String?]
         let favoriteStates: [Bool]
+    }
+
+    /// 发布表情面板用户动作。
+    private func emit(_ action: ChatEmojiPanelAction) {
+        lastAction = action
+        sendActions(for: .primaryActionTriggered)
+    }
+}
+
+extension ChatEmojiPanelView: UICollectionViewDelegateFlowLayout {
+    func collectionView(
+        _ collectionView: UICollectionView,
+        layout collectionViewLayout: UICollectionViewLayout,
+        sizeForItemAt indexPath: IndexPath
+    ) -> CGSize {
+        let availableWidth = collectionView.bounds.width - 24 - 8 * 3
+        let itemWidth = floor(availableWidth / 4)
+        return CGSize(width: itemWidth, height: 74)
+    }
+}
+
+/// 表情网格单元格。
+@MainActor
+private final class ChatEmojiItemCell: UICollectionViewCell {
+    var onSelect: ((EmojiAssetRecord) -> Void)?
+    var onFavoriteToggle: ((EmojiAssetRecord, Bool) -> Void)?
+
+    private let button = UIButton(type: .system)
+    private let favoriteButton = UIButton(type: .system)
+    private var emoji: EmojiAssetRecord?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        emoji = nil
+        onSelect = nil
+        onFavoriteToggle = nil
+        button.accessibilityIdentifier = nil
+        favoriteButton.accessibilityIdentifier = nil
+    }
+
+    func configure(emoji: EmojiAssetRecord) {
+        self.emoji = emoji
+
+        var buttonConfiguration = UIButton.Configuration.plain()
+        buttonConfiguration.imagePlacement = .top
+        buttonConfiguration.imagePadding = 4
+        buttonConfiguration.title = emoji.name ?? "Emoji"
+        buttonConfiguration.image = emoji.thumbPath
+            .flatMap(UIImage.init(contentsOfFile:))
+            ?? emoji.localPath.flatMap(UIImage.init(contentsOfFile:))
+            ?? UIImage(systemName: "face.smiling")
+        buttonConfiguration.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: 28, weight: .regular)
+        buttonConfiguration.baseForegroundColor = .label
+        button.configuration = buttonConfiguration
+        button.accessibilityIdentifier = "chat.emojiItem.\(emoji.emojiID)"
+
+        var favoriteConfiguration = UIButton.Configuration.plain()
+        favoriteConfiguration.image = UIImage(systemName: emoji.isFavorite ? "star.fill" : "star")
+        favoriteConfiguration.baseForegroundColor = emoji.isFavorite ? .systemYellow : .tertiaryLabel
+        favoriteConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
+        favoriteButton.configuration = favoriteConfiguration
+        favoriteButton.accessibilityIdentifier = "chat.emojiFavorite.\(emoji.emojiID)"
+    }
+
+    private func configureView() {
+        button.translatesAutoresizingMaskIntoConstraints = false
+        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
+
+        button.addAction(UIAction { [weak self] _ in
+            guard let self, let emoji = self.emoji else { return }
+            self.onSelect?(emoji)
+        }, for: .touchUpInside)
+        favoriteButton.addAction(UIAction { [weak self] _ in
+            guard let self, let emoji = self.emoji else { return }
+            self.onFavoriteToggle?(emoji, !emoji.isFavorite)
+        }, for: .touchUpInside)
+
+        contentView.addSubview(button)
+        contentView.addSubview(favoriteButton)
+
+        NSLayoutConstraint.activate([
+            button.topAnchor.constraint(equalTo: contentView.topAnchor),
+            button.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            button.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+
+            favoriteButton.topAnchor.constraint(equalTo: contentView.topAnchor),
+            favoriteButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            favoriteButton.widthAnchor.constraint(equalToConstant: 28),
+            favoriteButton.heightAnchor.constraint(equalToConstant: 28)
+        ])
     }
 }

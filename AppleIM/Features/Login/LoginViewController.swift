@@ -145,11 +145,8 @@ final class LoginViewController: UIViewController {
         errorLabel.accessibilityIdentifier = "login.errorLabel"
 
         loginButton.translatesAutoresizingMaskIntoConstraints = false
-        var loginConfiguration = UIButton.Configuration.filled()
+        var loginConfiguration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .primary)
         loginConfiguration.title = "Log In"
-        loginConfiguration.baseBackgroundColor = .systemBlue
-        loginConfiguration.baseForegroundColor = .white
-        loginConfiguration.cornerStyle = .capsule
         loginConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 18)
         loginConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes
@@ -158,7 +155,9 @@ final class LoginViewController: UIViewController {
         }
         loginButton.configuration = loginConfiguration
         loginButton.accessibilityIdentifier = "login.submitButton"
-        loginButton.addTarget(self, action: #selector(loginButtonTapped), for: .touchUpInside)
+        loginButton.addAction(UIAction { [weak self] _ in
+            self?.loginButtonTapped()
+        }, for: .primaryActionTriggered)
 
         activityIndicator.translatesAutoresizingMaskIntoConstraints = false
         activityIndicator.hidesWhenStopped = true

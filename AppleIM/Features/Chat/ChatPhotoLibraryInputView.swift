@@ -33,6 +33,35 @@ struct ChatPhotoLibraryPreparedMedia {
     let media: ChatComposerMedia
 }
 
+/// 图片库输入面板对外发布的用户动作。
+@MainActor
+enum ChatPhotoLibraryInputAction {
+    /// 开始选择某个资源并进入准备态。
+    case selectionStarted(ChatPhotoLibrarySelectionPreview)
+    /// 资源准备完成。
+    case selectionPrepared(ChatPhotoLibraryPreparedMedia)
+    /// 取消选择某个资源。
+    case selectionRemoved(String)
+    /// 资源准备失败。
+    case selectionFailed(id: String, message: String)
+    /// 达到选择数量上限。
+    case selectionLimitReached(String)
+    /// 请求关闭图片库面板。
+    case dismissRequested
+}
+
+/// 图片库输入面板生命周期与布局协调代理。
+@MainActor
+protocol ChatPhotoLibraryInputViewDelegate: AnyObject {
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didStartSelection preview: ChatPhotoLibrarySelectionPreview)
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didPrepareSelection preparedMedia: ChatPhotoLibraryPreparedMedia)
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didRemoveSelection id: String)
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didFailSelection id: String, message: String)
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didReachSelectionLimit message: String)
+    func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didChangeDismissPanTranslation translationY: CGFloat)
+    func chatPhotoLibraryInputViewDidRequestDismiss(_ inputView: ChatPhotoLibraryInputView)
+}
+
 /// 图片库多选状态
 nonisolated struct ChatPhotoLibrarySelectionState {
     /// 选择切换结果
@@ -88,21 +117,11 @@ nonisolated struct ChatPhotoLibrarySelectionState {
 
 /// 聊天页图片库输入面板
 @MainActor
-final class ChatPhotoLibraryInputView: UIView {
-    /// 资源开始选择并进入准备态的回调
-    var onSelectionStarted: ((ChatPhotoLibrarySelectionPreview) -> Void)?
-    /// 资源准备完成的回调
-    var onSelectionPrepared: ((ChatPhotoLibraryPreparedMedia) -> Void)?
-    /// 资源取消选择的回调
-    var onSelectionRemoved: ((String) -> Void)?
-    /// 资源准备失败的回调
-    var onSelectionFailed: ((String, String) -> Void)?
-    /// 选择数量达到上限的回调
-    var onSelectionLimitReached: ((String) -> Void)?
-    /// 下滑关闭手势位移变化回调
-    var onDismissPanChanged: ((CGFloat) -> Void)?
-    /// 请求关闭面板回调
-    var onDismissRequested: (() -> Void)?
+final class ChatPhotoLibraryInputView: UIControl {
+    /// 最近一次发布的用户动作。
+    private(set) var lastAction: ChatPhotoLibraryInputAction?
+    /// 生命周期与布局协调代理。
+    weak var inputDelegate: ChatPhotoLibraryInputViewDelegate?
 
     /// 面板固定高度
     static let panelHeight: CGFloat = 342
@@ -153,6 +172,8 @@ final class ChatPhotoLibraryInputView: UIView {
     private var assets: PHFetchResult<PHAsset>?
     /// 当前网格展示的资源 ID 顺序
     private var representedAssetIDs: [String] = []
+    /// 图片库网格 diffable 数据源。
+    private var dataSource: UICollectionViewDiffableDataSource<Int, String>?
     /// 当前多选状态
     private var selectionState = ChatPhotoLibrarySelectionState()
     /// 当前下滑关闭手势是否从顶部把手区域开始
@@ -259,10 +280,9 @@ final class ChatPhotoLibraryInputView: UIView {
         collectionView.backgroundColor = .clear
         collectionView.alwaysBounceVertical = true
         collectionView.contentInset = .zero
-        collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.register(ChatPhotoLibraryCell.self, forCellWithReuseIdentifier: ChatPhotoLibraryCell.reuseIdentifier)
         collectionView.accessibilityIdentifier = "chat.photoLibraryGrid"
+        configureDataSource()
 
         statusView.translatesAutoresizingMaskIntoConstraints = false
         statusView.isHidden = true
@@ -329,7 +349,7 @@ final class ChatPhotoLibraryInputView: UIView {
 
     /// 重置下滑手势带来的临时位移
     func resetDismissGestureState() {
-        onDismissPanChanged?(0)
+        notifyDismissPanChanged(0)
     }
 
     /// 根据下滑距离和速度判断是否关闭
@@ -344,11 +364,12 @@ final class ChatPhotoLibraryInputView: UIView {
         switch gesture.state {
         case .began, .changed:
             clampCollectionViewToTopIfNeeded()
-            onDismissPanChanged?(translationY)
+            notifyDismissPanChanged(translationY)
         case .ended:
             let velocityY = gesture.velocity(in: self).y
             if Self.shouldDismissForPan(translationY: translationY, velocityY: velocityY) {
-                onDismissRequested?()
+                emit(.dismissRequested)
+                inputDelegate?.chatPhotoLibraryInputViewDidRequestDismiss(self)
             } else {
                 animateDismissGestureReset()
             }
@@ -406,8 +427,41 @@ final class ChatPhotoLibraryInputView: UIView {
             showStatus("No recent photos or videos.", buttonTitle: nil, action: nil)
         } else {
             statusButtonAction = nil
-            collectionView.reloadData()
+            applyAssetSnapshot()
         }
+    }
+
+    /// 配置图片库网格数据源。
+    private func configureDataSource() {
+        let cellRegistration = UICollectionView.CellRegistration<ChatPhotoLibraryCell, String> { [weak self] cell, indexPath, assetID in
+            guard
+                let self,
+                let asset = self.asset(at: indexPath),
+                asset.localIdentifier == assetID
+            else {
+                return
+            }
+
+            cell.configure(
+                asset: asset,
+                imageManager: self.imageManager,
+                selectionNumber: self.selectionState.selectionNumber(for: assetID)
+            )
+        }
+
+        dataSource = UICollectionViewDiffableDataSource<Int, String>(
+            collectionView: collectionView
+        ) { collectionView, indexPath, assetID in
+            collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: assetID)
+        }
+    }
+
+    /// 应用当前资源快照。
+    private func applyAssetSnapshot() {
+        var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(representedAssetIDs, toSection: 0)
+        dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
     /// 状态按钮点击动作
@@ -461,14 +515,15 @@ final class ChatPhotoLibraryInputView: UIView {
             reloadAssetCell(assetID: asset.localIdentifier)
         case .deselected:
             reloadAssetCell(assetID: asset.localIdentifier)
-            onSelectionRemoved?(asset.localIdentifier)
+            emit(.selectionRemoved(asset.localIdentifier))
+            inputDelegate?.chatPhotoLibraryInputView(self, didRemoveSelection: asset.localIdentifier)
             return
         case .limitReached:
-            onSelectionLimitReached?("You can select up to 9 photos or videos.")
+            notifySelectionLimitReached("You can select up to 9 photos or videos.")
             return
         }
 
-        onSelectionStarted?(
+        notifySelectionStarted(
             ChatPhotoLibrarySelectionPreview(
                 id: asset.localIdentifier,
                 image: nil,
@@ -479,7 +534,7 @@ final class ChatPhotoLibraryInputView: UIView {
         )
         requestPreview(for: asset) { [weak self] preview in
             guard let self, self.selectionState.contains(assetID: asset.localIdentifier) else { return }
-            self.onSelectionStarted?(preview)
+            self.notifySelectionStarted(preview)
             self.prepareMedia(for: asset, preview: preview)
         }
     }
@@ -487,7 +542,12 @@ final class ChatPhotoLibraryInputView: UIView {
     /// 刷新指定资源对应的单元格
     private func reloadAssetCell(assetID: String) {
         guard let index = representedAssetIDs.firstIndex(of: assetID) else { return }
-        collectionView.reloadItems(at: [IndexPath(item: index, section: 0)])
+        if var snapshot = dataSource?.snapshot(), snapshot.indexOfItem(assetID) != nil {
+            snapshot.reloadItems([assetID])
+            dataSource?.apply(snapshot, animatingDifferences: false)
+        } else {
+            collectionView.reloadItems(at: [IndexPath(item: index, section: 0)])
+        }
     }
 
     /// 请求用于输入栏展示的缩略图预览
@@ -530,7 +590,7 @@ final class ChatPhotoLibraryInputView: UIView {
         default:
             selectionState.remove(assetID: asset.localIdentifier)
             reloadAssetCell(assetID: asset.localIdentifier)
-            onSelectionFailed?(asset.localIdentifier, "Unsupported media")
+            notifySelectionFailed(id: asset.localIdentifier, message: "Unsupported media")
         }
     }
 
@@ -547,7 +607,7 @@ final class ChatPhotoLibraryInputView: UIView {
                 guard let data else {
                     self.selectionState.remove(assetID: asset.localIdentifier)
                     self.reloadAssetCell(assetID: asset.localIdentifier)
-                    self.onSelectionFailed?(asset.localIdentifier, "Unable to load image")
+                    self.notifySelectionFailed(id: asset.localIdentifier, message: "Unable to load image")
                     return
                 }
 
@@ -561,7 +621,7 @@ final class ChatPhotoLibraryInputView: UIView {
                     durationText: nil,
                     isVideo: false
                 )
-                self.onSelectionPrepared?(
+                self.notifySelectionPrepared(
                     ChatPhotoLibraryPreparedMedia(
                         id: asset.localIdentifier,
                         preview: preparedPreview,
@@ -579,7 +639,7 @@ final class ChatPhotoLibraryInputView: UIView {
         }) else {
             selectionState.remove(assetID: asset.localIdentifier)
             reloadAssetCell(assetID: asset.localIdentifier)
-            onSelectionFailed?(asset.localIdentifier, "Unable to load video")
+            notifySelectionFailed(id: asset.localIdentifier, message: "Unable to load video")
             return
         }
 
@@ -613,7 +673,7 @@ final class ChatPhotoLibraryInputView: UIView {
                 guard case .success(let url) = result else {
                     self.selectionState.remove(assetID: assetID)
                     self.reloadAssetCell(assetID: assetID)
-                    self.onSelectionFailed?(assetID, "Unable to load video")
+                    self.notifySelectionFailed(id: assetID, message: "Unable to load video")
                     return
                 }
 
@@ -624,7 +684,7 @@ final class ChatPhotoLibraryInputView: UIView {
                     durationText: preview.durationText,
                     isVideo: true
                 )
-                self.onSelectionPrepared?(
+                self.notifySelectionPrepared(
                     ChatPhotoLibraryPreparedMedia(
                         id: assetID,
                         preview: preparedPreview,
@@ -633,6 +693,41 @@ final class ChatPhotoLibraryInputView: UIView {
                 )
             }
         )
+    }
+
+    /// 发布图片库输入面板动作。
+    private func emit(_ action: ChatPhotoLibraryInputAction) {
+        lastAction = action
+        sendActions(for: .primaryActionTriggered)
+    }
+
+    /// 通知外层下滑关闭位移变化。
+    func notifyDismissPanChanged(_ translationY: CGFloat) {
+        inputDelegate?.chatPhotoLibraryInputView(self, didChangeDismissPanTranslation: translationY)
+    }
+
+    /// 通知外层资源开始选择。
+    private func notifySelectionStarted(_ preview: ChatPhotoLibrarySelectionPreview) {
+        emit(.selectionStarted(preview))
+        inputDelegate?.chatPhotoLibraryInputView(self, didStartSelection: preview)
+    }
+
+    /// 通知外层资源准备完成。
+    private func notifySelectionPrepared(_ preparedMedia: ChatPhotoLibraryPreparedMedia) {
+        emit(.selectionPrepared(preparedMedia))
+        inputDelegate?.chatPhotoLibraryInputView(self, didPrepareSelection: preparedMedia)
+    }
+
+    /// 通知外层资源准备失败。
+    private func notifySelectionFailed(id: String, message: String) {
+        emit(.selectionFailed(id: id, message: message))
+        inputDelegate?.chatPhotoLibraryInputView(self, didFailSelection: id, message: message)
+    }
+
+    /// 通知外层达到选择数量上限。
+    private func notifySelectionLimitReached(_ message: String) {
+        emit(.selectionLimitReached(message))
+        inputDelegate?.chatPhotoLibraryInputView(self, didReachSelectionLimit: message)
     }
 
     /// 格式化视频时长文本
@@ -713,34 +808,8 @@ enum ChatPhotoLibraryVideoFileIO {
     }
 }
 
-/// 图片库网格数据源和布局代理
-extension ChatPhotoLibraryInputView: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
-    /// 返回当前展示的资源数量
-    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        representedAssetIDs.count
-    }
-
-    /// 配置图片库资源单元格
-    func collectionView(
-        _ collectionView: UICollectionView,
-        cellForItemAt indexPath: IndexPath
-    ) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(
-            withReuseIdentifier: ChatPhotoLibraryCell.reuseIdentifier,
-            for: indexPath
-        )
-        guard let mediaCell = cell as? ChatPhotoLibraryCell, let asset = asset(at: indexPath) else {
-            return cell
-        }
-
-        mediaCell.configure(
-            asset: asset,
-            imageManager: imageManager,
-            selectionNumber: selectionState.selectionNumber(for: asset.localIdentifier)
-        )
-        return mediaCell
-    }
-
+/// 图片库网格布局代理
+extension ChatPhotoLibraryInputView: UICollectionViewDelegateFlowLayout {
     /// 点击资源时切换选择状态
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         guard let asset = asset(at: indexPath) else { return }
@@ -772,9 +841,6 @@ extension ChatPhotoLibraryInputView: UIGestureRecognizerDelegate {
 /// 图片库资源单元格
 @MainActor
 private final class ChatPhotoLibraryCell: UICollectionViewCell {
-    /// 单元格复用标识
-    static let reuseIdentifier = "ChatPhotoLibraryCell"
-
     /// 缩略图视图
     private let imageView = UIImageView()
     /// 视频时长标签
