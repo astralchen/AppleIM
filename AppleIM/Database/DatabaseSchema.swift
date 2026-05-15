@@ -45,7 +45,7 @@ nonisolated struct MigrationScript: Equatable, Sendable {
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
     /// 当前 Schema 版本
-    static let currentVersion = 7
+    static let currentVersion = 8
 
     /// 增量迁移脚本元数据
     static let migrationScripts: [MigrationScript] = [
@@ -150,6 +150,19 @@ nonisolated enum DatabaseSchema {
                 "CREATE INDEX IF NOT EXISTS idx_contact_user_wxid ON contact(user_id, wxid);",
                 "CREATE INDEX IF NOT EXISTS idx_contact_user_type_name ON contact(user_id, is_deleted, type, is_starred DESC, remark, nickname, wxid);",
                 "CREATE INDEX IF NOT EXISTS idx_conversation_user_type_target ON conversation(user_id, biz_type, target_id, is_hidden);"
+            ]
+        ),
+        MigrationScript(
+            id: "008_sql_hot_path_indexes",
+            database: .main,
+            version: 8,
+            statements: [
+                "CREATE INDEX IF NOT EXISTS idx_pending_job_user_recoverable ON pending_job(user_id, status, next_retry_at, created_at);",
+                "CREATE INDEX IF NOT EXISTS idx_media_resource_user_updated ON media_resource(user_id, updated_at DESC, created_at DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_media_resource_owner_message ON media_resource(owner_message_id);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_seq ON message(conversation_id, seq);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_read_state ON message(conversation_id, direction, read_status, is_deleted);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_send_recovery ON message(conversation_id, direction, send_status, is_deleted, local_time ASC, sort_seq ASC);"
             ]
         )
     ]
@@ -440,9 +453,15 @@ nonisolated enum DatabaseSchema {
                 "CREATE INDEX IF NOT EXISTS idx_message_conversation_sort ON message(conversation_id, sort_seq DESC);",
                 "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);",
                 "CREATE INDEX IF NOT EXISTS idx_message_conversation_server ON message(conversation_id, server_time DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_seq ON message(conversation_id, seq);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_read_state ON message(conversation_id, direction, read_status, is_deleted);",
+                "CREATE INDEX IF NOT EXISTS idx_message_conversation_send_recovery ON message(conversation_id, direction, send_status, is_deleted, local_time ASC, sort_seq ASC);",
                 "CREATE INDEX IF NOT EXISTS idx_message_client_msg_id ON message(client_msg_id);",
                 "CREATE INDEX IF NOT EXISTS idx_message_server_msg_id ON message(server_msg_id);",
-                "CREATE INDEX IF NOT EXISTS idx_receipt_message ON message_receipt(message_id);"
+                "CREATE INDEX IF NOT EXISTS idx_receipt_message ON message_receipt(message_id);",
+                "CREATE INDEX IF NOT EXISTS idx_pending_job_user_recoverable ON pending_job(user_id, status, next_retry_at, created_at);",
+                "CREATE INDEX IF NOT EXISTS idx_media_resource_user_updated ON media_resource(user_id, updated_at DESC, created_at DESC);",
+                "CREATE INDEX IF NOT EXISTS idx_media_resource_owner_message ON media_resource(owner_message_id);"
             ]
         ),
         MigrationScript(

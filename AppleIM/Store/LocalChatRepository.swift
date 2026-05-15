@@ -72,6 +72,29 @@ nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
     let mediaID: String?
 }
 
+/// 同步入库去重键集合。
+nonisolated private struct ExistingMessageDedupKeys: Equatable, Sendable {
+    var clientMessageIDs: Set<String> = []
+    var serverMessageIDs: Set<String> = []
+    var conversationSequences: Set<String> = []
+
+    func containsDuplicate(for message: IncomingSyncMessage) -> Bool {
+        if let clientMessageID = message.clientMessageID, clientMessageIDs.contains(clientMessageID) {
+            return true
+        }
+
+        if let serverMessageID = message.serverMessageID, serverMessageIDs.contains(serverMessageID) {
+            return true
+        }
+
+        return conversationSequences.contains(Self.sequenceKey(conversationID: message.conversationID, sequence: message.sequence))
+    }
+
+    static func sequenceKey(conversationID: ConversationID, sequence: Int64) -> String {
+        "\(conversationID.rawValue)#\(sequence)"
+    }
+}
+
 /// 本地聊天仓储
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
@@ -1598,7 +1621,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         var seenClientMessageIDs = Set<String>()
         var seenServerMessageIDs = Set<String>()
         var seenConversationSequences = Set<String>()
-        var messagesToInsert: [IncomingSyncMessage] = []
+        var dedupedMessages: [IncomingSyncMessage] = []
         var skippedDuplicateCount = 0
 
         for message in sortedMessages {
@@ -1612,7 +1635,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                 continue
             }
 
-            if try await containsDuplicateIncomingMessage(message) {
+            dedupedMessages.append(message)
+        }
+
+        let existingDedupKeys = try await existingMessageDedupKeys(for: dedupedMessages)
+        var messagesToInsert: [IncomingSyncMessage] = []
+        for message in dedupedMessages {
+            if existingDedupKeys.containsDuplicate(for: message) {
                 skippedDuplicateCount += 1
                 continue
             }
@@ -1729,10 +1758,34 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             return [:]
         }
 
+        var seenIDs = Set<ConversationID>()
+        let uniqueIDs = conversationIDs.filter { seenIDs.insert($0).inserted }
         var extras: [ConversationID: ConversationExtraContext] = [:]
-        for conversationID in conversationIDs {
-            extras[conversationID] = try await conversationExtra(conversationID: conversationID)
+        let chunkSize = 500
+
+        for startIndex in stride(from: uniqueIDs.startIndex, to: uniqueIDs.endIndex, by: chunkSize) {
+            let endIndex = uniqueIDs.index(startIndex, offsetBy: chunkSize, limitedBy: uniqueIDs.endIndex) ?? uniqueIDs.endIndex
+            let chunk = Array(uniqueIDs[startIndex..<endIndex])
+            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
+            let rows = try await database.query(
+                """
+                SELECT conversation_id, extra_json
+                FROM conversation
+                WHERE conversation_id IN (\(placeholders));
+                """,
+                parameters: chunk.map { .text($0.rawValue) },
+                paths: paths
+            )
+
+            for row in rows {
+                let conversationID = ConversationID(rawValue: try row.requiredString("conversation_id"))
+                guard let json = row.string("extra_json"), let data = json.data(using: .utf8) else {
+                    continue
+                }
+                extras[conversationID] = try JSONDecoder().decode(ConversationExtraContext.self, from: data)
+            }
         }
+
         return extras
     }
 
@@ -2661,31 +2714,6 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         )
     }
 
-    private func containsDuplicateIncomingMessage(_ message: IncomingSyncMessage) async throws -> Bool {
-        let rows = try await database.query(
-            """
-            SELECT message_id
-            FROM message
-            WHERE
-                (? IS NOT NULL AND client_msg_id = ?)
-                OR (? IS NOT NULL AND server_msg_id = ?)
-                OR (conversation_id = ? AND seq = ?)
-            LIMIT 1;
-            """,
-            parameters: [
-                .optionalText(message.clientMessageID),
-                .optionalText(message.clientMessageID),
-                .optionalText(message.serverMessageID),
-                .optionalText(message.serverMessageID),
-                .text(message.conversationID.rawValue),
-                .integer(message.sequence)
-            ],
-            paths: paths
-        )
-
-        return !rows.isEmpty
-    }
-
     private static func recordMessageDedupKeys(
         _ message: IncomingSyncMessage,
         clientMessageIDs: inout Set<String>,
@@ -2700,7 +2728,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             return false
         }
 
-        let sequenceKey = "\(message.conversationID.rawValue)#\(message.sequence)"
+        let sequenceKey = ExistingMessageDedupKeys.sequenceKey(conversationID: message.conversationID, sequence: message.sequence)
         guard !conversationSequences.contains(sequenceKey) else {
             return false
         }
@@ -2715,6 +2743,90 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
 
         conversationSequences.insert(sequenceKey)
         return true
+    }
+
+    private func existingMessageDedupKeys(for messages: [IncomingSyncMessage]) async throws -> ExistingMessageDedupKeys {
+        guard !messages.isEmpty else {
+            return ExistingMessageDedupKeys()
+        }
+
+        let clientMessageIDs = messages.compactMap(\.clientMessageID)
+        let serverMessageIDs = messages.compactMap(\.serverMessageID)
+        let sequencesByConversation = Dictionary(grouping: messages, by: \.conversationID).mapValues {
+            Array(Set($0.map(\.sequence))).sorted()
+        }
+
+        var clauses: [String] = []
+        var parameters: [SQLiteValue] = []
+        appendInClause(
+            column: "client_msg_id",
+            values: clientMessageIDs,
+            clauses: &clauses,
+            parameters: &parameters
+        )
+        appendInClause(
+            column: "server_msg_id",
+            values: serverMessageIDs,
+            clauses: &clauses,
+            parameters: &parameters
+        )
+
+        for (conversationID, sequences) in sequencesByConversation.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where !sequences.isEmpty {
+            let placeholders = Array(repeating: "?", count: sequences.count).joined(separator: ", ")
+            clauses.append("(conversation_id = ? AND seq IN (\(placeholders)))")
+            parameters.append(.text(conversationID.rawValue))
+            parameters.append(contentsOf: sequences.map(SQLiteValue.integer))
+        }
+
+        guard !clauses.isEmpty else {
+            return ExistingMessageDedupKeys()
+        }
+
+        let rows = try await database.query(
+            """
+            SELECT client_msg_id, server_msg_id, conversation_id, seq
+            FROM message
+            WHERE \(clauses.joined(separator: "\nOR "));
+            """,
+            parameters: parameters,
+            paths: paths
+        )
+
+        var keys = ExistingMessageDedupKeys()
+        for row in rows {
+            if let clientMessageID = row.string("client_msg_id") {
+                keys.clientMessageIDs.insert(clientMessageID)
+            }
+            if let serverMessageID = row.string("server_msg_id") {
+                keys.serverMessageIDs.insert(serverMessageID)
+            }
+            if let conversationID = row.string("conversation_id"), let sequence = row.int64("seq") {
+                keys.conversationSequences.insert(
+                    ExistingMessageDedupKeys.sequenceKey(
+                        conversationID: ConversationID(rawValue: conversationID),
+                        sequence: sequence
+                    )
+                )
+            }
+        }
+
+        return keys
+    }
+
+    private func appendInClause(
+        column: String,
+        values: [String],
+        clauses: inout [String],
+        parameters: inout [SQLiteValue]
+    ) {
+        let uniqueValues = Array(Set(values)).sorted()
+        guard !uniqueValues.isEmpty else {
+            return
+        }
+
+        let placeholders = Array(repeating: "?", count: uniqueValues.count).joined(separator: ", ")
+        clauses.append("\(column) IN (\(placeholders))")
+        parameters.append(contentsOf: uniqueValues.map(SQLiteValue.text))
     }
 
     private static func incomingTextMessageStatements(
