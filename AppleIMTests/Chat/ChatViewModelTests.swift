@@ -880,6 +880,125 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewModelPreservesActiveVoicePlaybackAcrossStoreRefresh() async throws {
+        let voice = makeVoiceRow(id: "voice_refresh", sortSequence: 1, isUnplayed: true)
+        let useCase = StoreRefreshingChatUseCase()
+        useCase.replaceRows([voice])
+        let viewModel = ChatViewModel(useCase: useCase, title: "Voice Refresh")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 1
+            }
+        }
+
+        viewModel.voicePlaybackStarted(messageID: "voice_refresh")
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.first?.voiceContent?.isPlaying == true
+            }
+        }
+
+        useCase.replaceRows([voice.withVoicePlayback(isPlaying: false, isUnplayed: false)])
+        viewModel.refreshAfterStoreChange(
+            userID: "store_refresh_user",
+            conversationIDs: ["store_refresh_conversation"]
+        )
+        try await waitForCondition {
+            useCase.loadInitialMessagesCallCount == 2
+        }
+
+        let refreshedVoice = try #require(viewModel.currentState.rows.first?.voiceContent)
+        #expect(refreshedVoice.isPlaying)
+        #expect(refreshedVoice.isUnplayed == false)
+    }
+
+    @MainActor
+    @Test func chatViewModelThrottlesVoicePlaybackProgressUpdates() async throws {
+        var currentUptime: TimeInterval = 0
+        let voice = makeVoiceRow(id: "voice_throttle", sortSequence: 1, isUnplayed: true)
+        let useCase = VoicePlaybackStubChatUseCase(rows: [voice])
+        let viewModel = ChatViewModel(
+            useCase: useCase,
+            title: "Voice Throttle",
+            currentUptime: { currentUptime }
+        )
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 1
+            }
+        }
+        viewModel.voicePlaybackStarted(messageID: "voice_throttle")
+
+        viewModel.voicePlaybackProgress(
+            messageID: "voice_throttle",
+            progress: VoicePlaybackProgress(elapsedMilliseconds: 100, durationMilliseconds: 1_000, fraction: 0.1)
+        )
+        var playingVoice = try #require(viewModel.currentState.rows.first?.voiceContent)
+        #expect(playingVoice.playbackElapsedMilliseconds == 100)
+        #expect(playingVoice.playbackProgress == 0.1)
+
+        currentUptime = 0.10
+        viewModel.voicePlaybackProgress(
+            messageID: "voice_throttle",
+            progress: VoicePlaybackProgress(elapsedMilliseconds: 200, durationMilliseconds: 1_000, fraction: 0.2)
+        )
+        playingVoice = try #require(viewModel.currentState.rows.first?.voiceContent)
+        #expect(playingVoice.playbackElapsedMilliseconds == 100)
+        #expect(playingVoice.playbackProgress == 0.1)
+
+        currentUptime = 0.26
+        viewModel.voicePlaybackProgress(
+            messageID: "voice_throttle",
+            progress: VoicePlaybackProgress(elapsedMilliseconds: 300, durationMilliseconds: 1_000, fraction: 0.3)
+        )
+        playingVoice = try #require(viewModel.currentState.rows.first?.voiceContent)
+        #expect(playingVoice.playbackElapsedMilliseconds == 300)
+        #expect(playingVoice.playbackProgress == 0.3)
+    }
+
+    @MainActor
+    @Test func chatViewModelIgnoresVoiceProgressAfterPlaybackStops() async throws {
+        let voice = makeVoiceRow(id: "voice_stop", sortSequence: 1, isUnplayed: true)
+        let useCase = VoicePlaybackStubChatUseCase(rows: [voice])
+        let viewModel = ChatViewModel(useCase: useCase, title: "Voice Stop")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.rows.count == 1
+            }
+        }
+        viewModel.voicePlaybackStarted(messageID: "voice_stop")
+        viewModel.voicePlaybackStopped(messageID: "voice_stop")
+        viewModel.voicePlaybackProgress(
+            messageID: "voice_stop",
+            progress: VoicePlaybackProgress(elapsedMilliseconds: 500, durationMilliseconds: 1_000, fraction: 0.5)
+        )
+
+        let stoppedVoice = try #require(viewModel.currentState.rows.first?.voiceContent)
+        #expect(stoppedVoice.isPlaying == false)
+        #expect(stoppedVoice.playbackElapsedMilliseconds == 0)
+        #expect(stoppedVoice.playbackProgress == 0)
+    }
+
+    @MainActor
+    @Test func chatViewControllerDisablesSnapshotAnimationForOnlyVoicePlaybackChanges() {
+        let idleVoice = makeVoiceRow(id: "voice_animation", sortSequence: 1, isUnplayed: true)
+        let playingVoice = idleVoice.withVoicePlaybackProgress(
+            VoicePlaybackProgress(elapsedMilliseconds: 250, durationMilliseconds: 1_000, fraction: 0.25)
+        )
+
+        #expect(ChatViewController.containsOnlyVoicePlaybackChanges(previousRows: [idleVoice], newRows: [playingVoice]))
+        #expect(ChatViewController.containsOnlyVoicePlaybackChanges(previousRows: [idleVoice], newRows: [
+            playingVoice.copy(statusText: "Delivered")
+        ]) == false)
+    }
+
+    @MainActor
     @Test func chatViewModelShowsOutgoingVoiceRowImmediatelyWhenSendStarts() async throws {
         let row = ChatMessageRowState(
             id: "sent_voice",

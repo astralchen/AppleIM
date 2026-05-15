@@ -1128,7 +1128,14 @@ final class ChatViewController: UIViewController {
             changedRowIDs: changedRowIDs
         )
 
-        let shouldAnimateSnapshot = !isInitialMessageRender && !didAppendNewMessage && !isPrependingOlderMessages
+        let hasOnlyVoicePlaybackChanges = Self.containsOnlyVoicePlaybackChanges(
+            previousRows: previousRowIDs.compactMap { previousRowsByID[$0] },
+            newRows: state.rows
+        )
+        let shouldAnimateSnapshot = !isInitialMessageRender
+            && !didAppendNewMessage
+            && !isPrependingOlderMessages
+            && !hasOnlyVoicePlaybackChanges
         dataSource.apply(snapshot, animatingDifferences: shouldAnimateSnapshot) { [weak self] in
             guard let self else { return }
 
@@ -1324,6 +1331,47 @@ final class ChatViewController: UIViewController {
         }
 
         return snapshot
+    }
+
+    /// 判断本次更新是否只改变语音播放 UI 临时态，用于播放进度刷新时关闭 diffable 动画。
+    static func containsOnlyVoicePlaybackChanges(
+        previousRows: [ChatMessageRowState],
+        newRows: [ChatMessageRowState]
+    ) -> Bool {
+        guard previousRows.map(\.id) == newRows.map(\.id) else {
+            return false
+        }
+
+        var hasChangedRow = false
+        for (previousRow, newRow) in zip(previousRows, newRows) where previousRow != newRow {
+            hasChangedRow = true
+            guard
+                previousRow.content.kind == .voice,
+                newRow.content.kind == .voice,
+                rowWithoutVoicePlaybackState(previousRow) == rowWithoutVoicePlaybackState(newRow)
+            else {
+                return false
+            }
+        }
+
+        return hasChangedRow
+    }
+
+    /// 去掉语音播放中的临时字段后再比较，保留消息持久内容和发送状态变化。
+    private static func rowWithoutVoicePlaybackState(_ row: ChatMessageRowState) -> ChatMessageRowState {
+        guard let voice = row.voiceContent else {
+            return row
+        }
+
+        let normalizedVoice = ChatMessageRowContent.VoiceContent(
+            localPath: voice.localPath,
+            durationMilliseconds: voice.durationMilliseconds,
+            isUnplayed: voice.isUnplayed,
+            isPlaying: false,
+            playbackProgress: 0,
+            playbackElapsedMilliseconds: 0
+        )
+        return row.copy(content: .voice(normalizedVoice))
     }
 
     /// 捕获历史消息插入前的可见旧消息锚点。

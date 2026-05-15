@@ -640,7 +640,7 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
 
 /// 语音消息内容视图
 @MainActor
-final class VoiceMessageContentView: UIView, ChatMessageContentView {
+final class VoiceMessageContentView: UIView, ChatMessageContentView, UIGestureRecognizerDelegate {
     private let stackView = UIStackView()
     private let voicePlaybackButton = UIButton(type: .system)
     private let waveformView = MessageVoiceWaveformView()
@@ -678,6 +678,7 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
         voicePlaybackButton.setImage(UIImage(systemName: isPlaying ? "pause.fill" : "play.fill"), for: .normal)
         voicePlaybackButton.tintColor = style.tintColor
         voicePlaybackButton.accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
+        accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
         waveformView.tintColor = style.tintColor
         waveformView.isPlaying = isPlaying
         waveformView.playbackProgress = voice?.playbackProgress ?? 0
@@ -688,6 +689,14 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
 
     private func configureView() {
         translatesAutoresizingMaskIntoConstraints = false
+        isAccessibilityElement = true
+        accessibilityTraits = [.button]
+        isUserInteractionEnabled = true
+
+        let bubbleTapGestureRecognizer = UITapGestureRecognizer(target: self, action: #selector(voiceBubbleTapped))
+        bubbleTapGestureRecognizer.cancelsTouchesInView = false
+        bubbleTapGestureRecognizer.delegate = self
+        addGestureRecognizer(bubbleTapGestureRecognizer)
 
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .horizontal
@@ -731,6 +740,24 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView {
     }
 
     @objc private func voicePlaybackButtonTapped() {
+        playVoiceIfAvailable()
+    }
+
+    @objc private func voiceBubbleTapped() {
+        playVoiceIfAvailable()
+    }
+
+    override func accessibilityActivate() -> Bool {
+        guard row != nil else { return false }
+        playVoiceIfAvailable()
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        touch.view?.isDescendant(of: voicePlaybackButton) != true
+    }
+
+    private func playVoiceIfAvailable() {
         guard let row else { return }
         actions.onPlayVoice(row)
     }

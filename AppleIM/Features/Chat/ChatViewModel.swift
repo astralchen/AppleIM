@@ -52,6 +52,8 @@ final class ChatViewModel {
     private var storeRefreshTask: Task<Void, Never>?
     /// 语音播放状态回写任务
     private var voicePlaybackTask: Task<Void, Never>?
+    /// 当前语音播放会话的 UI 临时状态；数据库行不保存播放中状态。
+    private var activeVoicePlayback: ActiveVoicePlaybackState?
     /// 分页加载任务
     private var paginationTask: Task<Void, Never>?
     /// 表情面板加载或变更任务
@@ -68,8 +70,19 @@ final class ChatViewModel {
     private let pageSize = 50
     /// 聊天链路耗时日志
     private let logger = AppLogger(category: .chat)
+    /// 当前运行时间来源，测试中可注入固定时钟以验证语音进度节流。
+    private let currentUptime: () -> TimeInterval
     /// 微信式时间分隔阈值：相邻消息间隔达到 5 分钟时显示时间
     private static let timeSeparatorInterval: Int64 = 5 * 60
+    /// 语音播放进度刷新间隔，避免 100ms 播放回调驱动整表频繁重渲染。
+    private static let voicePlaybackProgressPublishInterval: TimeInterval = 0.25
+
+    /// 当前正在播放的语音会话状态。
+    private struct ActiveVoicePlaybackState {
+        let messageID: MessageID
+        var latestProgress: VoicePlaybackProgress?
+        var lastPublishedProgressUptime: TimeInterval?
+    }
 
     /// 状态发布器，UI 订阅此 Publisher 以接收状态更新
     var statePublisher: AnyPublisher<ChatViewState, Never> {
@@ -86,8 +99,13 @@ final class ChatViewModel {
     /// - Parameters:
     ///   - useCase: 聊天业务逻辑处理器
     ///   - title: 聊天页标题
-    init(useCase: any ChatUseCase, title: String) {
+    init(
+        useCase: any ChatUseCase,
+        title: String,
+        currentUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
         self.useCase = useCase
+        self.currentUptime = currentUptime
         self.stateSubject = CurrentValueSubject(ChatViewState(title: title))
     }
 
@@ -122,7 +140,7 @@ final class ChatViewModel {
                 let currentDraftText = latestComposerText ?? loadedDraft
                 publish { state in
                     state.phase = .loaded
-                    state.rows = Self.rowsWithTimeSeparators(loadedPage.rows)
+                    state.rows = Self.rowsWithTimeSeparators(rowsPreservingActiveVoicePlayback(loadedPage.rows))
                     state.draftText = currentDraftText
                     state.mentionPicker = Self.mentionPickerState(for: currentDraftText, context: loadedGroupContext)
                     state.groupAnnouncement = Self.announcementState(from: loadedGroupContext)
@@ -522,6 +540,7 @@ final class ChatViewModel {
     ///
     /// - Parameter messageID: 正在播放的语音消息 ID
     func voicePlaybackStarted(messageID: MessageID) {
+        activeVoicePlayback = ActiveVoicePlaybackState(messageID: messageID)
         publish { state in
             state.rows = state.rows.map { row in
                 row.withVoicePlayback(
@@ -560,6 +579,24 @@ final class ChatViewModel {
     ///   - messageID: 正在播放的语音消息 ID
     ///   - progress: 播放进度
     func voicePlaybackProgress(messageID: MessageID, progress: VoicePlaybackProgress) {
+        guard var playback = activeVoicePlayback, playback.messageID == messageID else {
+            return
+        }
+
+        let now = currentUptime()
+        playback.latestProgress = progress
+        let shouldPublish = playback.lastPublishedProgressUptime.map {
+            now - $0 >= Self.voicePlaybackProgressPublishInterval
+        } ?? true
+
+        if shouldPublish || progress.fraction >= 1 {
+            playback.lastPublishedProgressUptime = now
+            activeVoicePlayback = playback
+        } else {
+            activeVoicePlayback = playback
+            return
+        }
+
         publish { state in
             state.rows = state.rows.map { row in
                 guard row.id == messageID, row.content.kind == .voice else {
@@ -575,6 +612,10 @@ final class ChatViewModel {
     ///
     /// - Parameter messageID: 停止播放的语音消息 ID；为空时清理全部播放态
     func voicePlaybackStopped(messageID: MessageID?) {
+        if messageID == nil || activeVoicePlayback?.messageID == messageID {
+            activeVoicePlayback = nil
+        }
+
         publish { state in
             state.rows = state.rows.map { row in
                 guard messageID == nil || row.id == messageID else {
@@ -636,7 +677,7 @@ final class ChatViewModel {
                 let page = try await useCase.loadInitialMessages()
                 guard !Task.isCancelled else { return }
                 publish { state in
-                    state.rows = Self.rowsWithTimeSeparators(page.rows)
+                    state.rows = Self.rowsWithTimeSeparators(rowsPreservingActiveVoicePlayback(page.rows))
                     state.hasMoreOlderMessages = page.hasMore
                     state.isLoadingOlderMessages = false
                     state.paginationErrorMessage = nil
@@ -767,7 +808,7 @@ final class ChatViewModel {
                 guard !Task.isCancelled else { return }
 
                 publish { state in
-                    state.rows = Self.rowsWithTimeSeparators(page.rows)
+                    state.rows = Self.rowsWithTimeSeparators(rowsPreservingActiveVoicePlayback(page.rows))
                     state.hasMoreOlderMessages = page.hasMore
                     state.isLoadingOlderMessages = false
                     state.paginationErrorMessage = nil
@@ -796,6 +837,7 @@ final class ChatViewModel {
         emojiPanelTask?.cancel()
         storeRefreshTask?.cancel()
         simulatedIncomingTasks.values.forEach { $0.cancel() }
+        activeVoicePlayback = nil
         loadTask = nil
         sendTasks.removeAll()
         draftTask = nil
@@ -814,6 +856,7 @@ final class ChatViewModel {
     /// - Parameter row: 消息行状态
     private func upsert(_ row: ChatMessageRowState) {
         publish { state in
+            let row = rowPreservingActiveVoicePlayback(row)
             if let index = state.rows.firstIndex(where: { $0.id == row.id }) {
                 state.rows[index] = row
             } else {
@@ -832,6 +875,7 @@ final class ChatViewModel {
 
         publish { state in
             for row in rows {
+                let row = rowPreservingActiveVoicePlayback(row)
                 if let index = state.rows.firstIndex(where: { $0.id == row.id }) {
                     state.rows[index] = row
                 } else {
@@ -867,6 +911,7 @@ final class ChatViewModel {
 
         publish { state in
             for row in rows {
+                let row = rowPreservingActiveVoicePlayback(row)
                 if let index = state.rows.firstIndex(where: { $0.id == row.id }) {
                     state.rows[index] = row
                 } else {
@@ -878,6 +923,29 @@ final class ChatViewModel {
             state.rows = Self.rowsWithTimeSeparators(state.rows)
             state.phase = .loaded
         }
+    }
+
+    /// 将当前播放会话叠加到数据库返回的行上，避免仓储刷新冲掉播放中的临时 UI 状态。
+    private func rowsPreservingActiveVoicePlayback(_ rows: [ChatMessageRowState]) -> [ChatMessageRowState] {
+        rows.map(rowPreservingActiveVoicePlayback)
+    }
+
+    /// 将当前播放会话叠加到单条消息行。
+    private func rowPreservingActiveVoicePlayback(_ row: ChatMessageRowState) -> ChatMessageRowState {
+        guard
+            let playback = activeVoicePlayback,
+            row.id == playback.messageID,
+            row.content.kind == .voice
+        else {
+            return row
+        }
+
+        let playingRow = row.withVoicePlayback(isPlaying: true, isUnplayed: false)
+        guard let latestProgress = playback.latestProgress else {
+            return playingRow
+        }
+
+        return playingRow.withVoicePlaybackProgress(latestProgress)
     }
 
     /// 保持模拟推送时间线按消息序列升序展示，避免并发推送完成顺序影响 UI 顺序。

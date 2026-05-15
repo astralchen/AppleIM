@@ -770,11 +770,31 @@ extension AppleIMTests {
     }
 
     @MainActor
-    @Test func chatBubbleTailUsesContinuousMaskPath() {
+    @Test func chatBubbleTailUsesContinuousMaskPath() throws {
         let bounds = CGRect(x: 0, y: 0, width: 128, height: 46)
 
         #expect(moveElementCount(in: ChatBubbleBackgroundView.maskPath(in: bounds, style: .outgoing)) == 1)
         #expect(moveElementCount(in: ChatBubbleBackgroundView.maskPath(in: bounds, style: .incoming)) == 1)
+
+        let tallBounds = CGRect(x: 0, y: 0, width: 180, height: 120)
+        let tallOutgoingPath = ChatBubbleBackgroundView.maskPath(in: tallBounds, style: .weChatOutgoing)
+        let tallIncomingPath = ChatBubbleBackgroundView.maskPath(in: tallBounds, style: .weChatIncoming)
+        let tallOutgoingTailY = try #require(tailTipY(in: tallOutgoingPath, edgeX: tallBounds.maxX))
+        let tallIncomingTailY = try #require(tailTipY(in: tallIncomingPath, edgeX: tallBounds.minX))
+
+        #expect(abs(tallOutgoingTailY - 20) < 0.5)
+        #expect(abs(tallIncomingTailY - 20) < 0.5)
+        #expect(abs(tallOutgoingTailY - tallBounds.midY) > 20)
+        #expect(abs(tallIncomingTailY - tallBounds.midY) > 20)
+
+        let singleLineBounds = CGRect(x: 0, y: 0, width: 128, height: 40)
+        let singleLineOutgoingPath = ChatBubbleBackgroundView.maskPath(in: singleLineBounds, style: .weChatOutgoing)
+        let singleLineIncomingPath = ChatBubbleBackgroundView.maskPath(in: singleLineBounds, style: .weChatIncoming)
+        let singleLineOutgoingTailY = try #require(tailTipY(in: singleLineOutgoingPath, edgeX: singleLineBounds.maxX))
+        let singleLineIncomingTailY = try #require(tailTipY(in: singleLineIncomingPath, edgeX: singleLineBounds.minX))
+
+        #expect(abs(singleLineOutgoingTailY - singleLineBounds.midY) < 0.5)
+        #expect(abs(singleLineIncomingTailY - singleLineBounds.midY) < 0.5)
     }
 
     @MainActor
@@ -931,6 +951,35 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func voiceMessageContentViewPlaysVoiceFromBubbleActivation() throws {
+        let row = makeVoiceRow(id: "voice_bubble_tap", sortSequence: 1, isUnplayed: true)
+        var playedRow: ChatMessageRowState?
+        let voiceView = VoiceMessageContentView()
+
+        voiceView.configure(
+            row: row,
+            style: ChatMessageContentStyle(
+                textColor: .label,
+                secondaryTextColor: .secondaryLabel,
+                tintColor: .systemBlue
+            ),
+            actions: ChatMessageCellActions(
+                onRetry: { _ in },
+                onDelete: { _ in },
+                onRevoke: { _ in },
+                onReeditRevokedText: { _, _ in },
+                onPlayVoice: { playedRow = $0 },
+                onPlayVideo: { _ in }
+            )
+        )
+
+        #expect(voiceView.gestureRecognizers?.contains { $0 is UITapGestureRecognizer } == true)
+        #expect(button(in: voiceView, accessibilityLabel: "Play Voice") != nil)
+        #expect(voiceView.accessibilityActivate())
+        #expect(playedRow?.id == "voice_bubble_tap")
+    }
+
+    @MainActor
     @Test func chatMessageCellConfigurationPreservesIdentifiersMetadataAndPlaybackState() throws {
         let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
         let row = ChatMessageRowState(
@@ -1020,6 +1069,17 @@ extension AppleIMTests {
 
         #expect(avatarView.isHidden == false)
         #expect(avatarFrame.minX > bubbleFrame.maxX)
+
+        let multilineCell = fittedChatMessageCell(
+            row: makeChatRow(
+                id: "outgoing_tail_avatar_center",
+                text: "多行文本气泡\n尾巴应该对齐头像中点\n而不是对齐整块气泡中点",
+                sortSequence: 2,
+                isOutgoing: true
+            ),
+            width: 390
+        )
+        try assertTailAlignsWithAvatarCenter(in: multilineCell, edge: .trailing)
     }
 
     @MainActor
@@ -1117,6 +1177,17 @@ extension AppleIMTests {
 
         #expect(avatarView.isHidden == false)
         #expect(avatarFrame.maxX < bubbleFrame.minX)
+
+        let multilineCell = fittedChatMessageCell(
+            row: makeChatRow(
+                id: "incoming_tail_avatar_center",
+                text: "多行文本气泡\n尾巴应该对齐头像中点\n而不是对齐整块气泡中点",
+                sortSequence: 1,
+                isOutgoing: false
+            ),
+            width: 390
+        )
+        try assertTailAlignsWithAvatarCenter(in: multilineCell, edge: .leading)
     }
 
     @MainActor
@@ -1405,6 +1476,52 @@ private func fittedChatMessageCell(row: ChatMessageRowState, width: CGFloat) -> 
     cell.setNeedsLayout()
     cell.layoutIfNeeded()
     return cell
+}
+
+private enum BubbleTailEdge {
+    case leading
+    case trailing
+}
+
+@MainActor
+private func assertTailAlignsWithAvatarCenter(in cell: ChatMessageCell, edge: BubbleTailEdge) throws {
+    let avatarView = try #require(findView(ofType: GradientBackgroundView.self, in: cell))
+    let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+    let avatarFrame = avatarView.convert(avatarView.bounds, to: cell.contentView)
+    let bubbleFrame = bubbleView.convert(bubbleView.bounds, to: cell.contentView)
+    let tailEdgeX = edge == .leading ? bubbleView.bounds.minX : bubbleView.bounds.maxX
+    let tailYInBubble = try #require(tailTipY(in: ChatBubbleBackgroundView.maskPath(in: bubbleView.bounds, style: bubbleView.style), edgeX: tailEdgeX))
+    let tailYInCell = bubbleFrame.minY + tailYInBubble
+
+    #expect(abs(tailYInCell - avatarFrame.midY) < 1)
+}
+
+private func tailTipY(in path: UIBezierPath, edgeX: CGFloat) -> CGFloat? {
+    var candidateY: CGFloat?
+    path.cgPath.applyWithBlock { elementPointer in
+        let element = elementPointer.pointee
+        let pointCount: Int
+        switch element.type {
+        case .moveToPoint, .addLineToPoint:
+            pointCount = 1
+        case .addQuadCurveToPoint:
+            pointCount = 2
+        case .addCurveToPoint:
+            pointCount = 3
+        case .closeSubpath:
+            pointCount = 0
+        @unknown default:
+            pointCount = 0
+        }
+
+        for index in 0..<pointCount {
+            let point = element.points[index]
+            if abs(point.x - edgeX) < 0.5 {
+                candidateY = point.y
+            }
+        }
+    }
+    return candidateY
 }
 
 private func makeEmojiMessageRow(id: MessageID, isOutgoing: Bool) -> ChatMessageRowState {

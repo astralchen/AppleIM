@@ -414,6 +414,8 @@ final class ChatBubbleBackgroundView: UIView {
     private(set) var style: Style = .incoming
     /// 气泡外形遮罩
     private let shapeMaskLayer = CAShapeLayer()
+    /// 微信式气泡尾巴对齐头像垂直中点；当前头像直径为 40pt。
+    private static let wechatAvatarAlignedTailCenterOffsetY: CGFloat = 20
 
     /// 初始化气泡背景
     override init(frame: CGRect) {
@@ -604,8 +606,9 @@ final class ChatBubbleBackgroundView: UIView {
     private static func weChatOutgoingMaskPath(in bounds: CGRect, bodyRect rect: CGRect, radius: CGFloat) -> UIBezierPath {
         let cornerRadius = min(radius, rect.width / 2, rect.height / 2)
         let tailHalfHeight = min(5, rect.height * 0.22)
-        let tailTopY = rect.midY - tailHalfHeight
-        let tailBottomY = rect.midY + tailHalfHeight
+        let tailCenterY = weChatTailCenterY(in: rect, tailHalfHeight: tailHalfHeight)
+        let tailTopY = tailCenterY - tailHalfHeight
+        let tailBottomY = tailCenterY + tailHalfHeight
 
         let path = UIBezierPath()
         path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
@@ -616,7 +619,7 @@ final class ChatBubbleBackgroundView: UIView {
         )
         path.addLine(to: CGPoint(x: rect.maxX, y: tailTopY))
         path.addQuadCurve(
-            to: CGPoint(x: bounds.maxX, y: rect.midY),
+            to: CGPoint(x: bounds.maxX, y: tailCenterY),
             controlPoint: CGPoint(x: rect.maxX + 4, y: tailTopY + 1)
         )
         path.addQuadCurve(
@@ -646,8 +649,9 @@ final class ChatBubbleBackgroundView: UIView {
     private static func weChatIncomingMaskPath(in bounds: CGRect, bodyRect rect: CGRect, radius: CGFloat) -> UIBezierPath {
         let cornerRadius = min(radius, rect.width / 2, rect.height / 2)
         let tailHalfHeight = min(5, rect.height * 0.22)
-        let tailTopY = rect.midY - tailHalfHeight
-        let tailBottomY = rect.midY + tailHalfHeight
+        let tailCenterY = weChatTailCenterY(in: rect, tailHalfHeight: tailHalfHeight)
+        let tailTopY = tailCenterY - tailHalfHeight
+        let tailBottomY = tailCenterY + tailHalfHeight
 
         let path = UIBezierPath()
         path.move(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
@@ -658,7 +662,7 @@ final class ChatBubbleBackgroundView: UIView {
         )
         path.addLine(to: CGPoint(x: rect.minX, y: tailTopY))
         path.addQuadCurve(
-            to: CGPoint(x: bounds.minX, y: rect.midY),
+            to: CGPoint(x: bounds.minX, y: tailCenterY),
             controlPoint: CGPoint(x: rect.minX - 4, y: tailTopY + 1)
         )
         path.addQuadCurve(
@@ -683,6 +687,17 @@ final class ChatBubbleBackgroundView: UIView {
         path.close()
 
         return path
+    }
+
+    private static func weChatTailCenterY(in rect: CGRect, tailHalfHeight: CGFloat) -> CGFloat {
+        let targetY = rect.minY + min(wechatAvatarAlignedTailCenterOffsetY, rect.height / 2)
+        let minimumY = rect.minY + tailHalfHeight
+        let maximumY = rect.maxY - tailHalfHeight
+        guard minimumY <= maximumY else {
+            return rect.midY
+        }
+
+        return min(max(targetY, minimumY), maximumY)
     }
 
     private func makeMaskPath() -> UIBezierPath {
