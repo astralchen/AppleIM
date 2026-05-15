@@ -100,7 +100,7 @@ final class ChatViewController: UIViewController {
 #endif
 
     /// 自定义输入面板类型。
-    private enum CustomInputPanel {
+    private enum CustomInputPanel: Equatable {
         /// 图片库面板。
         case photoLibrary
         /// 表情面板。
@@ -780,49 +780,13 @@ final class ChatViewController: UIViewController {
         transaction: MessageLayoutTransaction,
         completion externalCompletion: (() -> Void)? = nil
     ) {
-        guard photoLibraryInputView.isHidden == isVisible else {
-            externalCompletion?()
-            return
-        }
-
-        if isVisible {
-            photoLibraryInputView.isHidden = false
-            photoLibraryInputView.resetDismissGestureState()
-            photoLibraryInputBottomConstraint?.constant = 0
-            inputBarPhotoLibraryBottomConstraint?.constant = -8
-        }
-
-        inputBarKeyboardBottomConstraint?.isActive = !isVisible
-        inputBarPhotoLibraryBottomConstraint?.isActive = isVisible
-        inputBarEmojiBottomConstraint?.isActive = false
-
-        let layoutChanges = { [weak self] in
-            guard let self else { return }
-            self.photoLibraryInputView.alpha = isVisible ? 1 : 0
-            self.completeMessageLayoutTransaction(transaction, animated: false)
-        }
-        let completion: (Bool) -> Void = { [weak self] _ in
-            guard let self else { return }
-            if !isVisible {
-                self.photoLibraryInputView.isHidden = true
-                self.photoLibraryInputView.resetDismissGestureState()
-            }
-            self.completeMessageLayoutTransaction(transaction, animated: false)
-            externalCompletion?()
-        }
-
-        if animated {
-            UIView.animate(
-                withDuration: 0.25,
-                delay: 0,
-                options: [.beginFromCurrentState, .allowUserInteraction],
-                animations: layoutChanges,
-                completion: completion
-            )
-        } else {
-            layoutChanges()
-            completion(true)
-        }
+        setCustomInputPanelVisible(
+            .photoLibrary,
+            isVisible: isVisible,
+            animated: animated,
+            transaction: transaction,
+            completion: externalCompletion
+        )
     }
 
     /// 切换表情输入面板布局
@@ -832,30 +796,68 @@ final class ChatViewController: UIViewController {
         transaction: MessageLayoutTransaction,
         completion externalCompletion: (() -> Void)? = nil
     ) {
-        guard emojiPanelView.isHidden == isVisible else {
+        setCustomInputPanelVisible(
+            .emoji,
+            isVisible: isVisible,
+            animated: animated,
+            transaction: transaction,
+            completion: externalCompletion
+        )
+    }
+
+    /// 切换自定义输入面板布局
+    private func setCustomInputPanelVisible(
+        _ panel: CustomInputPanel,
+        isVisible: Bool,
+        animated: Bool,
+        transaction: MessageLayoutTransaction,
+        completion externalCompletion: (() -> Void)? = nil
+    ) {
+        let panelView: UIView
+        let inputPanelConstraint: NSLayoutConstraint?
+        let panelBottomConstraint: NSLayoutConstraint?
+
+        switch panel {
+        case .photoLibrary:
+            panelView = photoLibraryInputView
+            inputPanelConstraint = inputBarPhotoLibraryBottomConstraint
+            panelBottomConstraint = photoLibraryInputBottomConstraint
+        case .emoji:
+            panelView = emojiPanelView
+            inputPanelConstraint = inputBarEmojiBottomConstraint
+            panelBottomConstraint = emojiPanelBottomConstraint
+        }
+
+        guard panelView.isHidden == isVisible else {
             externalCompletion?()
             return
         }
 
         if isVisible {
-            emojiPanelView.isHidden = false
-            emojiPanelBottomConstraint?.constant = 0
-            inputBarEmojiBottomConstraint?.constant = -8
+            panelView.isHidden = false
+            panelBottomConstraint?.constant = 0
+            inputPanelConstraint?.constant = -8
+            if panel == .photoLibrary {
+                photoLibraryInputView.resetDismissGestureState()
+            }
         }
 
         inputBarKeyboardBottomConstraint?.isActive = !isVisible
-        inputBarPhotoLibraryBottomConstraint?.isActive = false
-        inputBarEmojiBottomConstraint?.isActive = isVisible
+        inputBarPhotoLibraryBottomConstraint?.isActive = panel == .photoLibrary && isVisible
+        inputBarEmojiBottomConstraint?.isActive = panel == .emoji && isVisible
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
-            self.emojiPanelView.alpha = isVisible ? 1 : 0
+            panelView.alpha = isVisible ? 1 : 0
             self.completeMessageLayoutTransaction(transaction, animated: false)
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
             if !isVisible {
-                self.emojiPanelView.isHidden = true
+                panelView.isHidden = true
+                if panel == .photoLibrary {
+                    self.photoLibraryInputView.resetDismissGestureState()
+                }
             }
             self.completeMessageLayoutTransaction(transaction, animated: false)
             externalCompletion?()

@@ -415,46 +415,25 @@ nonisolated struct MessageDAO: Sendable {
                     .text(input.text)
                 ]
             ),
-            SQLiteStatement(
-                """
-                INSERT INTO message (
-                    message_id,
-                    conversation_id,
-                    sender_id,
-                    client_msg_id,
-                    server_msg_id,
-                    seq,
-                    msg_type,
-                    direction,
-                    send_status,
-                    delivery_status,
-                    read_status,
-                    revoke_status,
-                    is_deleted,
-                    content_table,
-                    content_id,
-                    sort_seq,
-                    server_time,
-                    local_time
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, 0, ?, ?, ?, ?, ?);
-                """,
-                parameters: [
-                    .text(input.messageID.rawValue),
-                    .text(input.conversationID.rawValue),
-                    .text(input.senderID.rawValue),
-                    .optionalText(input.clientMessageID),
-                    .optionalText(input.serverMessageID),
-                    .optionalInteger(input.sequence),
-                    .integer(Int64(MessageType.text.rawValue)),
-                    .integer(Int64(input.direction.rawValue)),
-                    .integer(Int64(MessageSendStatus.success.rawValue)),
-                    .integer(Int64(input.readStatus.rawValue)),
-                    .text("message_text"),
-                    .text(contentID),
-                    .integer(input.sortSequence),
-                    .integer(input.localTime),
-                    .integer(input.localTime)
-                ]
+            insertMessageRecordStatement(
+                messageID: input.messageID,
+                conversationID: input.conversationID,
+                senderID: input.senderID,
+                clientMessageID: input.clientMessageID,
+                serverMessageID: input.serverMessageID,
+                sequence: input.sequence,
+                type: .text,
+                direction: input.direction,
+                sendStatus: .success,
+                deliveryStatus: 0,
+                readStatus: input.readStatus,
+                revokeStatus: 0,
+                isDeleted: false,
+                contentTable: "message_text",
+                contentID: contentID,
+                sortSequence: input.sortSequence,
+                serverTime: input.localTime,
+                localTime: input.localTime
             ),
             SQLiteStatement(
                 """
@@ -478,6 +457,73 @@ nonisolated struct MessageDAO: Sendable {
                 ]
             )
         ]
+    }
+
+    /// 生成完整消息记录插入 SQL，供 seed 和同步入库复用字段列表。
+    static func insertMessageRecordStatement(
+        messageID: MessageID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        clientMessageID: String?,
+        serverMessageID: String?,
+        sequence: Int64?,
+        type: MessageType,
+        direction: MessageDirection,
+        sendStatus: MessageSendStatus,
+        deliveryStatus: Int64,
+        readStatus: MessageReadStatus,
+        revokeStatus: Int64,
+        isDeleted: Bool,
+        contentTable: String,
+        contentID: String,
+        sortSequence: Int64,
+        serverTime: Int64?,
+        localTime: Int64
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            INSERT INTO message (
+                message_id,
+                conversation_id,
+                sender_id,
+                client_msg_id,
+                server_msg_id,
+                seq,
+                msg_type,
+                direction,
+                send_status,
+                delivery_status,
+                read_status,
+                revoke_status,
+                is_deleted,
+                content_table,
+                content_id,
+                sort_seq,
+                server_time,
+                local_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            parameters: [
+                .text(messageID.rawValue),
+                .text(conversationID.rawValue),
+                .text(senderID.rawValue),
+                .optionalText(clientMessageID),
+                .optionalText(serverMessageID),
+                .optionalInteger(sequence),
+                .integer(Int64(type.rawValue)),
+                .integer(Int64(direction.rawValue)),
+                .integer(Int64(sendStatus.rawValue)),
+                .integer(deliveryStatus),
+                .integer(Int64(readStatus.rawValue)),
+                .integer(revokeStatus),
+                .integer(isDeleted ? 1 : 0),
+                .text(contentTable),
+                .text(contentID),
+                .integer(sortSequence),
+                .optionalInteger(serverTime),
+                .integer(localTime)
+            ]
+        )
     }
 
     private static func mentionsJSON(for userIDs: [UserID]) -> String? {
