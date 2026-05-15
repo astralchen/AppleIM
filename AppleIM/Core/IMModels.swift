@@ -242,6 +242,7 @@ nonisolated struct StoredMessageState: Equatable, Sendable {
     let isRevoked: Bool
     let isDeleted: Bool
     let revokeReplacementText: String?
+    let revokeEditableText: String?
 
     init(
         direction: MessageDirection,
@@ -249,7 +250,8 @@ nonisolated struct StoredMessageState: Equatable, Sendable {
         readStatus: MessageReadStatus,
         isRevoked: Bool,
         isDeleted: Bool,
-        revokeReplacementText: String?
+        revokeReplacementText: String?,
+        revokeEditableText: String? = nil
     ) {
         self.direction = direction
         self.sendStatus = sendStatus
@@ -257,6 +259,7 @@ nonisolated struct StoredMessageState: Equatable, Sendable {
         self.isRevoked = isRevoked
         self.isDeleted = isDeleted
         self.revokeReplacementText = revokeReplacementText
+        self.revokeEditableText = revokeEditableText
     }
 }
 

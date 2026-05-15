@@ -71,13 +71,33 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
         let cdnURL: String?
     }
 
+    /// 撤回消息展示内容。
+    nonisolated struct RevokedContent: Hashable, Sendable, ExpressibleByStringLiteral {
+        /// 居中提示文案
+        let noticeText: String
+        /// 允许重新编辑时回填到输入框的原文本
+        let editableText: String?
+        /// 是否显示重新编辑入口
+        let allowsReedit: Bool
+
+        init(noticeText: String, editableText: String? = nil, allowsReedit: Bool = false) {
+            self.noticeText = noticeText
+            self.editableText = editableText
+            self.allowsReedit = allowsReedit && editableText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+
+        init(stringLiteral value: String) {
+            self.init(noticeText: value)
+        }
+    }
+
     case text(String)
     case image(ImageContent)
     case voice(VoiceContent)
     case video(VideoContent)
     case file(FileContent)
     case emoji(EmojiContent)
-    case revoked(String)
+    case revoked(RevokedContent)
 
     var kind: Kind {
         switch self {
@@ -100,8 +120,10 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
 
     var accessibilityText: String {
         switch self {
-        case let .text(text), let .revoked(text):
+        case let .text(text):
             return text
+        case let .revoked(content):
+            return content.allowsReedit ? "\(content.noticeText) 重新编辑" : content.noticeText
         case .image:
             return "Image"
         case let .voice(voice):
@@ -113,6 +135,13 @@ nonisolated enum ChatMessageRowContent: Hashable, Sendable {
         case let .emoji(emoji):
             return emoji.name ?? "Emoji"
         }
+    }
+
+    var revokedContent: RevokedContent? {
+        guard case let .revoked(content) = self else {
+            return nil
+        }
+        return content
     }
 
     static func durationText(milliseconds: Int) -> String {

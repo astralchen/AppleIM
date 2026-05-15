@@ -42,8 +42,9 @@ Ink:               #111827
 消息气泡：
 
 ```text
-Outgoing bubble:   systemBlue / #007AFF，内容白色
-Incoming bubble:   systemGray6 / system material，内容使用系统主文字色
+Outgoing text/voice bubble:   WeChat green / #95EC69，内容使用系统主文字色
+Incoming text/voice bubble:   White / system background，内容使用系统主文字色
+Emoji message:                No bubble frame，直接展示表情内容
 Unread badge:      #FF5A7A
 ```
 
@@ -52,7 +53,8 @@ Unread badge:      #FF5A7A
 ```text
 Page card:         22pt
 Input bar:         24pt
-Message bubble:    18pt
+Text / voice bubble: 6pt
+Legacy bubble:     18pt
 Media thumbnail:   14pt
 Badge capsule:     11pt
 Input field:       17pt
@@ -112,9 +114,11 @@ iOS 15-25：
 - 背景使用低饱和渐变，聊天内容区域保持清爽。
 - 消息行整体配色参照会话列表：低饱和系统背景、系统蓝轻强调、文字使用系统主次文字色。
 - 所有非撤回消息都显示发送者头像：对方消息头像在左侧，自己发送消息头像在右侧。
-- 撤回消息不显示头像，不保留头像占位，使用中性提示样式。
-- 对方消息使用 systemGray6 / system material 灰色气泡，内容使用系统主文字色。
-- 自己消息使用 Apple Messages 默认 iMessage 蓝色气泡，内容使用白色，不使用品牌渐变。
+- 撤回消息不显示头像，不保留头像占位，使用中性提示样式并在消息区居中显示。
+- 自己发出的普通文本消息撤回后，在居中提示后显示蓝色 `重新编辑` 入口；点击后仅将原文本回填到底部输入框并弹出键盘，用户确认后再手动发送。
+- 文字和语音消息使用微信式小圆角气泡框：对方消息为白色 / system background，自己消息为浅绿色 `#95EC69`，内容均使用系统主文字色。
+- 表情消息不显示气泡背景、尾巴或气泡内边距，仅保留消息行对齐、头像和状态能力。
+- 文件等非文字、非语音普通消息暂保留当前普通气泡样式；图片 / 视频消息继续使用媒体预览。
 - 图片 / 视频消息使用大圆角预览。
 - 语音消息使用播放图标、时长和轻量状态标识，强化娱乐感。
 - 底部输入栏采用 Apple Messages 风格：

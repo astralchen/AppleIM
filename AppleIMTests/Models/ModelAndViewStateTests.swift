@@ -166,6 +166,7 @@ extension AppleIMTests {
 
         #expect(copied.id == row.id)
         #expect(copied.content == .revoked("已撤回"))
+        #expect(copied.content.revokedContent?.noticeText == "已撤回")
         #expect(copied.sortSequence == row.sortSequence)
         #expect(copied.sentAt == row.sentAt)
         #expect(copied.timeText == row.timeText)
@@ -177,6 +178,21 @@ extension AppleIMTests {
         #expect(copied.canRetry == row.canRetry)
         #expect(copied.canDelete == row.canDelete)
         #expect(copied.canRevoke == row.canRevoke)
+    }
+
+    @Test func revokedMessageContentPreservesEditableText() {
+        let content = ChatMessageRowContent.revoked(
+            ChatMessageRowContent.RevokedContent(
+                noticeText: "你撤回了一条消息",
+                editableText: "重新编辑的原文",
+                allowsReedit: true
+            )
+        )
+
+        #expect(content.accessibilityText == "你撤回了一条消息 重新编辑")
+        #expect(content.revokedContent?.noticeText == "你撤回了一条消息")
+        #expect(content.revokedContent?.editableText == "重新编辑的原文")
+        #expect(content.revokedContent?.allowsReedit == true)
     }
 
     @Test func chatMessageRowStateWithVoicePlaybackPreservesSenderAvatarURL() {

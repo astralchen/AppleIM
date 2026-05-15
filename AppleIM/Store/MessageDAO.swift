@@ -1288,7 +1288,8 @@ nonisolated struct MessageDAO: Sendable {
                 readStatus: readStatus,
                 isRevoked: row.bool("revoke_status"),
                 isDeleted: row.bool("is_deleted"),
-                revokeReplacementText: row.string("replace_text")
+                revokeReplacementText: row.string("replace_text"),
+                revokeEditableText: row.bool("revoke_status") ? row.string("text") : nil
             ),
             timeline: StoredMessageTimeline(
                 serverTime: row.int64("server_time"),

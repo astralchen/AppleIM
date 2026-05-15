@@ -189,6 +189,49 @@ final class AppleIMUITests: XCTestCase {
     }
 
     @MainActor
+    func testEmojiMessageCanBeRevokedWithinThreeMinutes() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+        openEmojiPanel(in: app)
+        selectEmojiPanelSection("收藏", in: app)
+
+        let emoji = app.buttons["chat.emojiItem.cb_smile"]
+        XCTAssertTrue(emoji.waitForExistence(timeout: 5), "Expected seeded favorite emoji")
+        emoji.tap()
+
+        let sentEmoji = app.collectionViews["chat.collection"]
+            .cells
+            .matching(
+                NSPredicate(
+                    format: "label CONTAINS %@ AND NOT label CONTAINS %@ AND NOT label CONTAINS %@",
+                    "Smile",
+                    "Sending",
+                    "Pending"
+                )
+            )
+            .firstMatch
+        XCTAssertTrue(sentEmoji.waitForExistence(timeout: 10), "Expected sent emoji message to finish sending")
+
+        sentEmoji
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.82, dy: 0.5))
+            .press(forDuration: 1.0)
+        let revokeAction = app.buttons["Revoke"].firstMatch
+        XCTAssertTrue(revokeAction.waitForExistence(timeout: 5), "Expected revoke action for sent emoji")
+        revokeAction.tap()
+
+        let confirmButton = app.buttons["chat.confirmRevokeMessage"].firstMatch
+        XCTAssertTrue(confirmButton.waitForExistence(timeout: 5), "Expected revoke confirmation")
+        confirmButton.tap()
+
+        XCTAssertTrue(
+            messageCell(containing: "你撤回了一条消息", in: app).waitForExistence(timeout: 5),
+            "Expected revoked replacement text"
+        )
+    }
+
+    @MainActor
     func testEmojiCanBeFavoritedAndUnfavorited() throws {
         let app = makeUITestApplication()
         app.launch()
@@ -426,6 +469,22 @@ final class AppleIMUITests: XCTestCase {
         XCTAssertTrue(
             messageCell(containing: "你撤回了一条消息", in: app).waitForExistence(timeout: 5),
             "Expected revoked replacement text"
+        )
+
+        let reeditButton = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "chat.revokedReeditButton."))
+            .firstMatch
+        XCTAssertTrue(reeditButton.waitForExistence(timeout: 5), "Expected revoked text reedit button")
+        reeditButton.tap()
+
+        let input = app.textViews["chat.messageInput"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5), "Expected message input after reedit")
+        XCTAssertEqual(input.value as? String, message)
+        XCTAssertTrue(app.buttons["chat.sendButton"].waitForExistence(timeout: 5), "Expected send button after reedit")
+        app.buttons["chat.sendButton"].tap()
+        XCTAssertTrue(
+            messageCell(containing: message, in: app).waitForExistence(timeout: 5),
+            "Expected reedited message to be sent as a new text message"
         )
     }
 

@@ -11,6 +11,7 @@ struct ChatMessageCellActions {
     let onRetry: (MessageID) -> Void
     let onDelete: (MessageID) -> Void
     let onRevoke: (MessageID) -> Void
+    let onReeditRevokedText: (MessageID, String) -> Void
     let onPlayVoice: (ChatMessageRowState) -> Void
     let onPlayVideo: (ChatMessageRowState) -> Void
 
@@ -18,6 +19,7 @@ struct ChatMessageCellActions {
         onRetry: { _ in },
         onDelete: { _ in },
         onRevoke: { _ in },
+        onReeditRevokedText: { _, _ in },
         onPlayVoice: { _ in },
         onPlayVideo: { _ in }
     )
@@ -78,11 +80,16 @@ final class ChatMessageContentViewFactory {
         reusing existingView: (UIView & ChatMessageContentView)?
     ) -> UIView & ChatMessageContentView {
         switch kind {
-        case .text, .revoked:
+        case .text:
             if let textView = existingView as? TextMessageContentView {
                 return textView
             }
             return TextMessageContentView()
+        case .revoked:
+            if let revokedView = existingView as? RevokedMessageContentView {
+                return revokedView
+            }
+            return RevokedMessageContentView()
         case .file:
             if let fileView = existingView as? FileMessageContentView {
                 return fileView
@@ -133,8 +140,10 @@ final class TextMessageContentView: UIView, ChatMessageContentView {
 
     private static func text(for content: ChatMessageRowContent) -> String {
         switch content {
-        case let .text(text), let .revoked(text):
+        case let .text(text):
             return text
+        case let .revoked(content):
+            return content.noticeText
         case .image:
             return "Image"
         case let .voice(voice):
@@ -163,6 +172,81 @@ final class TextMessageContentView: UIView, ChatMessageContentView {
             messageLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
             messageLabel.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+    }
+}
+
+/// 撤回消息内容视图
+@MainActor
+final class RevokedMessageContentView: UIView, ChatMessageContentView {
+    private let stackView = UIStackView()
+    private let noticeLabel = UILabel()
+    private let reeditButton = UIButton(type: .system)
+    private var rowID: MessageID?
+    private var editableText: String?
+    private var actions: ChatMessageCellActions = .empty
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    func configure(
+        row: ChatMessageRowState,
+        style: ChatMessageContentStyle,
+        actions: ChatMessageCellActions
+    ) {
+        guard let revoked = row.content.revokedContent else { return }
+
+        rowID = row.id
+        editableText = revoked.editableText
+        self.actions = actions
+        noticeLabel.text = revoked.noticeText
+        noticeLabel.textColor = style.textColor
+
+        let showsReedit = revoked.allowsReedit && revoked.editableText != nil
+        reeditButton.isHidden = !showsReedit
+        reeditButton.isAccessibilityElement = showsReedit
+        reeditButton.accessibilityIdentifier = showsReedit ? "chat.revokedReeditButton.\(row.id.rawValue)" : nil
+    }
+
+    private func configureView() {
+        translatesAutoresizingMaskIntoConstraints = false
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.axis = .horizontal
+        stackView.alignment = .firstBaseline
+        stackView.spacing = 6
+
+        noticeLabel.font = .preferredFont(forTextStyle: .footnote)
+        noticeLabel.adjustsFontForContentSizeCategory = true
+        noticeLabel.numberOfLines = 0
+        noticeLabel.textAlignment = .center
+
+        reeditButton.setTitle("重新编辑", for: .normal)
+        reeditButton.titleLabel?.font = .preferredFont(forTextStyle: .footnote)
+        reeditButton.titleLabel?.adjustsFontForContentSizeCategory = true
+        reeditButton.setContentHuggingPriority(.required, for: .horizontal)
+        reeditButton.addTarget(self, action: #selector(reeditButtonTapped), for: .touchUpInside)
+
+        addSubview(stackView)
+        stackView.addArrangedSubview(noticeLabel)
+        stackView.addArrangedSubview(reeditButton)
+
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    @objc private func reeditButtonTapped() {
+        guard let rowID, let editableText else { return }
+        actions.onReeditRevokedText(rowID, editableText)
     }
 }
 
@@ -792,6 +876,17 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
     /// 头像加载服务，可在测试中替换。
     static var avatarImageLoader: any AvatarImageLoading = DefaultAvatarImageLoader.shared
 
+    private enum Layout {
+        static let singleLineBubbleHeight: CGFloat = 40
+        static let avatarDiameter = singleLineBubbleHeight
+        static let defaultVerticalPadding: CGFloat = 10
+        static let defaultHorizontalPadding: CGFloat = 13
+        static let voiceVerticalPadding: CGFloat = 6
+        static let revokedVerticalPadding: CGFloat = 6
+        static let revokedHorizontalPadding: CGFloat = 10
+        static let tailWidth: CGFloat = 7
+    }
+
     private let avatarView = GradientBackgroundView()
     private let avatarImageView = UIImageView()
     private let avatarInitialLabel = UILabel()
@@ -922,16 +1017,14 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         self.actions = actions
         configureAvatar(for: row)
 
-        let isRevoked = row.content.kind == .revoked
-        let isMedia = row.content.kind == .image || row.content.kind == .video
-        let bubbleStyle: ChatBubbleBackgroundView.Style = isRevoked
-            ? .revoked
-            : (isMedia ? .media : (row.isOutgoing ? .outgoing : .incoming))
+        let kind = ChatMessageContentKind(row: row)
+        let isRevoked = kind == .revoked
+        let bubbleStyle = Self.bubbleStyle(for: row, kind: kind)
         bubbleView.apply(style: bubbleStyle)
 
         let contentStyle = contentStyle(for: bubbleStyle)
         configureContent(row: row, style: contentStyle, actions: actions)
-        configureBubblePadding(style: bubbleStyle)
+        configureBubblePadding(style: bubbleStyle, kind: kind)
 
         let progressText = row.uploadProgress.map { "Uploading \(Int($0 * 100))%" }
         let metadataText = [
@@ -957,8 +1050,26 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         incomingBubbleLeadingConstraint?.isActive = showsAvatar && !row.isOutgoing
         outgoingAvatarTrailingConstraint?.isActive = showsAvatar && row.isOutgoing
         outgoingBubbleTrailingToAvatarConstraint?.isActive = showsAvatar && row.isOutgoing
-        outgoingBubbleTrailingConstraint?.isActive = !showsAvatar && row.isOutgoing
-        neutralBubbleCenterXConstraint?.isActive = !showsAvatar && !row.isOutgoing
+        outgoingBubbleTrailingConstraint?.isActive = !showsAvatar && row.isOutgoing && !isRevoked
+        neutralBubbleCenterXConstraint?.isActive = isRevoked || (!showsAvatar && !row.isOutgoing)
+    }
+
+    private static func bubbleStyle(
+        for row: ChatMessageRowState,
+        kind: ChatMessageContentKind
+    ) -> ChatBubbleBackgroundView.Style {
+        switch kind {
+        case .text, .voice:
+            return row.isOutgoing ? .weChatOutgoing : .weChatIncoming
+        case .image, .video:
+            return .media
+        case .revoked:
+            return .revoked
+        case .file:
+            return row.isOutgoing ? .outgoing : .incoming
+        case .emoji:
+            return .plain
+        }
     }
 
     private func contentStyle(for bubbleStyle: ChatBubbleBackgroundView.Style) -> ChatMessageContentStyle {
@@ -969,13 +1080,19 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
                 secondaryTextColor: UIColor.white.withAlphaComponent(0.72),
                 tintColor: .white
             )
+        case .weChatOutgoing, .weChatIncoming:
+            return ChatMessageContentStyle(
+                textColor: .label,
+                secondaryTextColor: .secondaryLabel,
+                tintColor: .label
+            )
         case .revoked:
             return ChatMessageContentStyle(
                 textColor: .secondaryLabel,
                 secondaryTextColor: .secondaryLabel,
                 tintColor: .systemBlue
             )
-        case .incoming, .media:
+        case .incoming, .media, .plain:
             return ChatMessageContentStyle(
                 textColor: .label,
                 secondaryTextColor: .secondaryLabel,
@@ -1005,8 +1122,11 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         contentView.configure(row: row, style: style, actions: actions)
     }
 
-    private func configureBubblePadding(style: ChatBubbleBackgroundView.Style) {
-        guard style != .media else {
+    private func configureBubblePadding(
+        style: ChatBubbleBackgroundView.Style,
+        kind: ChatMessageContentKind
+    ) {
+        guard style != .media && style != .plain else {
             stackTopConstraint?.constant = 0
             stackLeadingConstraint?.constant = 0
             stackTrailingConstraint?.constant = 0
@@ -1014,11 +1134,22 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
             return
         }
 
-        let tailWidth: CGFloat = 7
-        let vertical: CGFloat = 10
-        let horizontal: CGFloat = 13
-        let leading = horizontal + (style == .incoming ? tailWidth : 0)
-        let trailing = horizontal + (style == .outgoing ? tailWidth : 0)
+        let hasLeadingTail = style == .incoming || style == .weChatIncoming
+        let hasTrailingTail = style == .outgoing || style == .weChatOutgoing
+        let vertical: CGFloat
+        let horizontal: CGFloat
+        if style == .revoked {
+            vertical = Layout.revokedVerticalPadding
+            horizontal = Layout.revokedHorizontalPadding
+        } else if kind == .voice {
+            vertical = Layout.voiceVerticalPadding
+            horizontal = Layout.defaultHorizontalPadding
+        } else {
+            vertical = Layout.defaultVerticalPadding
+            horizontal = Layout.defaultHorizontalPadding
+        }
+        let leading = horizontal + (hasLeadingTail ? Layout.tailWidth : 0)
+        let trailing = horizontal + (hasTrailingTail ? Layout.tailWidth : 0)
         stackTopConstraint?.constant = vertical
         stackLeadingConstraint?.constant = leading
         stackTrailingConstraint?.constant = -trailing
@@ -1030,7 +1161,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
 
         avatarView.translatesAutoresizingMaskIntoConstraints = false
         avatarView.setColors(ChatBridgeDesignSystem.GradientToken.neutralAvatar)
-        avatarView.layer.cornerRadius = 15
+        avatarView.layer.cornerRadius = Layout.avatarDiameter / 2
         avatarView.layer.masksToBounds = true
         avatarView.isAccessibilityElement = false
 
@@ -1093,10 +1224,22 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         let bubbleTopConstraint = bubbleView.topAnchor.constraint(equalTo: metadataStackView.bottomAnchor, constant: 4)
         let bubbleTopWithoutMetadataConstraint = bubbleView.topAnchor.constraint(equalTo: topAnchor)
         let metadataHiddenHeightConstraint = metadataStackView.heightAnchor.constraint(equalToConstant: 0)
-        let stackTopConstraint = stackView.topAnchor.constraint(equalTo: bubbleView.topAnchor, constant: 10)
-        let stackLeadingConstraint = stackView.leadingAnchor.constraint(equalTo: bubbleView.leadingAnchor, constant: 13)
-        let stackTrailingConstraint = stackView.trailingAnchor.constraint(equalTo: bubbleView.trailingAnchor, constant: -13)
-        let stackBottomConstraint = stackView.bottomAnchor.constraint(equalTo: bubbleView.bottomAnchor, constant: -10)
+        let stackTopConstraint = stackView.topAnchor.constraint(
+            equalTo: bubbleView.topAnchor,
+            constant: Layout.defaultVerticalPadding
+        )
+        let stackLeadingConstraint = stackView.leadingAnchor.constraint(
+            equalTo: bubbleView.leadingAnchor,
+            constant: Layout.defaultHorizontalPadding
+        )
+        let stackTrailingConstraint = stackView.trailingAnchor.constraint(
+            equalTo: bubbleView.trailingAnchor,
+            constant: -Layout.defaultHorizontalPadding
+        )
+        let stackBottomConstraint = stackView.bottomAnchor.constraint(
+            equalTo: bubbleView.bottomAnchor,
+            constant: -Layout.defaultVerticalPadding
+        )
         self.metadataTopConstraint = metadataTopConstraint
         self.bubbleTopConstraint = bubbleTopConstraint
         self.bubbleTopWithoutMetadataConstraint = bubbleTopWithoutMetadataConstraint
@@ -1108,8 +1251,8 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
 
         NSLayoutConstraint.activate([
             avatarView.topAnchor.constraint(equalTo: bubbleView.topAnchor),
-            avatarView.widthAnchor.constraint(equalToConstant: 30),
-            avatarView.heightAnchor.constraint(equalToConstant: 30),
+            avatarView.widthAnchor.constraint(equalToConstant: Layout.avatarDiameter),
+            avatarView.heightAnchor.constraint(equalToConstant: Layout.avatarDiameter),
 
             avatarInitialLabel.topAnchor.constraint(equalTo: avatarView.topAnchor),
             avatarInitialLabel.leadingAnchor.constraint(equalTo: avatarView.leadingAnchor),

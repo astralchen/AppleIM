@@ -1006,6 +1006,9 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         Int64(Date().timeIntervalSince1970)
     }
 
+    /// 已发送消息的可撤回窗口，单位为秒。
+    nonisolated private static let revokeWindowSeconds: Int64 = 180
+
     /// 日志中使用的短 ID，避免输出过长的消息标识。
     nonisolated private static func shortLogID(_ rawValue: String) -> String {
         String(rawValue.prefix(8))
@@ -1020,6 +1023,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         let isOutgoing = message.senderID == currentUserID
         let isRevoked = message.state.isRevoked
         let senderAvatarURL = isOutgoing ? currentUserAvatarURL : conversationAvatarURL
+        let now = Self.currentTimestamp()
 
         return ChatMessageRowState(
             id: message.id,
@@ -1040,8 +1044,41 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                 && message.state.sendStatus == .failed
                 && !isRevoked,
             canDelete: !message.state.isDeleted,
-            canRevoke: isOutgoing && message.type == .text && message.state.sendStatus == .success && !isRevoked
+            canRevoke: Self.canRevoke(
+                message,
+                isOutgoing: isOutgoing,
+                isRevoked: isRevoked,
+                now: now
+            )
         )
+    }
+
+    /// 判断消息是否仍处于可撤回窗口。
+    nonisolated private static func canRevoke(
+        _ message: StoredMessage,
+        isOutgoing: Bool,
+        isRevoked: Bool,
+        now: Int64
+    ) -> Bool {
+        guard isOutgoing,
+              message.state.sendStatus == .success,
+              !isRevoked,
+              !message.state.isDeleted,
+              isRevocableMessageType(message.type) else {
+            return false
+        }
+
+        return now - message.timeline.localTime <= revokeWindowSeconds
+    }
+
+    /// 用户主动发送的业务消息类型支持撤回。
+    nonisolated private static func isRevocableMessageType(_ type: MessageType) -> Bool {
+        switch type {
+        case .text, .image, .voice, .video, .file, .emoji:
+            return true
+        case .system, .revoked, .quote:
+            return false
+        }
     }
 
     /// 生成消息内容状态
@@ -1051,7 +1088,18 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         isRevoked: Bool
     ) -> ChatMessageRowContent {
         if isRevoked {
-            return .revoked(message.state.revokeReplacementText ?? "你撤回了一条消息")
+            let editableText = message.state.revokeEditableText?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let allowsReedit = isOutgoing
+                && message.type == .text
+                && message.state.sendStatus == .success
+                && editableText?.isEmpty == false
+            return .revoked(
+                ChatMessageRowContent.RevokedContent(
+                    noticeText: message.state.revokeReplacementText ?? "你撤回了一条消息",
+                    editableText: allowsReedit ? message.state.revokeEditableText : nil,
+                    allowsReedit: allowsReedit
+                )
+            )
         }
 
         switch message.content {

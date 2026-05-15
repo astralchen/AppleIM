@@ -2284,7 +2284,7 @@ func timestamp(
 func makeRevokedChatRow(id: MessageID, text: String, sortSequence: Int64) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
-        content: .revoked(text),
+        content: .revoked(ChatMessageRowContent.RevokedContent(noticeText: text)),
         sortSequence: sortSequence,
         timeText: "Now",
         statusText: nil,
@@ -2399,8 +2399,10 @@ func makeRevokedRow(id: MessageID, sortSequence: Int64) -> ChatMessageRowState {
 
 func rowText(_ row: ChatMessageRowState) -> String {
     switch row.content {
-    case let .text(text), let .revoked(text):
+    case let .text(text):
         return text
+    case let .revoked(content):
+        return content.noticeText
     case .image:
         return "Image"
     case let .voice(voice):

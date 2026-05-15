@@ -588,42 +588,127 @@ extension AppleIMTests {
     }
 
     @MainActor
-    @Test func chatDesignSystemExposesAppleMessagesChatTokens() {
+    @Test func chatDesignSystemExposesWeChatMessageBubbleTokens() {
         let traits = UITraitCollection(userInterfaceStyle: .light)
-        let outgoing = ChatBridgeDesignSystem.ColorToken.appleMessageOutgoing.resolvedColor(with: traits)
-        let incoming = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming.resolvedColor(with: traits)
+        let outgoing = ChatBridgeDesignSystem.ColorToken.weChatOutgoingMessage.resolvedColor(with: traits)
+        let incoming = ChatBridgeDesignSystem.ColorToken.weChatIncomingMessage.resolvedColor(with: traits)
 
-        #expect(outgoing == UIColor.systemBlue.resolvedColor(with: traits))
-        #expect(incoming == UIColor.systemGray6.resolvedColor(with: traits))
-        #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageBubble == 18)
+        #expect(outgoing == UIColor.chatBridgeHex(0x95EC69).resolvedColor(with: traits))
+        #expect(incoming == UIColor.white.resolvedColor(with: traits))
+        #expect(ChatBridgeDesignSystem.RadiusToken.weChatMessageBubble == 6)
         #expect(ChatBridgeDesignSystem.RadiusToken.appleMessageMedia == 20)
         #expect(ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment == 16)
     }
 
     @MainActor
-    @Test func chatMessageCellAppliesAppleMessagesTextColors() throws {
+    @Test func chatMessageCellAppliesWeChatTextBubbleStyle() throws {
         let traits = UITraitCollection(userInterfaceStyle: .light)
         let outgoingCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
         outgoingCell.configure(
-            row: makeChatRow(id: "blue_bubble", text: "蓝色发送气泡", sortSequence: 1, isOutgoing: true),
+            row: makeChatRow(id: "wechat_green_bubble", text: "微信绿色发送气泡", sortSequence: 1, isOutgoing: true),
             actions: .empty
         )
 
         let incomingCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
         incomingCell.configure(
-            row: makeChatRow(id: "gray_bubble", text: "灰色接收气泡", sortSequence: 2, isOutgoing: false),
+            row: makeChatRow(id: "wechat_white_bubble", text: "微信白色接收气泡", sortSequence: 2, isOutgoing: false),
             actions: .empty
         )
 
-        let outgoingLabel = try #require(findLabel(withText: "蓝色发送气泡", in: outgoingCell))
-        let incomingLabel = try #require(findLabel(withText: "灰色接收气泡", in: incomingCell))
+        let outgoingLabel = try #require(findLabel(withText: "微信绿色发送气泡", in: outgoingCell))
+        let incomingLabel = try #require(findLabel(withText: "微信白色接收气泡", in: incomingCell))
         let outgoingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: outgoingCell))
         let incomingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: incomingCell))
 
-        #expect(outgoingBubble.style == .outgoing)
-        #expect(incomingBubble.style == .incoming)
-        #expect(outgoingLabel.textColor.resolvedColor(with: traits) == UIColor.white.resolvedColor(with: traits))
+        #expect(outgoingBubble.style == .weChatOutgoing)
+        #expect(incomingBubble.style == .weChatIncoming)
+        #expect(solidFillColor(of: outgoingBubble, traits: traits) == UIColor.chatBridgeHex(0x95EC69).resolvedColor(with: traits))
+        #expect(solidFillColor(of: incomingBubble, traits: traits) == UIColor.white.resolvedColor(with: traits))
+        #expect(outgoingLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
         #expect(incomingLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
+    }
+
+    @MainActor
+    @Test func chatMessageCellAppliesWeChatVoiceBubbleFrame() throws {
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        let outgoingCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        outgoingCell.configure(
+            row: ChatMessageRowState(
+                id: "wechat_outgoing_voice",
+                content: .voice(
+                    ChatMessageRowContent.VoiceContent(
+                        localPath: "/tmp/wechat_outgoing_voice.m4a",
+                        durationMilliseconds: 2_000,
+                        isUnplayed: false,
+                        isPlaying: false
+                    )
+                ),
+                sortSequence: 1,
+                timeText: "Now",
+                statusText: nil,
+                uploadProgress: nil,
+                isOutgoing: true,
+                canRetry: false,
+                canDelete: true,
+                canRevoke: false
+            ),
+            actions: .empty
+        )
+
+        let incomingCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        incomingCell.configure(
+            row: makeVoiceRow(id: "wechat_incoming_voice", sortSequence: 2, isUnplayed: false),
+            actions: .empty
+        )
+
+        let outgoingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: outgoingCell))
+        let incomingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: incomingCell))
+        let outgoingButton = try #require(button(in: outgoingCell, accessibilityLabel: "Play Voice"))
+        let outgoingDuration = try #require(findLabel(withText: "0:02", in: outgoingCell))
+
+        #expect(outgoingBubble.style == .weChatOutgoing)
+        #expect(incomingBubble.style == .weChatIncoming)
+        #expect(solidFillColor(of: outgoingBubble, traits: traits) == UIColor.chatBridgeHex(0x95EC69).resolvedColor(with: traits))
+        #expect(solidFillColor(of: incomingBubble, traits: traits) == UIColor.white.resolvedColor(with: traits))
+        #expect(outgoingButton.tintColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
+        #expect(outgoingDuration.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
+    }
+
+    @MainActor
+    @Test func chatMessageCellRendersEmojiWithoutBubbleFrame() throws {
+        let traits = UITraitCollection(userInterfaceStyle: .light)
+        let outgoingCell = fittedChatMessageCell(
+            row: makeEmojiMessageRow(id: "outgoing_plain_emoji", isOutgoing: true),
+            width: 390
+        )
+        let incomingCell = fittedChatMessageCell(
+            row: makeEmojiMessageRow(id: "incoming_plain_emoji", isOutgoing: false),
+            width: 390
+        )
+
+        let outgoingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: outgoingCell))
+        let incomingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: incomingCell))
+        let outgoingEmojiView = try #require(findView(ofType: EmojiMessageContentView.self, in: outgoingCell))
+        let incomingEmojiView = try #require(findView(ofType: EmojiMessageContentView.self, in: incomingCell))
+
+        #expect(outgoingBubble.style == .plain)
+        #expect(incomingBubble.style == .plain)
+        #expect(solidFillColor(of: outgoingBubble, traits: traits) == UIColor.clear.resolvedColor(with: traits))
+        #expect(solidFillColor(of: incomingBubble, traits: traits) == UIColor.clear.resolvedColor(with: traits))
+
+        let outgoingBubbleFrame = outgoingBubble.convert(outgoingBubble.bounds, to: outgoingCell.contentView)
+        let incomingBubbleFrame = incomingBubble.convert(incomingBubble.bounds, to: incomingCell.contentView)
+        let outgoingEmojiFrame = outgoingEmojiView.convert(outgoingEmojiView.bounds, to: outgoingCell.contentView)
+        let incomingEmojiFrame = incomingEmojiView.convert(incomingEmojiView.bounds, to: incomingCell.contentView)
+
+        #expect(abs(outgoingBubbleFrame.minX - outgoingEmojiFrame.minX) < 1)
+        #expect(abs(outgoingBubbleFrame.minY - outgoingEmojiFrame.minY) < 1)
+        #expect(abs(outgoingBubbleFrame.maxX - outgoingEmojiFrame.maxX) < 1)
+        #expect(abs(outgoingBubbleFrame.maxY - outgoingEmojiFrame.maxY) < 1)
+        #expect(abs(incomingBubbleFrame.minX - incomingEmojiFrame.minX) < 1)
+        #expect(abs(incomingBubbleFrame.minY - incomingEmojiFrame.minY) < 1)
+        #expect(abs(incomingBubbleFrame.maxX - incomingEmojiFrame.maxX) < 1)
+        #expect(abs(incomingBubbleFrame.maxY - incomingEmojiFrame.maxY) < 1)
     }
 
     @MainActor
@@ -835,6 +920,7 @@ extension AppleIMTests {
                 onRetry: { _ in },
                 onDelete: { _ in },
                 onRevoke: { _ in },
+                onReeditRevokedText: { _, _ in },
                 onPlayVoice: { _ in },
                 onPlayVideo: { playedRow = $0 }
             )
@@ -937,6 +1023,79 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatMessageCellMatchesAvatarHeightToSingleLineTextBubble() throws {
+        let row = ChatMessageRowState(
+            id: "avatar_text_height",
+            content: .text("一行文字"),
+            sortSequence: 1,
+            timeText: "Now",
+            showsTimeSeparator: false,
+            statusText: nil,
+            uploadProgress: nil,
+            senderAvatarURL: "file:///tmp/current-avatar.png",
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+        let cell = fittedChatMessageCell(row: row, width: 390)
+
+        let avatarView = try #require(findView(ofType: GradientBackgroundView.self, in: cell))
+        let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+        let avatarFrame = avatarView.convert(avatarView.bounds, to: cell.contentView)
+        let bubbleFrame = bubbleView.convert(bubbleView.bounds, to: cell.contentView)
+
+        #expect(avatarView.isHidden == false)
+        #expect(abs(avatarFrame.height - bubbleFrame.height) <= 1)
+    }
+
+    @MainActor
+    @Test func chatMessageCellMatchesSingleLineTextAndVoiceBubbleHeights() throws {
+        let textRow = ChatMessageRowState(
+            id: "single_line_text_height",
+            content: .text("一行文字"),
+            sortSequence: 1,
+            timeText: "Now",
+            showsTimeSeparator: false,
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+        let voiceRow = ChatMessageRowState(
+            id: "single_line_voice_height",
+            content: .voice(
+                ChatMessageRowContent.VoiceContent(
+                    localPath: "/tmp/single_line_voice_height.m4a",
+                    durationMilliseconds: 2_000,
+                    isUnplayed: false,
+                    isPlaying: false
+                )
+            ),
+            sortSequence: 2,
+            timeText: "Now",
+            showsTimeSeparator: false,
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+
+        let textCell = fittedChatMessageCell(row: textRow, width: 390)
+        let voiceCell = fittedChatMessageCell(row: voiceRow, width: 390)
+        let textBubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: textCell))
+        let voiceBubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: voiceCell))
+        let textBubbleFrame = textBubbleView.convert(textBubbleView.bounds, to: textCell.contentView)
+        let voiceBubbleFrame = voiceBubbleView.convert(voiceBubbleView.bounds, to: voiceCell.contentView)
+
+        #expect(abs(textBubbleFrame.height - voiceBubbleFrame.height) <= 1)
+    }
+
+    @MainActor
     @Test func chatMessageCellShowsIncomingAvatarOnLeft() throws {
         let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
         let row = makeChatRow(
@@ -972,6 +1131,131 @@ extension AppleIMTests {
         let avatarView = try #require(findView(ofType: GradientBackgroundView.self, in: cell))
 
         #expect(avatarView.isHidden)
+    }
+
+    @MainActor
+    @Test func chatMessageCellCentersRevokedMessageAndShowsReeditButton() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        var reeditRequest: (MessageID, String)?
+        let row = ChatMessageRowState(
+            id: "revoked_reedit",
+            content: .revoked(
+                ChatMessageRowContent.RevokedContent(
+                    noticeText: "你撤回了一条消息",
+                    editableText: "原始文本",
+                    allowsReedit: true
+                )
+            ),
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+
+        cell.configure(
+            row: row,
+            actions: ChatMessageCellActions(
+                onRetry: { _ in },
+                onDelete: { _ in },
+                onRevoke: { _ in },
+                onReeditRevokedText: { reeditRequest = ($0, $1) },
+                onPlayVoice: { _ in },
+                onPlayVideo: { _ in }
+            )
+        )
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
+        let reeditButton = try #require(button(in: cell, identifier: "chat.revokedReeditButton.revoked_reedit"))
+        let bubbleFrame = bubbleView.convert(bubbleView.bounds, to: cell.contentView)
+
+        #expect(abs(bubbleFrame.midX - cell.contentView.bounds.midX) < 1)
+        #expect(findLabel(withText: "你撤回了一条消息", in: cell) != nil)
+        #expect(reeditButton.title(for: .normal) == "重新编辑")
+
+        reeditButton.sendActions(for: .touchUpInside)
+        #expect(reeditRequest?.0 == "revoked_reedit")
+        #expect(reeditRequest?.1 == "原始文本")
+    }
+
+    @MainActor
+    @Test func chatMessageCellHidesReeditButtonWhenRevokedMessageIsNotEditable() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+
+        cell.configure(row: makeRevokedRow(id: "revoked_notice_only", sortSequence: 1), actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+
+        #expect(button(in: cell, identifier: "chat.revokedReeditButton.revoked_notice_only") == nil)
+    }
+
+    @MainActor
+    @Test func chatMessageCellShowsContextMenuForRevocableNonTextMessage() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = ChatMessageRowState(
+            id: "revocable_image",
+            content: .image(
+                ChatMessageRowContent.ImageContent(
+                    thumbnailPath: "/tmp/revocable_image.png"
+                )
+            ),
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: false,
+            canRevoke: true
+        )
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+        let contentView = try #require(findView(ofType: ChatMessageCellContentView.self, in: cell))
+        let menuConfiguration = contentView.contextMenuInteraction(
+            UIContextMenuInteraction(delegate: contentView),
+            configurationForMenuAtLocation: .zero
+        )
+
+        #expect(menuConfiguration != nil)
+    }
+
+    @MainActor
+    @Test func chatMessageCellDoesNotShowContextMenuForNonRevocableNonTextMessage() throws {
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        let row = ChatMessageRowState(
+            id: "stale_image",
+            content: .image(
+                ChatMessageRowContent.ImageContent(
+                    thumbnailPath: "/tmp/stale_image.png"
+                )
+            ),
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: nil,
+            uploadProgress: nil,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: false,
+            canRevoke: false
+        )
+
+        cell.configure(row: row, actions: .empty)
+        cell.setNeedsLayout()
+        cell.layoutIfNeeded()
+        let contentView = try #require(findView(ofType: ChatMessageCellContentView.self, in: cell))
+        let menuConfiguration = contentView.contextMenuInteraction(
+            UIContextMenuInteraction(delegate: contentView),
+            configurationForMenuAtLocation: .zero
+        )
+
+        #expect(menuConfiguration == nil)
     }
 
     @MainActor
@@ -1105,6 +1389,61 @@ extension AppleIMTests {
         let data = try Data(contentsOf: url)
         #expect(data == Data([0x01, 0x02, 0x03]))
     }
+}
+
+@MainActor
+private func fittedChatMessageCell(row: ChatMessageRowState, width: CGFloat) -> ChatMessageCell {
+    let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: width, height: 120))
+    cell.configure(row: row, actions: .empty)
+
+    let fittingSize = cell.systemLayoutSizeFitting(
+        CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+        withHorizontalFittingPriority: .required,
+        verticalFittingPriority: .fittingSizeLevel
+    )
+    cell.frame = CGRect(x: 0, y: 0, width: width, height: fittingSize.height)
+    cell.setNeedsLayout()
+    cell.layoutIfNeeded()
+    return cell
+}
+
+private func makeEmojiMessageRow(id: MessageID, isOutgoing: Bool) -> ChatMessageRowState {
+    ChatMessageRowState(
+        id: id,
+        content: .emoji(
+            ChatMessageRowContent.EmojiContent(
+                emojiID: id.rawValue,
+                name: "表情消息",
+                localPath: nil,
+                thumbPath: nil,
+                cdnURL: nil
+            )
+        ),
+        sortSequence: 1,
+        timeText: "Now",
+        statusText: nil,
+        uploadProgress: nil,
+        isOutgoing: isOutgoing,
+        canRetry: false,
+        canDelete: true,
+        canRevoke: false
+    )
+}
+
+@MainActor
+private func solidFillColor(
+    of bubbleView: ChatBubbleBackgroundView,
+    traits: UITraitCollection
+) -> UIColor? {
+    guard
+        let gradientLayer = bubbleView.layer as? CAGradientLayer,
+        let firstObject = gradientLayer.colors?.first
+    else {
+        return nil
+    }
+
+    let firstColor = firstObject as! CGColor
+    return UIColor(cgColor: firstColor).resolvedColor(with: traits)
 }
 
 @MainActor

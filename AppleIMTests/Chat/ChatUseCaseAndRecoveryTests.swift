@@ -2109,7 +2109,143 @@ extension AppleIMTests {
         #expect(revokedMessage.state.isRevoked)
         #expect(reloadedMessage.state.isRevoked)
         #expect(reloadedMessage.state.revokeReplacementText == "你撤回了一条消息")
+        #expect(reloadedMessage.state.revokeEditableText == "Secret")
         #expect(conversations.first?.lastMessageDigest == "你撤回了一条消息")
+    }
+
+    @Test func chatUseCaseLoadsRevokedTextMessageWithReeditPayload() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "reedit_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "reedit_conversation", userID: "reedit_user", title: "Reedit", sortTimestamp: 1)
+        )
+        let mediaFileActor = await MediaFileActor(paths: databaseContext.paths)
+        let useCase = LocalChatUseCase(
+            userID: "reedit_user",
+            conversationID: "reedit_conversation",
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: mediaFileActor,
+            mediaUploadService: MockMediaUploadService(progressSteps: [1.0], delayNanoseconds: 0)
+        )
+
+        let sentRows = try await collectRows(from: useCase.sendText("需要重新编辑"))
+        let messageID = try #require(sentRows.first?.id)
+        try await useCase.revoke(messageID: messageID)
+        let page = try await useCase.loadInitialMessages()
+        let revokedContent = try #require(page.rows.first?.content.revokedContent)
+
+        #expect(revokedContent.noticeText == "你撤回了一条消息")
+        #expect(revokedContent.editableText == "需要重新编辑")
+        #expect(revokedContent.allowsReedit)
+    }
+
+    @Test func chatUseCaseAllowsAllSuccessfulOutgoingUserMessagesToRevokeWithinThreeMinutes() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, useCase) = try await makeRevokeEligibilityUseCase(
+            rootDirectory: rootDirectory,
+            userID: "revoke_window_user",
+            conversationID: "revoke_window_conversation"
+        )
+        let now = Int64(Date().timeIntervalSince1970)
+        let insertedIDs = try await insertSuccessfulOutgoingUserMessages(
+            into: repository,
+            userID: "revoke_window_user",
+            conversationID: "revoke_window_conversation",
+            localTime: now - 60
+        )
+
+        let rows = try await useCase.loadInitialMessages().rows
+        let canRevokeByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.canRevoke) })
+
+        for messageID in insertedIDs {
+            #expect(canRevokeByID[messageID] == true)
+        }
+    }
+
+    @Test func chatUseCaseRejectsRevokeOutsideWindowOrForNonEligibleMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, useCase) = try await makeRevokeEligibilityUseCase(
+            rootDirectory: rootDirectory,
+            userID: "revoke_reject_user",
+            conversationID: "revoke_reject_conversation"
+        )
+        let now = Int64(Date().timeIntervalSince1970)
+        let oldText = try await insertOutgoingText(
+            into: repository,
+            userID: "revoke_reject_user",
+            conversationID: "revoke_reject_conversation",
+            senderID: "revoke_reject_user",
+            messageID: "old_text",
+            text: "超过三分钟",
+            localTime: now - 181,
+            status: .success
+        )
+        let incomingText = try await insertOutgoingText(
+            into: repository,
+            userID: "revoke_reject_user",
+            conversationID: "revoke_reject_conversation",
+            senderID: "peer_user",
+            messageID: "incoming_text",
+            text: "对方消息",
+            localTime: now - 60,
+            status: .success
+        )
+        let failedText = try await insertOutgoingText(
+            into: repository,
+            userID: "revoke_reject_user",
+            conversationID: "revoke_reject_conversation",
+            senderID: "revoke_reject_user",
+            messageID: "failed_text",
+            text: "发送失败",
+            localTime: now - 60,
+            status: .failed
+        )
+        let sendingText = try await insertOutgoingText(
+            into: repository,
+            userID: "revoke_reject_user",
+            conversationID: "revoke_reject_conversation",
+            senderID: "revoke_reject_user",
+            messageID: "sending_text",
+            text: "发送中",
+            localTime: now - 60,
+            status: nil
+        )
+        let revokedText = try await insertOutgoingText(
+            into: repository,
+            userID: "revoke_reject_user",
+            conversationID: "revoke_reject_conversation",
+            senderID: "revoke_reject_user",
+            messageID: "revoked_text",
+            text: "已撤回",
+            localTime: now - 60,
+            status: .success
+        )
+        _ = try await repository.revokeMessage(
+            messageID: revokedText,
+            userID: "revoke_reject_user",
+            replacementText: "你撤回了一条消息"
+        )
+
+        let rows = try await useCase.loadInitialMessages().rows
+        let canRevokeByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.canRevoke) })
+
+        for messageID in [oldText, incomingText, failedText, sendingText, revokedText] {
+            #expect(canRevokeByID[messageID] == false)
+        }
     }
 
     @Test func draftIsPersistedAndPrioritizedInConversationList() async throws {
@@ -2231,5 +2367,202 @@ extension AppleIMTests {
         #expect(initialPage.rows.first.flatMap(voiceLocalPath) == voice.localPath)
         #expect(playedRow.map(isUnplayedVoiceContent) == false)
         #expect(storedMessage?.state.readStatus == .read)
+    }
+
+    private func makeRevokeEligibilityUseCase(
+        rootDirectory: URL,
+        userID: UserID,
+        conversationID: ConversationID
+    ) async throws -> (LocalChatRepository, LocalChatUseCase) {
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: userID)
+        try await repository.upsertConversation(
+            makeConversationRecord(id: conversationID, userID: userID, title: "Revoke Eligibility", sortTimestamp: 1)
+        )
+        let useCase = LocalChatUseCase(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            pendingJobRepository: repository,
+            sendService: MockMessageSendService(delayNanoseconds: 0)
+        )
+        return (repository, useCase)
+    }
+
+    private func insertSuccessfulOutgoingUserMessages(
+        into repository: LocalChatRepository,
+        userID: UserID,
+        conversationID: ConversationID,
+        localTime: Int64
+    ) async throws -> [MessageID] {
+        var messageIDs: [MessageID] = []
+
+        messageIDs.append(
+            try await insertOutgoingText(
+                into: repository,
+                userID: userID,
+                conversationID: conversationID,
+                senderID: userID,
+                messageID: "revoke_text",
+                text: "文本",
+                localTime: localTime,
+                status: .success
+            )
+        )
+
+        let imageMessage = try await repository.insertOutgoingImageMessage(
+            OutgoingImageMessageInput(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: userID,
+                image: StoredImageContent(
+                    mediaID: "revoke_image_media",
+                    localPath: "media/revoke_image.png",
+                    thumbnailPath: "media/revoke_image_thumb.jpg",
+                    width: 320,
+                    height: 240,
+                    sizeBytes: 4_096,
+                    format: "png"
+                ),
+                localTime: localTime,
+                messageID: "revoke_image",
+                clientMessageID: "revoke_image_client",
+                sortSequence: localTime + 1
+            )
+        )
+        try await markMessageSendStatus(repository, messageID: imageMessage.id, status: .success, serverTime: localTime + 1)
+        messageIDs.append(imageMessage.id)
+
+        let voiceMessage = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: userID,
+                voice: StoredVoiceContent(
+                    mediaID: "revoke_voice_media",
+                    localPath: "media/revoke_voice.m4a",
+                    durationMilliseconds: 1_800,
+                    sizeBytes: 2_048,
+                    format: "m4a"
+                ),
+                localTime: localTime,
+                messageID: "revoke_voice",
+                clientMessageID: "revoke_voice_client",
+                sortSequence: localTime + 2
+            )
+        )
+        try await markMessageSendStatus(repository, messageID: voiceMessage.id, status: .success, serverTime: localTime + 2)
+        messageIDs.append(voiceMessage.id)
+
+        let videoMessage = try await repository.insertOutgoingVideoMessage(
+            OutgoingVideoMessageInput(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: userID,
+                video: StoredVideoContent(
+                    mediaID: "revoke_video_media",
+                    localPath: "media/revoke_video.mov",
+                    thumbnailPath: "media/revoke_video_thumb.jpg",
+                    durationMilliseconds: 3_600,
+                    width: 640,
+                    height: 360,
+                    sizeBytes: 8_192
+                ),
+                localTime: localTime,
+                messageID: "revoke_video",
+                clientMessageID: "revoke_video_client",
+                sortSequence: localTime + 3
+            )
+        )
+        try await markMessageSendStatus(repository, messageID: videoMessage.id, status: .success, serverTime: localTime + 3)
+        messageIDs.append(videoMessage.id)
+
+        let fileMessage = try await repository.insertOutgoingFileMessage(
+            OutgoingFileMessageInput(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: userID,
+                file: StoredFileContent(
+                    mediaID: "revoke_file_media",
+                    localPath: "media/revoke_file.pdf",
+                    fileName: "revoke.pdf",
+                    fileExtension: "pdf",
+                    sizeBytes: 16_384
+                ),
+                localTime: localTime,
+                messageID: "revoke_file",
+                clientMessageID: "revoke_file_client",
+                sortSequence: localTime + 4
+            )
+        )
+        try await markMessageSendStatus(repository, messageID: fileMessage.id, status: .success, serverTime: localTime + 4)
+        messageIDs.append(fileMessage.id)
+
+        let emojiMessage = try await repository.insertOutgoingEmojiMessage(
+            OutgoingEmojiMessageInput(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: userID,
+                emoji: StoredEmojiContent(
+                    emojiID: "revoke_emoji_asset",
+                    packageID: nil,
+                    emojiType: .system,
+                    name: "Smile",
+                    localPath: nil,
+                    thumbPath: nil,
+                    cdnURL: nil,
+                    width: nil,
+                    height: nil,
+                    sizeBytes: nil
+                ),
+                localTime: localTime,
+                messageID: "revoke_emoji",
+                clientMessageID: "revoke_emoji_client",
+                sortSequence: localTime + 5
+            )
+        )
+        try await markMessageSendStatus(repository, messageID: emojiMessage.id, status: .success, serverTime: localTime + 5)
+        messageIDs.append(emojiMessage.id)
+
+        return messageIDs
+    }
+
+    private func insertOutgoingText(
+        into repository: LocalChatRepository,
+        userID: UserID,
+        conversationID: ConversationID,
+        senderID: UserID,
+        messageID: MessageID,
+        text: String,
+        localTime: Int64,
+        status: MessageSendStatus?
+    ) async throws -> MessageID {
+        let message = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: userID,
+                conversationID: conversationID,
+                senderID: senderID,
+                text: text,
+                localTime: localTime,
+                messageID: messageID,
+                clientMessageID: "\(messageID.rawValue)_client",
+                sortSequence: localTime
+            )
+        )
+        if let status {
+            try await markMessageSendStatus(repository, messageID: message.id, status: status, serverTime: localTime)
+        }
+        return message.id
+    }
+
+    private func markMessageSendStatus(
+        _ repository: LocalChatRepository,
+        messageID: MessageID,
+        status: MessageSendStatus,
+        serverTime: Int64
+    ) async throws {
+        let ack = status == .success
+            ? MessageSendAck(serverMessageID: "server_\(messageID.rawValue)", sequence: serverTime, serverTime: serverTime)
+            : nil
+        try await repository.updateMessageSendStatus(messageID: messageID, status: status, ack: ack)
     }
 }

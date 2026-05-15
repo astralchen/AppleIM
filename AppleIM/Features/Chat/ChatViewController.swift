@@ -952,6 +952,9 @@ final class ChatViewController: UIViewController {
                 onRevoke: { [weak self] messageID in
                     self?.confirmRevoke(messageID: messageID)
                 },
+                onReeditRevokedText: { [weak self] _, text in
+                    self?.reeditRevokedText(text)
+                },
                 onPlayVoice: { [weak self] row in
                     self?.handleVoicePlayback(row)
                 },
@@ -975,6 +978,12 @@ final class ChatViewController: UIViewController {
         var snapshot = NSDiffableDataSourceSnapshot<Section, MessageID>()
         snapshot.appendSections([.messages])
         dataSource?.apply(snapshot, animatingDifferences: false)
+    }
+
+    private func reeditRevokedText(_ text: String) {
+        inputBarView.showKeyboardInput()
+        inputBarView.setText(text, animated: true)
+        viewModel.composerTextChanged(text)
     }
 
     private func confirmDelete(messageID: MessageID) {

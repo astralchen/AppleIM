@@ -65,6 +65,20 @@ enum ChatBridgeDesignSystem {
             UIColor.systemGray6.resolvedColor(with: traits)
         }
 
+        /// 微信式发出普通消息气泡
+        static let weChatOutgoingMessage = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.chatBridgeHex(0x244F1F)
+                : UIColor.chatBridgeHex(0x95EC69)
+        }
+
+        /// 微信式收到普通消息气泡
+        static let weChatIncomingMessage = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.secondarySystemGroupedBackground
+                : UIColor.white
+        }
+
         /// Apple Messages 风格的附件卡片背景
         static let appleMessageAttachment = UIColor { traits in
             traits.userInterfaceStyle == .dark
@@ -113,6 +127,8 @@ enum ChatBridgeDesignSystem {
         static let field: CGFloat = 17
         /// Apple Messages 风格消息气泡圆角
         static let appleMessageBubble: CGFloat = 18
+        /// 微信式普通消息气泡圆角
+        static let weChatMessageBubble: CGFloat = 6
         /// Apple Messages 风格媒体预览圆角
         static let appleMessageMedia: CGFloat = 20
         /// Apple Messages 风格 composer 附件圆角
@@ -372,8 +388,14 @@ final class ChatBubbleBackgroundView: UIView {
         case outgoing
         /// 收到消息
         case incoming
+        /// 微信式发出普通消息
+        case weChatOutgoing
+        /// 微信式收到普通消息
+        case weChatIncoming
         /// 图片或视频媒体消息
         case media
+        /// 无气泡视觉的普通内容容器
+        case plain
         /// 撤回消息纯色背景
         case revoked
     }
@@ -416,7 +438,13 @@ final class ChatBubbleBackgroundView: UIView {
         case .incoming:
             let color = ChatBridgeDesignSystem.ColorToken.appleMessageIncoming
             gradientLayer.colors = [color.cgColor, color.cgColor]
-        case .media:
+        case .weChatOutgoing:
+            let color = ChatBridgeDesignSystem.ColorToken.weChatOutgoingMessage
+            gradientLayer.colors = [color.cgColor, color.cgColor]
+        case .weChatIncoming:
+            let color = ChatBridgeDesignSystem.ColorToken.weChatIncomingMessage
+            gradientLayer.colors = [color.cgColor, color.cgColor]
+        case .media, .plain:
             let color = UIColor.clear
             gradientLayer.colors = [color.cgColor, color.cgColor]
         case .revoked:
@@ -454,19 +482,31 @@ final class ChatBubbleBackgroundView: UIView {
         apply(style: Style.incoming)
     }
 
-    /// 生成类似 Apple Messages 的圆角气泡和尾角外形。
+    /// 生成聊天气泡的圆角和尾角外形。
     static func maskPath(in bounds: CGRect, style: Style) -> UIBezierPath {
-        let radius = ChatBridgeDesignSystem.RadiusToken.appleMessageBubble
-        let tailWidth: CGFloat = 7
-
         switch style {
         case .outgoing:
+            let radius = ChatBridgeDesignSystem.RadiusToken.appleMessageBubble
+            let tailWidth: CGFloat = 7
             let rect = bounds.inset(by: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: tailWidth))
             return outgoingMaskPath(in: bounds, bodyRect: rect, radius: radius)
         case .incoming:
+            let radius = ChatBridgeDesignSystem.RadiusToken.appleMessageBubble
+            let tailWidth: CGFloat = 7
             let rect = bounds.inset(by: UIEdgeInsets(top: 0, left: tailWidth, bottom: 0, right: 0))
             return incomingMaskPath(in: bounds, bodyRect: rect, radius: radius)
-        case .media, .revoked:
+        case .weChatOutgoing:
+            let radius = ChatBridgeDesignSystem.RadiusToken.weChatMessageBubble
+            let tailWidth: CGFloat = 6
+            let rect = bounds.inset(by: UIEdgeInsets(top: 0, left: 0, bottom: 0, right: tailWidth))
+            return weChatOutgoingMaskPath(in: bounds, bodyRect: rect, radius: radius)
+        case .weChatIncoming:
+            let radius = ChatBridgeDesignSystem.RadiusToken.weChatMessageBubble
+            let tailWidth: CGFloat = 6
+            let rect = bounds.inset(by: UIEdgeInsets(top: 0, left: tailWidth, bottom: 0, right: 0))
+            return weChatIncomingMaskPath(in: bounds, bodyRect: rect, radius: radius)
+        case .media, .plain, .revoked:
+            let radius = ChatBridgeDesignSystem.RadiusToken.appleMessageBubble
             return UIBezierPath(roundedRect: bounds, cornerRadius: radius)
         }
     }
@@ -545,6 +585,90 @@ final class ChatBubbleBackgroundView: UIView {
         path.addQuadCurve(
             to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY),
             controlPoint: CGPoint(x: rect.minX + cornerRadius * 0.45, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.maxY - cornerRadius),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY + cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.close()
+
+        return path
+    }
+
+    private static func weChatOutgoingMaskPath(in bounds: CGRect, bodyRect rect: CGRect, radius: CGFloat) -> UIBezierPath {
+        let cornerRadius = min(radius, rect.width / 2, rect.height / 2)
+        let tailHalfHeight = min(5, rect.height * 0.22)
+        let tailTopY = rect.midY - tailHalfHeight
+        let tailBottomY = rect.midY + tailHalfHeight
+
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + cornerRadius),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: tailTopY))
+        path.addQuadCurve(
+            to: CGPoint(x: bounds.maxX, y: rect.midY),
+            controlPoint: CGPoint(x: rect.maxX + 4, y: tailTopY + 1)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: tailBottomY),
+            controlPoint: CGPoint(x: rect.maxX + 4, y: tailBottomY - 1)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY),
+            controlPoint: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.maxY - cornerRadius),
+            controlPoint: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY),
+            controlPoint: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.close()
+
+        return path
+    }
+
+    private static func weChatIncomingMaskPath(in bounds: CGRect, bodyRect rect: CGRect, radius: CGFloat) -> UIBezierPath {
+        let cornerRadius = min(radius, rect.width / 2, rect.height / 2)
+        let tailHalfHeight = min(5, rect.height * 0.22)
+        let tailTopY = rect.midY - tailHalfHeight
+        let tailBottomY = rect.midY + tailHalfHeight
+
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + cornerRadius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + cornerRadius),
+            controlPoint: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: tailTopY))
+        path.addQuadCurve(
+            to: CGPoint(x: bounds.minX, y: rect.midY),
+            controlPoint: CGPoint(x: rect.minX - 4, y: tailTopY + 1)
+        )
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: tailBottomY),
+            controlPoint: CGPoint(x: rect.minX - 4, y: tailBottomY - 1)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - cornerRadius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + cornerRadius, y: rect.maxY),
+            controlPoint: CGPoint(x: rect.minX, y: rect.maxY)
         )
         path.addLine(to: CGPoint(x: rect.maxX - cornerRadius, y: rect.maxY))
         path.addQuadCurve(
