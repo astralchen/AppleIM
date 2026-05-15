@@ -144,6 +144,7 @@ final class ConversationListViewModel {
                     state.isLoadingMore = false
                     state.renderIntent = showLoading ? .initialLoad : .backgroundRefresh
                 }
+                guard !Task.isCancelled, loadGeneration == currentGeneration else { return }
                 diagnostics.log(
                     "ConversationList loaded state published generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: loadedPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
                 )

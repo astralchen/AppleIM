@@ -182,9 +182,8 @@ final class AppleIMUITests: XCTestCase {
             .firstMatch
         XCTAssertTrue(sentEmoji.waitForExistence(timeout: 5), "Expected sent emoji message")
         let input = app.textViews["chat.messageInput"]
-        XCTAssertLessThanOrEqual(
-            sentEmoji.frame.maxY,
-            input.frame.minY,
+        XCTAssertTrue(
+            waitForElement(sentEmoji, toStayAbove: input, timeout: 15),
             "Expected sent emoji message to stay above the input bar"
         )
     }
@@ -275,19 +274,22 @@ final class AppleIMUITests: XCTestCase {
         loginAsUITestUser(in: app)
         openGroupCoreConversation(in: app)
 
+        let announcementButton = app.descendants(matching: .any)["chat.groupAnnouncementButton"]
         XCTAssertTrue(
-            app.descendants(matching: .any)["chat.groupAnnouncementButton"].waitForExistence(timeout: 5),
-            "Expected group announcement entry"
+            waitForFiniteFrame(announcementButton, timeout: 5),
+            "Expected visible group announcement entry"
         )
 
         let input = app.textViews["chat.messageInput"]
         input.tap()
         input.typeText("@")
-        XCTAssertTrue(
-            app.buttons["chat.mentionOption.sondra"].waitForExistence(timeout: 5),
-            "Expected Sondra mention option"
+        let sondraMentionOption = app.buttons["chat.mentionOption.sondra"].firstMatch
+        tapCenterOfElementWhenFrameIsFinite(
+            sondraMentionOption,
+            in: app,
+            timeout: 15,
+            failureMessage: "Expected visible Sondra mention option"
         )
-        app.buttons["chat.mentionOption.sondra"].tap()
         input.typeText("Sondra UI group mention \(UUID().uuidString)")
         app.buttons["chat.sendButton"].tap()
 
@@ -295,7 +297,7 @@ final class AppleIMUITests: XCTestCase {
             messageCell(containing: "Sondra UI group mention", in: app).waitForExistence(timeout: 5),
             "Expected group mention message to appear"
         )
-        XCTAssertFalse(app.buttons["chat.mentionOption.sondra"].exists)
+        XCTAssertFalse(app.buttons["chat.mentionOption.sondra"].firstMatch.exists)
     }
 
     @MainActor

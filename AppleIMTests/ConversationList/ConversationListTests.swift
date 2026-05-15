@@ -521,11 +521,11 @@ extension AppleIMTests {
 
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
-            accountID: "usecase_user",
+            accountID: "ui_test_user",
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "usecase_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
 
         let rows = try await useCase.loadConversations()
 
@@ -572,11 +572,11 @@ extension AppleIMTests {
 
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
-            accountID: "paged_usecase_user",
+            accountID: "ui_test_user",
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "paged_usecase_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
 
         let firstPage = try await useCase.loadConversationPage(limit: 2, after: nil)
         let secondPage = try await useCase.loadConversationPage(limit: 2, after: firstPage.nextCursor)
@@ -595,11 +595,11 @@ extension AppleIMTests {
 
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
-            accountID: "conversation_setting_user",
+            accountID: "ui_test_user",
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "conversation_setting_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
 
         try await useCase.setPinned(conversationID: "group_core", isPinned: true)
         try await useCase.setMuted(conversationID: "single_sondra", isMuted: true)
@@ -618,11 +618,11 @@ extension AppleIMTests {
 
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
-            accountID: "conversation_list_sim_user",
+            accountID: "ui_test_user",
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "conversation_list_sim_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
         let rowsBefore = try await useCase.loadConversations()
 
         let result = try #require(try await useCase.simulateIncomingMessages())

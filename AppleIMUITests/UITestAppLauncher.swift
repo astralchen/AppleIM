@@ -88,12 +88,17 @@ func openAccountActions(in app: XCUIApplication, file: StaticString = #filePath,
             accountTab.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         }
 
-        if app.tables["account.tableView"].waitForExistence(timeout: 2) {
+        if accountScreen(in: app).waitForExistence(timeout: 2) {
             return
         }
     }
 
-    XCTAssertTrue(app.tables["account.tableView"].waitForExistence(timeout: 5), "Expected account screen", file: file, line: line)
+    XCTAssertTrue(accountScreen(in: app).waitForExistence(timeout: 5), "Expected account screen", file: file, line: line)
+}
+
+@MainActor
+private func accountScreen(in app: XCUIApplication) -> XCUIElement {
+    app.collectionViews["account.collectionView"].firstMatch
 }
 
 @MainActor
@@ -290,6 +295,100 @@ func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval) -> Boo
     let predicate = NSPredicate(format: "exists == false")
     let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
     return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+}
+
+@MainActor
+func waitForFiniteFrame(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if element.exists {
+            let frame = element.frame
+            if frame.origin.x.isFinite,
+               frame.origin.y.isFinite,
+               frame.width.isFinite,
+               frame.height.isFinite,
+               !frame.isEmpty,
+               frame.width > 0,
+               frame.height > 0 {
+                return true
+            }
+        }
+        _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+    return false
+}
+
+@MainActor
+func tapCenterOfElementWithFiniteFrame(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let frame = element.frame
+    XCTAssertTrue(
+        frame.origin.x.isFinite
+            && frame.origin.y.isFinite
+            && frame.width.isFinite
+            && frame.height.isFinite
+            && !frame.isEmpty,
+        "Expected finite element frame before tapping",
+        file: file,
+        line: line
+    )
+    app.coordinate(withNormalizedOffset: .zero)
+        .withOffset(CGVector(dx: frame.midX, dy: frame.midY))
+        .tap()
+}
+
+@MainActor
+func tapCenterOfElementWhenFrameIsFinite(
+    _ element: XCUIElement,
+    in app: XCUIApplication,
+    timeout: TimeInterval,
+    failureMessage: String,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if element.exists {
+            let frame = element.frame
+            if frame.origin.x.isFinite,
+               frame.origin.y.isFinite,
+               frame.width.isFinite,
+               frame.height.isFinite,
+               !frame.isEmpty,
+               frame.width > 0,
+               frame.height > 0 {
+                app.coordinate(withNormalizedOffset: .zero)
+                    .withOffset(CGVector(dx: frame.midX, dy: frame.midY))
+                    .tap()
+                return
+            }
+        }
+        _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+    XCTFail(failureMessage, file: file, line: line)
+}
+
+@MainActor
+func waitForElement(_ element: XCUIElement, toStayAbove lowerElement: XCUIElement, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if element.exists, lowerElement.exists {
+            let elementFrame = element.frame
+            let lowerFrame = lowerElement.frame
+            if elementFrame.origin.y.isFinite,
+               elementFrame.height.isFinite,
+               lowerFrame.origin.y.isFinite,
+               elementFrame.maxY <= lowerFrame.minY {
+                return true
+            }
+        }
+        _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+    }
+    return false
 }
 
 @MainActor

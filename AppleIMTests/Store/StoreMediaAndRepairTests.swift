@@ -470,6 +470,7 @@ extension AppleIMTests {
             )
         )
 
+        try await oldDatabaseContext.databaseActor.closeConnections(for: oldDatabaseContext.paths)
         try FileManager.default.createDirectory(at: newRootDirectory, withIntermediateDirectories: true)
         try FileManager.default.copyItem(
             at: oldDatabaseContext.paths.rootDirectory,
@@ -544,6 +545,7 @@ extension AppleIMTests {
             )
         )
 
+        try await oldDatabaseContext.databaseActor.closeConnections(for: oldDatabaseContext.paths)
         try FileManager.default.createDirectory(at: newRootDirectory, withIntermediateDirectories: true)
         try FileManager.default.copyItem(
             at: oldDatabaseContext.paths.rootDirectory,

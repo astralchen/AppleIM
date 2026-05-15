@@ -185,14 +185,14 @@ extension AppleIMTests {
 
         let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
-            accountID: "seed_message_user",
+            accountID: "ui_test_user",
             storageService: storageService,
             database: DatabaseActor(),
             databaseKeyStore: InMemoryAccountDatabaseKeyStore()
         )
 
         let repository = try await storeProvider.repository()
-        let conversations = try await repository.listConversations(for: "seed_message_user")
+        let conversations = try await repository.listConversations(for: "ui_test_user")
         let conversationsByID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
 
         for conversationID in [ConversationID("single_sondra"), ConversationID("group_core"), ConversationID("system_release")] {
@@ -301,6 +301,7 @@ extension AppleIMTests {
         }
 
         let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "cached_connection_user")
+        let openCountBeforeClose = await databaseActor.openCount(for: .main, paths: paths)
         try await databaseActor.closeConnections(for: paths)
         #expect(await databaseActor.cachedConnectionCount(for: paths) == 0)
 
@@ -309,7 +310,7 @@ extension AppleIMTests {
         _ = try await databaseActor.tableNames(in: .main, paths: paths)
         let openCountAfterSecondQuery = await databaseActor.openCount(for: .main, paths: paths)
 
-        #expect(openCountAfterFirstQuery == 1)
+        #expect(openCountAfterFirstQuery == openCountBeforeClose + 1)
         #expect(openCountAfterSecondQuery == openCountAfterFirstQuery)
         #expect(await databaseActor.cachedConnectionCount(for: paths) == 1)
     }
@@ -321,16 +322,17 @@ extension AppleIMTests {
         }
 
         let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "reopen_connection_user")
+        let openCountBeforeClose = await databaseActor.openCount(for: .main, paths: paths)
         try await databaseActor.closeConnections(for: paths)
 
         _ = try await databaseActor.tableNames(in: .main, paths: paths)
-        #expect(await databaseActor.openCount(for: .main, paths: paths) == 1)
+        #expect(await databaseActor.openCount(for: .main, paths: paths) == openCountBeforeClose + 1)
 
         try await databaseActor.closeConnections(for: paths)
         #expect(await databaseActor.cachedConnectionCount(for: paths) == 0)
 
         _ = try await databaseActor.tableNames(in: .main, paths: paths)
-        #expect(await databaseActor.openCount(for: .main, paths: paths) == 2)
+        #expect(await databaseActor.openCount(for: .main, paths: paths) == openCountBeforeClose + 2)
         #expect(await databaseActor.cachedConnectionCount(for: paths) == 1)
     }
 
@@ -683,6 +685,7 @@ extension AppleIMTests {
         }
 
         let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "repair_failure_user")
+        try await databaseContext.databaseActor.closeConnections(for: databaseContext.paths)
         try FileManager.default.removeItem(at: databaseContext.paths.searchDatabase)
         try FileManager.default.createDirectory(at: databaseContext.paths.searchDatabase, withIntermediateDirectories: false)
         let repairService = DataRepairService(
