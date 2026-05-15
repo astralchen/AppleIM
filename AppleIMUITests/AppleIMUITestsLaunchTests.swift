@@ -15,6 +15,7 @@ final class AppleIMUITestsLaunchTests: XCTestCase {
     func testLaunch() throws {
         let app = makeUITestApplication()
         app.launch()
+        loginAsUITestUser(in: app)
         waitForConversationList(in: app)
 
         let attachment = XCTAttachment(screenshot: app.screenshot())

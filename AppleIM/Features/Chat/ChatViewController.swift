@@ -10,6 +10,16 @@ import UIKit
 /// 待发送语音预览播放使用的本地占位 ID，避免影响消息列表播放态
 private let pendingVoicePreviewMessageID = MessageID(rawValue: "__pending_voice_preview__")
 
+/// 消息列表布局回调视图，让测试和运行时的 collectionView 自身布局也能推进首屏定位。
+private final class ChatMessageCollectionView: UICollectionView {
+    var onLayoutSubviews: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        onLayoutSubviews?()
+    }
+}
+
 /// 串行化 diffable data source 快照 apply，避免 UIKit apply 队列重入。
 @MainActor
 final class ChatSnapshotRenderCoordinator<State> {
@@ -54,6 +64,9 @@ final class ChatSnapshotRenderCoordinator<State> {
 /// 聊天页控制器
 @MainActor
 final class ChatViewController: UIViewController {
+    /// 判断布局变化前是否仍可视为贴底的容差；覆盖 estimated cell 高度稳定带来的像素级偏移。
+    private static let bottomReanchorTolerance: CGFloat = 12
+
     /// 消息列表分区标识。
     nonisolated private enum Section: Hashable, Sendable {
         /// 聊天消息分区。
@@ -78,6 +91,8 @@ final class ChatViewController: UIViewController {
     private var isVoiceTouchActive = false
     /// 首屏消息已经渲染，但仍等待稳定布局后执行第一次贴底定位。
     private var needsInitialBottomPositioning = false
+    /// 首屏贴底完成前临时隐藏消息列表，避免用户看到估算高度收敛带来的入场位移。
+    private var isSuppressingInitialMessageAppearance = false
     /// 用户是否仍处于贴底阅读状态；composer 高度变化时用它维持最新消息可见
     private var shouldMaintainBottomPosition = true
     /// 用户正在拖拽或减速消息列表时，暂停自动贴底，避免底部反弹后抢回滚动位置。
@@ -92,6 +107,10 @@ final class ChatViewController: UIViewController {
     private var pendingInputBarLayoutTransaction: MessageLayoutTransaction?
     /// 动画贴底校正代次；用户开始拖动后让旧的延迟校正失效。
     private var bottomPositionCorrectionGeneration = 0
+    /// 键盘布局 guide 后置稳定校正代次；避免首进页面呼出键盘时偶发遮挡最新消息。
+    private var keyboardBottomCorrectionGeneration = 0
+    /// 首屏贴底正在同步收敛，避免 collection view layoutSubviews 回调重入。
+    private var isResolvingInitialBottomPositioning = false
     /// 历史消息插入锚点校正代次；用户继续滚动后让旧的延迟校正失效。
     private var prependScrollAnchorCorrectionGeneration = 0
 #if DEBUG
@@ -126,10 +145,16 @@ final class ChatViewController: UIViewController {
     }
 
     /// 消息 collection view
-    private lazy var collectionView = UICollectionView(
-        frame: .zero,
-        collectionViewLayout: makeLayout()
-    )
+    private lazy var collectionView: UICollectionView = {
+        let collectionView = ChatMessageCollectionView(
+            frame: .zero,
+            collectionViewLayout: makeLayout()
+        )
+        collectionView.onLayoutSubviews = { [weak self] in
+            self?.handleMessageCollectionLayoutDidUpdate()
+        }
+        return collectionView
+    }()
     /// 空消息提示
     private let emptyLabel = UILabel()
     /// 群公告顶部入口
@@ -204,10 +229,15 @@ final class ChatViewController: UIViewController {
             _ = resolveInitialBottomPositioningIfPossible()
             return
         }
+        let isLatestMessageVisibleAboveInputBar = isLatestRenderedMessageVisibleAboveInputBar()
+        let shouldRestoreOccludedNearBottomMessage = isNearBottom()
+            && !isLatestMessageVisibleAboveInputBar
+        let shouldReanchorMaintainedBottomMessage = shouldMaintainBottomPosition
+            && !isLatestMessageVisibleAboveInputBar
         guard
             !isUserControllingMessageScroll,
             !lastRenderedRowIDs.isEmpty,
-            shouldMaintainBottomPosition || isNearBottom()
+            shouldReanchorMaintainedBottomMessage || shouldRestoreOccludedNearBottomMessage
         else { return }
         scrollToBottom(animated: false)
     }
@@ -332,6 +362,7 @@ final class ChatViewController: UIViewController {
             mentionPickerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             mentionPickerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             mentionPickerStackView.bottomAnchor.constraint(equalTo: inputBarView.topAnchor, constant: -8),
+            mentionPickerStackView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
 
             photoLibraryInputView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             photoLibraryInputView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -527,6 +558,10 @@ final class ChatViewController: UIViewController {
             options: [options, .beginFromCurrentState, .allowUserInteraction],
             animations: layoutChanges,
             completion: completion
+        )
+        scheduleKeyboardBottomPositionCorrectionIfNeeded(
+            shouldStickToBottom: layoutTransaction.shouldStickToBottom,
+            duration: duration
         )
     }
 
@@ -1059,6 +1094,14 @@ final class ChatViewController: UIViewController {
         // 缓存最新 row 内容，供 cell registration 和下一次 render diff 对比使用。
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id, $0) })
         lastRenderedRowIDs = newRowIDs
+        if isInitialMessageRender {
+            needsInitialBottomPositioning = true
+            setInitialMessageAppearanceSuppressed(true)
+        } else if newRowIDs.isEmpty {
+            // 空会话没有首屏贴底过程，不能沿用上一次非空列表的透明状态。
+            needsInitialBottomPositioning = false
+            setInitialMessageAppearanceSuppressed(false)
+        }
 
         guard let dataSource else {
             completion()
@@ -1102,7 +1145,6 @@ final class ChatViewController: UIViewController {
                     )
                 }
             } else if isInitialMessageRender {
-                self.needsInitialBottomPositioning = true
                 if !self.resolveInitialBottomPositioningIfPossible() {
                     DispatchQueue.main.async { [weak self] in
                         guard let self else { return }
@@ -1110,7 +1152,8 @@ final class ChatViewController: UIViewController {
                         _ = self.resolveInitialBottomPositioningIfPossible()
                     }
                 }
-            } else if layoutTransaction.shouldStickToBottom || shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows) {
+            } else if shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows)
+                || (layoutTransaction.shouldStickToBottom && !self.isLatestRenderedMessageVisibleAboveInputBar()) {
                 // 新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: didAppendNewMessage)
             } else {
@@ -1156,6 +1199,7 @@ final class ChatViewController: UIViewController {
 
         for option in picker.options {
             let button = UIButton(type: .system)
+            button.translatesAutoresizingMaskIntoConstraints = false
             button.configuration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: option.mentionsAll ? .primary : .secondary)
             var configuration = button.configuration
             configuration?.title = "@\(option.displayName)"
@@ -1163,6 +1207,8 @@ final class ChatViewController: UIViewController {
             configuration?.imagePadding = 4
             button.configuration = configuration
             button.accessibilityIdentifier = "chat.mentionOption.\(option.id)"
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
             button.addAction(UIAction { [weak self] _ in
                 if option.mentionsAll {
                     self?.viewModel.selectMentionsAll()
@@ -1174,6 +1220,10 @@ final class ChatViewController: UIViewController {
         }
         mentionPickerStackView.isHidden = false
         updateCollectionViewOverlayInsets()
+        mentionPickerStackView.setNeedsLayout()
+        view.layoutIfNeeded()
+        mentionPickerStackView.layoutIfNeeded()
+        mentionPickerStackView.arrangedSubviews.forEach { $0.layoutIfNeeded() }
     }
 
     /// 根据新旧消息 ID 构造消息列表快照。
@@ -1375,11 +1425,13 @@ final class ChatViewController: UIViewController {
             generation == prependScrollAnchorCorrectionGeneration,
             !isUserControllingMessageScroll,
             lastRenderedRowIDs == newRowIDs,
-            let newIndex = newRowIDs.firstIndex(of: anchor.rowID),
-            let attributes = collectionView.layoutAttributesForItem(at: IndexPath(item: newIndex, section: 0))
+            let newIndex = newRowIDs.firstIndex(of: anchor.rowID)
         else { return }
 
         collectionView.layoutIfNeeded()
+        guard let attributes = collectionView.layoutAttributesForItem(at: IndexPath(item: newIndex, section: 0)) else {
+            return
+        }
         let proposedOffsetY = anchor.previousContentOffsetY + attributes.frame.minY - anchor.previousMinY
         let targetOffsetY = clampedContentOffsetY(
             proposedOffsetY,
@@ -1559,6 +1611,14 @@ final class ChatViewController: UIViewController {
         inputBarView.showTransientStatus(message)
     }
 
+    /// 消息列表自身完成布局时，也尝试消费首屏贴底状态。
+    private func handleMessageCollectionLayoutDidUpdate() {
+        // 首屏快照 apply 完成时，UICollectionView 的真实 cell 高度可能还没完全稳定。
+        // 这里借 collectionView 自身的 layoutSubviews 再推进一次，避免只依赖外层 viewDidLayoutSubviews。
+        guard needsInitialBottomPositioning, !isResolvingInitialBottomPositioning else { return }
+        _ = resolveInitialBottomPositioningIfPossible()
+    }
+
     /// 根据覆盖层刷新全屏消息列表的可滚动可见区域。
     private func updateCollectionViewOverlayInsets() {
         guard view.window != nil else {
@@ -1576,21 +1636,26 @@ final class ChatViewController: UIViewController {
 
         guard collectionView.contentInset != targetInsets else { return }
         let previousContentOffset = collectionView.contentOffset
+        // 先按旧 inset 计算“列表自身是否已经贴底”，因为键盘抬起后新的覆盖区域会立刻缩小可见高度；
+        // 如果之后再调用 isNearBottom()，原本贴底的列表可能被误判成离底。
         let scrollViewVisibleBottomBeforeInset = collectionView.contentOffset.y
             + collectionView.bounds.height
             - collectionView.adjustedContentInset.bottom
-        let wasAtScrollViewBottomBeforeInset = scrollViewVisibleBottomBeforeInset >= collectionView.contentSize.height - 80
+        let wasAtScrollViewBottomBeforeInset = scrollViewVisibleBottomBeforeInset
+            >= collectionView.contentSize.height - Self.bottomReanchorTolerance
         let shouldReanchorToBottom = !isUserControllingMessageScroll
             && !lastRenderedRowIDs.isEmpty
-            // inputBar 被键盘或外部约束抬高时，新的覆盖区域会让 isNearBottom 变 false；
-            // 因此还要看 inset 变化前 scroll view 自己是否已经在底部。
-            && (shouldMaintainBottomPosition || isNearBottom() || wasAtScrollViewBottomBeforeInset)
+            // 键盘抬起会先改变覆盖区域，导致 isNearBottom 变 false；
+            // 只有 scroll view 原本精确贴底时才用旧底部判断兜底，避免用户离底阅读被拉回。
+            && (needsInitialBottomPositioning || shouldMaintainBottomPosition || isNearBottom() || wasAtScrollViewBottomBeforeInset)
         let shouldPreserveContentOffset = !needsInitialBottomPositioning && !shouldMaintainBottomPosition
         collectionView.contentInset = targetInsets
         collectionView.verticalScrollIndicatorInsets = targetInsets
         if shouldReanchorToBottom {
+            // 输入栏、@ 选择器、键盘都会改变底部覆盖范围；贴底阅读时要用新的可见底部重新对齐最后一条。
             positionLatestMessageAtVisibleBottom(animated: false)
         } else if shouldPreserveContentOffset, collectionView.contentOffset != previousContentOffset {
+            // 用户已经离底查看历史时，只接受 inset 更新，不接受 UIKit 自动调整后留下的 contentOffset 漂移。
             collectionView.setContentOffset(previousContentOffset, animated: false)
         }
     }
@@ -1659,13 +1724,30 @@ final class ChatViewController: UIViewController {
                 correctionGeneration == self.bottomPositionCorrectionGeneration
             else { return }
 
+            self.collectionView.layoutIfNeeded()
             self.preserveMessageContentOffsetIfNeeded(transaction)
+
+            DispatchQueue.main.async { [weak self] in
+                guard
+                    let self,
+                    correctionGeneration == self.bottomPositionCorrectionGeneration
+                else { return }
+
+                self.collectionView.layoutIfNeeded()
+                self.preserveMessageContentOffsetIfNeeded(transaction)
+            }
         }
     }
 
     /// 判断本次布局变化是否应该保持贴底。
     private func shouldStickToBottomForLayoutChange() -> Bool {
         guard !isUserControllingMessageScroll else { return false }
+        if needsInitialBottomPositioning {
+            // 首屏还没完成最终贴底时，键盘或输入栏高度变化仍属于入场布局；
+            // 此时必须继续维护底部，否则首次点输入框可能把最新消息留在键盘后面。
+            shouldMaintainBottomPosition = true
+            return true
+        }
         // 只有用户本来就在底部附近时才进入贴底维护，避免收到消息打断查看历史。
         let shouldStick = shouldMaintainBottomPosition || isNearBottom()
         if shouldStick {
@@ -1686,14 +1768,14 @@ final class ChatViewController: UIViewController {
 #if DEBUG
         lastScrollToBottomRequestedAnimationForTesting = animated
 #endif
-        defer {
-            shouldMaintainBottomPosition = false
-        }
         if animated {
             collectionView.layoutIfNeeded()
             updateCollectionViewOverlayInsets()
             positionLatestMessageAtVisibleBottom(animated: true)
             scheduleAnimatedBottomPositionCorrection(latestMessageID: lastRenderedRowIDs.last)
+            // 程序化贴底表示用户仍在阅读最新消息，不能立刻清掉贴底状态；
+            // 首进页面呼出键盘时，keyboardLayoutGuide 可能晚一轮才稳定，需要后续布局继续按贴底处理。
+            shouldMaintainBottomPosition = !isUserControllingMessageScroll
             return
         }
         for pass in 0..<3 {
@@ -1701,6 +1783,9 @@ final class ChatViewController: UIViewController {
             updateCollectionViewOverlayInsets()
             positionLatestMessageAtVisibleBottom(animated: animated && pass == 0)
         }
+        // 只有用户拖拽/减速路径会主动关闭贴底；普通布局校正后仍保留状态，
+        // 避免键盘或输入栏后续高度变化把最新消息留在覆盖区域下面。
+        shouldMaintainBottomPosition = !isUserControllingMessageScroll
     }
 
     /// 动画贴底后安排无动画校正，覆盖图片/视频自适应高度晚于滚动动画稳定的情况。
@@ -1737,11 +1822,65 @@ final class ChatViewController: UIViewController {
         positionLatestMessageAtVisibleBottom(animated: false)
     }
 
+    /// 系统键盘的 `keyboardLayoutGuide` 有时会晚于 `keyboardWillChangeFrame` 动画事务稳定。
+    /// 键盘出现前已经贴底时，额外在下一轮和动画结束后校正一次，避免最新消息停在输入栏后面。
+    private func scheduleKeyboardBottomPositionCorrectionIfNeeded(shouldStickToBottom: Bool, duration: TimeInterval) {
+        guard shouldStickToBottom || needsInitialBottomPositioning else { return }
+        keyboardBottomCorrectionGeneration += 1
+        let correctionGeneration = keyboardBottomCorrectionGeneration
+        // 第一次 async 覆盖“keyboardWillChangeFrame 已到、keyboardLayoutGuide 下一轮才更新”的情况；
+        // 第二次覆盖系统键盘动画结束后输入栏最终高度才稳定的情况。
+        let correctionDelays: [TimeInterval] = [0, max(0.05, duration + 0.05)]
+
+        for delay in correctionDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.performKeyboardBottomPositionCorrectionIfNeeded(
+                    generation: correctionGeneration,
+                    shouldStickToBottom: shouldStickToBottom
+                )
+            }
+        }
+    }
+
+    /// 执行键盘后的贴底校正；只在原本贴底或首屏定位未完成时触发，不抢用户离底阅读位置。
+    private func performKeyboardBottomPositionCorrectionIfNeeded(
+        generation: Int,
+        shouldStickToBottom: Bool
+    ) {
+        guard
+            generation == keyboardBottomCorrectionGeneration,
+            !isUserControllingMessageScroll,
+            !lastRenderedRowIDs.isEmpty
+        else { return }
+
+        // 先让 inputBar 和 collectionView 吃掉 keyboardLayoutGuide 的最新约束结果，
+        // 再刷新 overlay inset，否则会用旧的输入栏位置计算最后一条消息的可见底部。
+        view.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+        updateCollectionViewOverlayInsets()
+
+        if needsInitialBottomPositioning {
+            // 首屏定位尚未完成时，继续走首屏收敛逻辑；它会等 cell 和输入栏都有真实尺寸。
+            _ = resolveInitialBottomPositioningIfPossible()
+        } else if shouldStickToBottom || !isLatestRenderedMessageVisibleAboveInputBar() {
+            // 正常贴底阅读时重新对齐；如果最新消息已经被输入栏遮住，也要兜底拉出可见区域。
+            scrollToBottom(animated: false)
+        }
+    }
+
     /// 按当前 inset 把最新消息对齐到消息可见区域底部。
     private func positionLatestMessageAtVisibleBottom(animated: Bool) {
         let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
         guard let attributes = collectionView.layoutAttributesForItem(at: lastIndexPath) else {
-            collectionView.scrollToItem(at: lastIndexPath, at: .bottom, animated: animated)
+            let fallbackOffsetY = collectionView.contentSize.height - messageVisibleHeight()
+            let targetOffsetY = clampedContentOffsetY(
+                fallbackOffsetY,
+                visibleMessageHeight: messageVisibleHeight()
+            )
+            collectionView.setContentOffset(
+                CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+                animated: animated
+            )
             return
         }
 
@@ -1763,13 +1902,78 @@ final class ChatViewController: UIViewController {
     @discardableResult
     private func resolveInitialBottomPositioningIfPossible() -> Bool {
         guard needsInitialBottomPositioning, !lastRenderedRowIDs.isEmpty else { return false }
-        guard view.window != nil, collectionView.bounds.height > 0, inputBarView.bounds.height > 0 else {
+        guard view.window != nil, collectionView.bounds.height > 0 else {
             return false
         }
 
+        isResolvingInitialBottomPositioning = true
+        defer {
+            isResolvingInitialBottomPositioning = false
+        }
+
+        view.layoutIfNeeded()
+        guard inputBarView.bounds.height > 0 else { return false }
+
+        collectionView.layoutIfNeeded()
+        updateCollectionViewOverlayInsets()
+        guard collectionView.contentSize.height > 0 else { return false }
+
         scrollToBottom(animated: false)
-        needsInitialBottomPositioning = false
+        positionContentBottomAtVisibleBottom(animated: false)
+        let didFinishInitialBottomPositioning = isLatestRenderedMessageVisibleAboveInputBar()
+        needsInitialBottomPositioning = !didFinishInitialBottomPositioning
+        if didFinishInitialBottomPositioning {
+            setInitialMessageAppearanceSuppressed(false)
+        }
         return true
+    }
+
+    /// 控制首屏消息列表显隐；使用 alpha 保留 collection view 布局和 cell 生成，避免 isHidden 中断首屏定位。
+    private func setInitialMessageAppearanceSuppressed(_ isSuppressed: Bool) {
+        let targetAlpha: CGFloat = isSuppressed ? 0 : 1
+        guard isSuppressingInitialMessageAppearance != isSuppressed || collectionView.alpha != targetAlpha else { return }
+        isSuppressingInitialMessageAppearance = isSuppressed
+        collectionView.alpha = targetAlpha
+    }
+
+    /// 判断最新消息 cell 是否已经真实生成，并位于输入栏覆盖区域上方。
+    private func isLatestRenderedMessageVisibleAboveInputBar() -> Bool {
+        guard !lastRenderedRowIDs.isEmpty else { return false }
+        let lastIndexPath = IndexPath(item: lastRenderedRowIDs.count - 1, section: 0)
+        guard let cell = collectionView.cellForItem(at: lastIndexPath) else { return false }
+
+        let cellFrame = cell.convert(cell.bounds, to: view)
+        let inputFrame = inputBarView.convert(inputBarView.bounds, to: view)
+        return cellFrame.maxY <= inputFrame.minY + 1
+    }
+
+    /// 首屏估算高度稳定前，使用 contentSize 兜底对齐到底部，确保最后一条进入可见区域。
+    private func positionContentBottomAtVisibleBottom(animated: Bool) {
+        var previousContentHeight = CGFloat.nan
+        for pass in 0..<8 {
+            collectionView.layoutIfNeeded()
+            let visibleHeight = messageVisibleHeight()
+            let targetOffsetY = clampedContentOffsetY(
+                collectionView.contentSize.height - visibleHeight,
+                visibleMessageHeight: visibleHeight
+            )
+            if abs(collectionView.contentOffset.y - targetOffsetY) > 1 {
+                collectionView.setContentOffset(
+                    CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+                    animated: animated && pass == 0
+                )
+            }
+            collectionView.layoutIfNeeded()
+
+            let didReachTarget = abs(collectionView.contentOffset.y - targetOffsetY) <= 1
+            let didStabilizeHeight = previousContentHeight.isNaN
+                ? false
+                : abs(collectionView.contentSize.height - previousContentHeight) <= 1
+            if didReachTarget && didStabilizeHeight {
+                break
+            }
+            previousContentHeight = collectionView.contentSize.height
+        }
     }
 
     /// 最新消息可见下边界，使用 content 坐标便于和 layout attributes 对齐。
@@ -1874,6 +2078,12 @@ extension ChatViewController: ChatPhotoLibraryInputViewDelegate {
 
 /// 聊天消息列表滚动回调
 extension ChatViewController: UICollectionViewDelegate {
+    /// 首屏快照可能先更新 item 数量、后回调 apply completion；可见 cell 生成时也要尝试完成贴底。
+    func collectionView(_ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
+        guard needsInitialBottomPositioning else { return }
+        _ = resolveInitialBottomPositioningIfPossible()
+    }
+
     /// 用户开始拖动时取消程序化贴底动画，避免新消息追加后的滚动动画抢回手势。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         collectionView.layer.removeAllAnimations()
@@ -1885,13 +2095,16 @@ extension ChatViewController: UICollectionViewDelegate {
 
     /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        let topThreshold = -scrollView.adjustedContentInset.top + 120
         if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
+            shouldMaintainBottomPosition = false
+        } else if scrollView.contentOffset.y <= topThreshold, !needsInitialBottomPositioning {
+            // 历史分页可能由测试或代码直接把列表推到顶部触发；即使没有用户拖拽回调，
+            // 进入顶部阅读也必须清掉旧的贴底状态，避免 prepend 时被重新拉回底部。
             shouldMaintainBottomPosition = false
         }
 
         guard !snapshotRenderCoordinator.isApplying, !needsInitialBottomPositioning else { return }
-
-        let topThreshold = -scrollView.adjustedContentInset.top + 120
 
         if scrollView.contentOffset.y <= topThreshold {
             viewModel.loadOlderMessagesIfNeeded()

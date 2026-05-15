@@ -961,7 +961,7 @@ extension AppleIMTests {
         #expect(page.rows.first.map(rowText) == "Sondra JSON message 71")
         #expect(page.rows.last.map(rowText) == "Sondra JSON message 120")
         #expect(page.hasMore == true)
-        #expect(page.nextBeforeSortSequence == 9_951)
+        #expect(page.nextBeforeSortSequence == page.rows.first?.sortSequence)
     }
 
     @Test func chatUseCaseOlderPageUsesSortSequenceCursor() async throws {
@@ -2120,20 +2120,20 @@ extension AppleIMTests {
 
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let storeProvider = ChatStoreProvider(
-            accountID: "draft_user",
+            accountID: "ui_test_user",
             storageService: storageService,
             database: DatabaseActor()
         )
         let repository = try await storeProvider.repository()
         try await repository.saveDraft(
             conversationID: "system_release",
-            userID: "draft_user",
+            userID: "ui_test_user",
             text: "Remember this"
         )
 
-        let draftText = try await repository.draft(conversationID: "system_release", userID: "draft_user")
+        let draftText = try await repository.draft(conversationID: "system_release", userID: "ui_test_user")
         let rows = try await LocalConversationListUseCase(
-            userID: "draft_user",
+            userID: "ui_test_user",
             storeProvider: storeProvider
         ).loadConversations()
         let draftRowIndex = rows.firstIndex { $0.id == "system_release" }
@@ -2145,8 +2145,8 @@ extension AppleIMTests {
         #expect((draftRowIndex ?? 0) < (otherUnpinnedRowIndex ?? 0))
         #expect(rows[draftRowIndex ?? 0].subtitle == "Draft: Remember this")
 
-        try await repository.clearDraft(conversationID: "system_release", userID: "draft_user")
-        #expect(try await repository.draft(conversationID: "system_release", userID: "draft_user") == nil)
+        try await repository.clearDraft(conversationID: "system_release", userID: "ui_test_user")
+        #expect(try await repository.draft(conversationID: "system_release", userID: "ui_test_user") == nil)
     }
 
     @Test func chatUseCaseMarksConversationReadWhenLoadingMessages() async throws {

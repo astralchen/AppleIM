@@ -39,6 +39,9 @@ final class ChatViewModel {
     private var loadTask: Task<Void, Never>?
     /// 发送任务。按发送操作独立保留，避免快速连续发送时互相取消。
     private var sendTasks: [UUID: Task<Void, Never>] = [:]
+    /// 文本发送发起顺序，用于并发发送完成顺序反转时保持时间线稳定。
+    private var nextSendOrder = 0
+    private var sendOrderByMessageID: [MessageID: Int] = [:]
     /// 草稿保存任务
     private var draftTask: Task<Void, Never>?
     /// 消息操作任务（重发、删除、撤回）
@@ -55,6 +58,8 @@ final class ChatViewModel {
     private var emojiPanelTask: Task<Void, Never>?
     /// 群聊上下文缓存
     private var groupContext: GroupChatContext?
+    /// 用户当前正在编辑的草稿；用于首屏加载和群聊上下文异步返回之间消除输入竞态。
+    private var latestComposerText: String?
     /// 当前已选择的 @ 用户
     private var selectedMentionUserIDs: [UserID] = []
     /// 当前是否选择 @ 所有人
@@ -114,10 +119,12 @@ final class ChatViewModel {
                 guard !Task.isCancelled else { return }
 
                 self.groupContext = loadedGroupContext
+                let currentDraftText = latestComposerText ?? loadedDraft
                 publish { state in
                     state.phase = .loaded
                     state.rows = Self.rowsWithTimeSeparators(loadedPage.rows)
-                    state.draftText = loadedDraft
+                    state.draftText = currentDraftText
+                    state.mentionPicker = Self.mentionPickerState(for: currentDraftText, context: loadedGroupContext)
                     state.groupAnnouncement = Self.announcementState(from: loadedGroupContext)
                     state.hasMoreOlderMessages = loadedPage.hasMore
                     state.isLoadingOlderMessages = false
@@ -203,6 +210,8 @@ final class ChatViewModel {
         let mentionsAll = selectedMentionsAll
 
         let taskID = UUID()
+        nextSendOrder += 1
+        let sendOrder = nextSendOrder
         let startUptime = ProcessInfo.processInfo.systemUptime
         logger.info("ChatViewModel sendText started taskID=\(Self.shortLogID(taskID.uuidString))")
         sendTasks[taskID] = Task { [weak self] in
@@ -213,6 +222,7 @@ final class ChatViewModel {
             }
 
             do {
+                latestComposerText = ""
                 publish { state in
                     state.draftText = ""
                 }
@@ -220,6 +230,7 @@ final class ChatViewModel {
                 for try await row in useCase.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                     guard !Task.isCancelled else { return }
                     logger.info("ChatViewModel sendText rowReceived taskID=\(Self.shortLogID(taskID.uuidString)) messageID=\(Self.shortLogID(row.id.rawValue)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
+                    sendOrderByMessageID[row.id] = sendOrder
                     upsert(row)
                 }
                 selectedMentionUserIDs = []
@@ -348,6 +359,7 @@ final class ChatViewModel {
             }
 
             do {
+                latestComposerText = ""
                 publish { state in
                     state.draftText = ""
                 }
@@ -396,6 +408,7 @@ final class ChatViewModel {
             }
 
             do {
+                latestComposerText = ""
                 publish { state in
                     state.draftText = ""
                 }
@@ -440,14 +453,10 @@ final class ChatViewModel {
 
     /// 输入内容变化时同步草稿并按需展示 @ 成员选择器
     func composerTextChanged(_ text: String) {
+        latestComposerText = text
         saveDraft(text)
         publish { state in
-            guard text.contains("@"), let groupContext else {
-                state.mentionPicker = nil
-                return
-            }
-
-            state.mentionPicker = ChatMentionPickerState(options: Self.mentionOptions(from: groupContext))
+            state.mentionPicker = Self.mentionPickerState(for: text, context: groupContext)
         }
     }
 
@@ -593,7 +602,7 @@ final class ChatViewModel {
             do {
                 let rows = try await useCase.simulateIncomingMessages()
                 guard !Task.isCancelled else { return }
-                upsert(rows)
+                upsertSimulatedIncomingRows(rows)
                 logger.info(
                     "ChatViewModel peerPush optimisticPublished taskID=\(Self.shortLogID(taskID.uuidString)) rows=\(rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
                 )
@@ -652,6 +661,7 @@ final class ChatViewModel {
     ///
     /// - Parameter text: 草稿文本
     func saveDraft(_ text: String) {
+        latestComposerText = text
         publish { state in
             state.draftText = text
         }
@@ -679,6 +689,7 @@ final class ChatViewModel {
     ///
     /// - Parameter text: 草稿文本
     func flushDraft(_ text: String) {
+        latestComposerText = text
         publish { state in
             state.draftText = text
         }
@@ -809,6 +820,7 @@ final class ChatViewModel {
                 state.rows.append(row)
             }
 
+            state.rows = rowsByStableSendOrderIfNeeded(state.rows)
             state.rows = Self.rowsWithTimeSeparators(state.rows)
             state.phase = .loaded
         }
@@ -827,9 +839,54 @@ final class ChatViewModel {
                 }
             }
 
+            state.rows = rowsByStableSendOrderIfNeeded(state.rows)
             state.rows = Self.rowsWithTimeSeparators(state.rows)
             state.phase = .loaded
         }
+    }
+
+    /// 仅对已知的并发文本发送行按发起顺序稳定排序，其它行保持现有相对位置。
+    private func rowsByStableSendOrderIfNeeded(_ rows: [ChatMessageRowState]) -> [ChatMessageRowState] {
+        rows.enumerated()
+            .sorted { lhs, rhs in
+                let lhsOrder = sendOrderByMessageID[lhs.element.id]
+                let rhsOrder = sendOrderByMessageID[rhs.element.id]
+                switch (lhsOrder, rhsOrder) {
+                case let (lhsOrder?, rhsOrder?):
+                    return lhsOrder == rhsOrder ? lhs.offset < rhs.offset : lhsOrder < rhsOrder
+                default:
+                    return lhs.offset < rhs.offset
+                }
+            }
+            .map(\.element)
+    }
+
+    /// 批量插入模拟推送消息，并按消息序列校正并发完成顺序。
+    private func upsertSimulatedIncomingRows(_ rows: [ChatMessageRowState]) {
+        guard !rows.isEmpty else { return }
+
+        publish { state in
+            for row in rows {
+                if let index = state.rows.firstIndex(where: { $0.id == row.id }) {
+                    state.rows[index] = row
+                } else {
+                    state.rows.append(row)
+                }
+            }
+
+            state.rows.sort(by: Self.messageTimelineOrder)
+            state.rows = Self.rowsWithTimeSeparators(state.rows)
+            state.phase = .loaded
+        }
+    }
+
+    /// 保持模拟推送时间线按消息序列升序展示，避免并发推送完成顺序影响 UI 顺序。
+    private static func messageTimelineOrder(_ lhs: ChatMessageRowState, _ rhs: ChatMessageRowState) -> Bool {
+        if lhs.sortSequence == rhs.sortSequence {
+            return lhs.id.rawValue < rhs.id.rawValue
+        }
+
+        return lhs.sortSequence < rhs.sortSequence
     }
 
     private static func rowsWithTimeSeparators(_ rows: [ChatMessageRowState]) -> [ChatMessageRowState] {
@@ -882,6 +939,14 @@ final class ChatViewModel {
                 }
         )
         return options
+    }
+
+    private static func mentionPickerState(for text: String, context: GroupChatContext?) -> ChatMentionPickerState? {
+        guard text.contains("@"), let context else {
+            return nil
+        }
+        let options = mentionOptions(from: context)
+        return options.isEmpty ? nil : ChatMentionPickerState(options: options)
     }
 
     /// 发布状态更新

@@ -405,6 +405,57 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerKeepsInitialMessagesHiddenUntilBottomPositionSettles() async throws {
+        let rows = (1...120).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "initial_hidden_until_settled_\(index)"),
+                text: "首屏入场稳定性消息 \(index)，用于覆盖进入聊天页时未完成贴底定位前的可见抖动。",
+                sortSequence: Int64(index),
+                isOutgoing: index % 4 == 0
+            )
+        }
+        let useCase = DeferredInitialPageStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Initial Hidden")
+        let viewController = ChatViewController(viewModel: viewModel)
+
+        viewController.loadViewIfNeeded()
+        useCase.releaseInitialPage()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+
+        // 初始快照已经渲染但视图还没有入窗时，底部定位不能完成；
+        // 此时隐藏消息列表，避免用户进入页面后看到未定位内容再往下跳。
+        #expect(collectionView.alpha == 0)
+
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            window.layoutIfNeeded()
+            collectionView.layoutIfNeeded()
+            return collectionView.alpha == 1
+                && latestMessageCellIsAboveInputBar(
+                    collectionView: collectionView,
+                    item: rows.count - 1,
+                    inputBar: inputBar,
+                    in: viewController.view
+                )
+        }
+
+        #expect(collectionView.alpha == 1)
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsInitialLatestMessageAboveInputBarWhenEnteringFromNavigation() async throws {
         let rows = (1...120).map { index in
             makeChatRow(
@@ -439,6 +490,16 @@ extension AppleIMTests {
         collectionView.layoutIfNeeded()
 
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            window.layoutIfNeeded()
+            collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: rows.count - 1,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
         let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
         let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
@@ -503,6 +564,16 @@ extension AppleIMTests {
         collectionView.layoutIfNeeded()
 
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            window.layoutIfNeeded()
+            collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: rows.count - 1,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
         let lastCell = try #require(collectionView.cellForItem(at: IndexPath(item: rows.count - 1, section: 0)))
         let lastCellFrame = lastCell.convert(lastCell.bounds, to: viewController.view)
         let inputBarFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
@@ -547,6 +618,16 @@ extension AppleIMTests {
 
         let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
         collectionView.layoutIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            window.layoutIfNeeded()
+            collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: rows.count - 1,
+                inputBar: inputBar,
+                in: viewController.view
+            )
+        }
 
         let stableOffsetY = collectionView.contentOffset.y
         viewController.viewDidLayoutSubviews()
@@ -1104,6 +1185,120 @@ extension AppleIMTests {
         setup.inputBar.bottomAnchor.constraint(
             equalTo: setup.viewController.view.bottomAnchor,
             constant: -300
+        ).isActive = true
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            setup.window.layoutIfNeeded()
+            setup.collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: lastItem,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        }
+        let lastCell = try #require(setup.collectionView.cellForItem(at: IndexPath(item: lastItem, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerReanchorsInitialBottomPositionWhenKeyboardMovesInputBarUpLater() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Initial Keyboard Overlay",
+            rowPrefix: "initial_keyboard_overlay"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            setup.window.layoutIfNeeded()
+            setup.collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: lastItem,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        }
+
+        // 复现真实用户路径中的竞态：键盘通知先到，随后 keyboardLayoutGuide 才把输入栏抬高。
+        // 旧逻辑会在通知阶段清掉贴底维护，导致后续输入栏真实上移后最后一条消息没有再次避让。
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        // 单元测试里不能直接驱动系统键盘，所以用替换 bottom 约束模拟
+        // keyboardLayoutGuide 稳定后的输入栏位置。
+        for constraint in setup.viewController.view.constraints where
+            ((constraint.firstItem as? UIView) === setup.inputBar && constraint.firstAttribute == .bottom)
+                || ((constraint.secondItem as? UIView) === setup.inputBar && constraint.secondAttribute == .bottom) {
+            constraint.isActive = false
+        }
+        setup.inputBar.bottomAnchor.constraint(
+            equalTo: setup.viewController.view.bottomAnchor,
+            constant: -300
+        ).isActive = true
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        // 给键盘后的延迟校正一次主线程机会，断言最新消息最终一定在输入栏上方。
+        try await Task.sleep(nanoseconds: 50_000_000)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        let lastCell = try #require(setup.collectionView.cellForItem(at: IndexPath(item: lastItem, section: 0)))
+        let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsInitialBottomStickyWhenKeyboardGreatlyReducesVisibleArea() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Large Keyboard Overlay",
+            rowPrefix: "large_keyboard_overlay"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            setup.window.layoutIfNeeded()
+            setup.collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: lastItem,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        }
+
+        // 复现截图中的状态：用户没有手动离底，键盘把输入栏大幅抬高，
+        // 旧的可见底部判断已经不再接近 contentSize，但最后一条仍必须跟着上移。
+        for constraint in setup.viewController.view.constraints where
+            ((constraint.firstItem as? UIView) === setup.inputBar && constraint.firstAttribute == .bottom)
+                || ((constraint.secondItem as? UIView) === setup.inputBar && constraint.secondAttribute == .bottom) {
+            constraint.isActive = false
+        }
+        setup.inputBar.bottomAnchor.constraint(
+            equalTo: setup.viewController.view.bottomAnchor,
+            constant: -460
         ).isActive = true
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
