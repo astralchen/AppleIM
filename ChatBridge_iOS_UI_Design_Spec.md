@@ -123,6 +123,8 @@ iOS 15-25：
 - 语音消息使用播放图标、时长和轻量状态标识，强化娱乐感。
 - 底部输入栏采用 Apple Messages 风格：
   - 轻玻璃底座。
+  - 输入行、待发送媒体预览、相册面板和表情面板共享同一个底部输入区材质背景，背景需要向底部安全区域外延展，避免安全区边缘出现断层。
+  - 待发送媒体预览和自定义面板作为透明内容层叠在输入区背景上，不再各自使用独立的大块面板背景。
   - 左侧更多按钮和语音按钮。
   - 中间宽输入胶囊，支持 1-5 行自动增长。
   - 右侧圆形上箭头发送按钮。
@@ -186,6 +188,8 @@ iOS 15-25：
 - Cell、资料头和纯展示模块使用 `UIContentConfiguration` + `UIContentView` 表达内容，避免在 Cell 复用过程中临时创建和移除子视图。
 - `UICollectionView` Cell 优先使用 `UICollectionView.CellRegistration` 和 diffable data source，减少手写 reuse identifier 与复用状态遗漏。
 - 按钮外观统一从 `ChatBridgeDesignSystem` 获取 `UIButton.Configuration`，通过 `configurationUpdateHandler` 表达 normal、highlighted、disabled 等状态。
+- `ChatInputBarView` 这类复合 UIKit 控件内部不继续平铺同类 UI 属性；附件预览轨道、文本输入胶囊、录音态、待发送语音预览、输入面板容器等应优先封装成私有子视图，由宿主视图负责输入模式、布局高度和 action 路由。
+- 自定义输入模式使用单一枚举表达系统键盘、相册面板、表情面板等互斥状态，避免多个布尔值或 sibling 面板约束组合导致状态不一致。
 
 ---
 
