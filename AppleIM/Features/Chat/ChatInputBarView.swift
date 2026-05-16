@@ -1215,6 +1215,9 @@ private final class ChatAttachmentPreviewRailView: UIView {
 /// 聊天文本输入胶囊。
 @MainActor
 private final class ChatComposerFieldView: UIView {
+    /// 输入胶囊保持初始高度对应的固定圆角，多行输入时不随高度继续增大。
+    private static let cornerRadius: CGFloat = 22
+
     /// 文本输入代理。
     weak var textViewDelegate: UITextViewDelegate? {
         didSet {
@@ -1270,12 +1273,6 @@ private final class ChatComposerFieldView: UIView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         configure()
-    }
-
-    /// 根据当前高度保持胶囊圆角。
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        layer.cornerRadius = bounds.height / 2
     }
 
     /// 设置文本内容。
@@ -1399,7 +1396,7 @@ private final class ChatComposerFieldView: UIView {
     private func configure() {
         backgroundColor = .clear
         clipsToBounds = true
-        layer.cornerRadius = 22
+        layer.cornerRadius = Self.cornerRadius
         setContentHuggingPriority(.defaultLow, for: .horizontal)
         setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 

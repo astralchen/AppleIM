@@ -794,6 +794,26 @@ extension AppleIMTests {
         #expect(readableFillAlpha >= 0.42)
     }
 
+    @MainActor
+    @Test func chatInputBarKeepsTextContainerCornerRadiusFixedWhenTextGrows() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 160))
+        inputBar.layoutIfNeeded()
+
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        let textContainer = try #require(textView.superview)
+        textView.text = """
+        输入文字换行
+        第二行
+        第三行
+        第四行
+        """
+        inputBar.textViewDidChange(textView)
+        inputBar.layoutIfNeeded()
+
+        #expect(textContainer.bounds.height > 44)
+        #expect(textContainer.layer.cornerRadius == 22)
+    }
+
     @Test func chatMessageContentKindClassifiesExistingRows() {
         #expect(ChatMessageContentKind(row: makeChatRow(id: "text_kind", text: "Hello", sortSequence: 1)) == .text)
         #expect(ChatMessageContentKind(row: makeImageRow(id: "image_kind", sortSequence: 2)) == .image)
