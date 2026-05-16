@@ -87,8 +87,6 @@ final class ChatViewController: UIViewController {
     private let snapshotRenderCoordinator = ChatSnapshotRenderCoordinator<ChatViewState>()
     /// 聊天 UI 耗时日志。
     private let logger = AppLogger(category: .chat)
-    /// 语音按钮触摸是否仍处于按下状态
-    private var isVoiceTouchActive = false
     /// 首屏消息已经渲染，但仍等待稳定布局后执行第一次贴底定位。
     private var needsInitialBottomPositioning = false
     /// 首屏贴底完成前临时隐藏消息列表，避免用户看到估算高度收敛带来的入场位移。
@@ -97,12 +95,14 @@ final class ChatViewController: UIViewController {
     private var shouldMaintainBottomPosition = true
     /// 用户正在拖拽或减速消息列表时，暂停自动贴底，避免底部反弹后抢回滚动位置。
     private var isUserControllingMessageScroll = false
-    /// 是否正在从相册面板切换到系统键盘。
-    private var isSwitchingPhotoLibraryInputToKeyboard = false
-    /// 是否正在从表情面板切换到系统键盘。
-    private var isSwitchingEmojiInputToKeyboard = false
-    /// 自定义输入面板切换到系统键盘期间是否需要保持列表贴底。
+    /// 是否正在从输入栏内部自定义面板切换到系统键盘。
+    private var isSwitchingCustomInputPanelToKeyboard = false
+    /// 自定义面板到系统键盘过渡期间是否需要保持列表贴底。
     private var shouldStickToBottomDuringKeyboardInputSwitch = false
+    /// 是否正在从系统键盘切换到输入栏内部自定义面板。
+    private var isSwitchingKeyboardToCustomInputPanel = false
+    /// 系统键盘到自定义面板过渡期间是否需要保持列表贴底。
+    private var shouldStickToBottomDuringCustomInputSwitch = false
     /// 输入栏一次高度变化跨越 will/did 两个回调，这里暂存变化前的滚动状态。
     private var pendingInputBarLayoutTransaction: MessageLayoutTransaction?
     /// 动画贴底校正代次；用户开始拖动后让旧的延迟校正失效。
@@ -117,14 +117,6 @@ final class ChatViewController: UIViewController {
     /// 测试用：记录最近一次贴底滚动是否请求动画。
     private(set) var lastScrollToBottomRequestedAnimationForTesting: Bool?
 #endif
-
-    /// 自定义输入面板类型。
-    private enum CustomInputPanel: Equatable {
-        /// 图片库面板。
-        case photoLibrary
-        /// 表情面板。
-        case emoji
-    }
 
     /// 一次会影响消息可见区域的布局变化。
     private struct MessageLayoutTransaction {
@@ -173,14 +165,6 @@ final class ChatViewController: UIViewController {
     private lazy var emojiPanelView = makeEmojiPanelView()
     /// 输入栏贴系统键盘约束
     private var inputBarKeyboardBottomConstraint: NSLayoutConstraint?
-    /// 输入栏贴图片库面板约束
-    private var inputBarPhotoLibraryBottomConstraint: NSLayoutConstraint?
-    /// 图片库面板底部约束
-    private var photoLibraryInputBottomConstraint: NSLayoutConstraint?
-    /// 输入栏贴表情面板约束
-    private var inputBarEmojiBottomConstraint: NSLayoutConstraint?
-    /// 表情面板底部约束
-    private var emojiPanelBottomConstraint: NSLayoutConstraint?
     /// 语音录制控制器
     private let voiceRecorder = VoiceRecordingController()
     /// 语音播放控制器
@@ -263,6 +247,9 @@ final class ChatViewController: UIViewController {
         collectionView.contentInsetAdjustmentBehavior = .never
         collectionView.delegate = self
         collectionView.accessibilityIdentifier = "chat.collection"
+        if #available(iOS 26.0, *) {
+            collectionView.bottomEdgeEffect.style = .soft
+        }
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.text = "No messages yet"
@@ -296,10 +283,10 @@ final class ChatViewController: UIViewController {
 
         inputBarView.translatesAutoresizingMaskIntoConstraints = false
         photoLibraryInputView.translatesAutoresizingMaskIntoConstraints = false
-        photoLibraryInputView.isHidden = true
         photoLibraryInputView.accessibilityIdentifier = "chat.photoLibraryInputPanel"
         emojiPanelView.translatesAutoresizingMaskIntoConstraints = false
-        emojiPanelView.isHidden = true
+        inputBarView.installPhotoLibraryInputView(photoLibraryInputView)
+        inputBarView.installEmojiPanelView(emojiPanelView)
         configureInputBarCallbacks()
 
         view.addSubview(topBannerStackView)
@@ -307,38 +294,11 @@ final class ChatViewController: UIViewController {
         view.addSubview(emptyLabel)
         view.addSubview(mentionPickerStackView)
         view.addSubview(inputBarView)
-        view.addSubview(photoLibraryInputView)
-        view.addSubview(emojiPanelView)
 
         let inputBarKeyboardBottomConstraint = inputBarView.bottomAnchor.constraint(
-            equalTo: view.keyboardLayoutGuide.topAnchor,
-            constant: -8
-        )
-        let inputBarPhotoLibraryBottomConstraint = inputBarView.bottomAnchor.constraint(
-            equalTo: photoLibraryInputView.topAnchor,
-            constant: -8
-        )
-        let photoLibraryInputHeightConstraint = photoLibraryInputView.heightAnchor.constraint(
-            equalToConstant: ChatPhotoLibraryInputView.panelHeight
-        )
-        let photoLibraryInputBottomConstraint = photoLibraryInputView.bottomAnchor.constraint(
-            equalTo: view.bottomAnchor
-        )
-        let inputBarEmojiBottomConstraint = inputBarView.bottomAnchor.constraint(
-            equalTo: emojiPanelView.topAnchor,
-            constant: -8
-        )
-        let emojiPanelHeightConstraint = emojiPanelView.heightAnchor.constraint(
-            equalToConstant: ChatEmojiPanelView.panelHeight
-        )
-        let emojiPanelBottomConstraint = emojiPanelView.bottomAnchor.constraint(
-            equalTo: view.bottomAnchor
+            equalTo: view.keyboardLayoutGuide.topAnchor
         )
         self.inputBarKeyboardBottomConstraint = inputBarKeyboardBottomConstraint
-        self.inputBarPhotoLibraryBottomConstraint = inputBarPhotoLibraryBottomConstraint
-        self.photoLibraryInputBottomConstraint = photoLibraryInputBottomConstraint
-        self.inputBarEmojiBottomConstraint = inputBarEmojiBottomConstraint
-        self.emojiPanelBottomConstraint = emojiPanelBottomConstraint
 
         NSLayoutConstraint.activate([
             topBannerStackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -355,24 +315,14 @@ final class ChatViewController: UIViewController {
             emptyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: view.layoutMarginsGuide.leadingAnchor),
             emptyLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.trailingAnchor),
 
-            inputBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            inputBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+            inputBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            inputBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             inputBarKeyboardBottomConstraint,
 
             mentionPickerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             mentionPickerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             mentionPickerStackView.bottomAnchor.constraint(equalTo: inputBarView.topAnchor, constant: -8),
-            mentionPickerStackView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
-
-            photoLibraryInputView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            photoLibraryInputView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            photoLibraryInputBottomConstraint,
-            photoLibraryInputHeightConstraint,
-
-            emojiPanelView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            emojiPanelView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            emojiPanelBottomConstraint,
-            emojiPanelHeightConstraint
+            mentionPickerStackView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
         ])
     }
 
@@ -421,18 +371,10 @@ final class ChatViewController: UIViewController {
         case let .attachmentRemoved(id):
             removePendingAttachment(id: id)
             photoLibraryInputView.removeSelection(assetID: id)
-        case .voiceTouchDown:
-            voiceButtonTouchDown()
-        case .voiceTouchDragExit:
-            voiceButtonTouchDragExit()
-        case .voiceTouchDragEnter:
-            voiceButtonTouchDragEnter()
-        case .voiceTouchUpInside:
-            voiceButtonTouchUpInside()
-        case .voiceTouchUpOutside:
-            voiceButtonTouchUpOutside()
-        case .voiceTouchCancel:
-            voiceButtonTouchCancel()
+        case .voiceRecordTapped:
+            voiceRecordTapped()
+        case .voiceRecordingStopTapped:
+            voiceRecordingStopTapped()
         case .voicePreviewCancel:
             cancelPendingVoicePreview()
         case .voicePreviewPlayToggle:
@@ -496,17 +438,22 @@ final class ChatViewController: UIViewController {
 
     /// 键盘 frame 变化时同步布局，并在用户原本贴底阅读时维持最新消息可见。
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
-        let isCompletingPhotoLibraryKeyboardSwitch = isSwitchingPhotoLibraryInputToKeyboard
-            && !photoLibraryInputView.isHidden
-        let isCompletingEmojiKeyboardSwitch = isSwitchingEmojiInputToKeyboard
-            && !emojiPanelView.isHidden
-        let isCompletingCustomInputKeyboardSwitch = isCompletingPhotoLibraryKeyboardSwitch
-            || isCompletingEmojiKeyboardSwitch
-        let shouldStickToBottom = isCompletingCustomInputKeyboardSwitch
-            ? shouldStickToBottomDuringKeyboardInputSwitch
-            : shouldStickToBottomForLayoutChange()
+        let isCompletingCustomInputKeyboardSwitch = isSwitchingCustomInputPanelToKeyboard
+        let isCompletingKeyboardCustomInputSwitch = isSwitchingKeyboardToCustomInputPanel
+        let shouldKeepBottomDuringInputSwitch: Bool
+        if isCompletingCustomInputKeyboardSwitch {
+            shouldKeepBottomDuringInputSwitch = shouldStickToBottomDuringKeyboardInputSwitch
+        } else if isCompletingKeyboardCustomInputSwitch {
+            shouldKeepBottomDuringInputSwitch = shouldStickToBottomDuringCustomInputSwitch
+        } else {
+            shouldKeepBottomDuringInputSwitch = shouldStickToBottomForLayoutChange()
+        }
         let layoutTransaction = MessageLayoutTransaction(
-            shouldStickToBottom: shouldStickToBottom,
+            // 从自定义面板切回键盘时，输入栏会先保留旧面板等待键盘动画接管。
+            // 从键盘切自定义面板时也要等键盘收起通知一起展开面板。这里必须沿用切换发起前的贴底判断，
+            // 否则 keyboardLayoutGuide 晚一轮稳定时，
+            // 最新消息可能被抬高后的输入栏盖住，或者离底阅读被错误拉回底部。
+            shouldStickToBottom: shouldKeepBottomDuringInputSwitch,
             previousContentOffset: collectionView.contentOffset
         )
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
@@ -514,40 +461,28 @@ final class ChatViewController: UIViewController {
             ?? UIView.AnimationOptions.curveEaseInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
 
-        if isCompletingCustomInputKeyboardSwitch {
-            inputBarKeyboardBottomConstraint?.isActive = true
-            inputBarPhotoLibraryBottomConstraint?.isActive = false
-            inputBarEmojiBottomConstraint?.isActive = false
-        }
-        if isCompletingPhotoLibraryKeyboardSwitch {
-            photoLibraryInputBottomConstraint?.constant = 0
-        }
-        if isCompletingEmojiKeyboardSwitch {
-            emojiPanelBottomConstraint?.constant = 0
-        }
-
         let layoutChanges = { [weak self] in
             guard let self else { return }
-            if isCompletingPhotoLibraryKeyboardSwitch {
-                self.photoLibraryInputView.alpha = 0
+            self.resetInputBarKeyboardBottomOffset()
+            if isCompletingCustomInputKeyboardSwitch {
+                self.inputBarView.applyDeferredKeyboardPanelCollapse()
             }
-            if isCompletingEmojiKeyboardSwitch {
-                self.emojiPanelView.alpha = 0
+            if isCompletingKeyboardCustomInputSwitch {
+                self.inputBarView.applyDeferredCustomPanelPresentation()
             }
             self.completeMessageLayoutTransaction(layoutTransaction, animated: false)
         }
         let completion: (Bool) -> Void = { [weak self] _ in
             guard let self else { return }
-            if isCompletingPhotoLibraryKeyboardSwitch {
-                self.photoLibraryInputView.isHidden = true
-                self.photoLibraryInputView.resetDismissGestureState()
-                self.isSwitchingPhotoLibraryInputToKeyboard = false
+            if isCompletingCustomInputKeyboardSwitch {
+                self.inputBarView.finalizeDeferredKeyboardPanelCollapse()
+                self.isSwitchingCustomInputPanelToKeyboard = false
                 self.shouldStickToBottomDuringKeyboardInputSwitch = false
             }
-            if isCompletingEmojiKeyboardSwitch {
-                self.emojiPanelView.isHidden = true
-                self.isSwitchingEmojiInputToKeyboard = false
-                self.shouldStickToBottomDuringKeyboardInputSwitch = false
+            if isCompletingKeyboardCustomInputSwitch {
+                self.inputBarView.finalizeDeferredCustomPanelPresentation()
+                self.isSwitchingKeyboardToCustomInputPanel = false
+                self.shouldStickToBottomDuringCustomInputSwitch = false
             }
             self.completeMessageLayoutTransaction(layoutTransaction, animated: false)
         }
@@ -593,277 +528,96 @@ final class ChatViewController: UIViewController {
 
     /// 展示图片库输入面板
     private func showPhotoLibraryInput() {
-        let layoutTransaction = beginMessageLayoutTransaction()
-        isSwitchingPhotoLibraryInputToKeyboard = false
-        isSwitchingEmojiInputToKeyboard = false
+        isSwitchingCustomInputPanelToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
+        resetInputBarKeyboardBottomOffset()
+        photoLibraryInputView.alpha = 1
         photoLibraryInputView.refreshAuthorization()
-
-        if !emojiPanelView.isHidden {
-            switchCustomInputPanel(
-                from: .emoji,
-                to: .photoLibrary,
-                transaction: layoutTransaction
-            )
-            inputBarView.showPhotoLibraryInput()
-            return
+        let mayDeferKeyboardDismiss = inputBarView.isEditingText
+        if mayDeferKeyboardDismiss {
+            // `resignFirstResponder()` 可能同步触发键盘通知；必须先标记过渡，
+            // 否则通知到来时控制器还不知道要在同一动画事务里展开面板。
+            shouldStickToBottomDuringCustomInputSwitch = shouldStickToBottomForLayoutChange()
+            isSwitchingKeyboardToCustomInputPanel = true
+        } else {
+            isSwitchingKeyboardToCustomInputPanel = false
+            shouldStickToBottomDuringCustomInputSwitch = false
         }
-
-        hideEmojiInput(animated: false)
-        setPhotoLibraryInputVisible(true, animated: true, transaction: layoutTransaction)
-        inputBarView.showPhotoLibraryInput()
+        let didDeferCustomPanelPresentation = inputBarView.showPhotoLibraryInput()
+        if !didDeferCustomPanelPresentation {
+            isSwitchingKeyboardToCustomInputPanel = false
+            shouldStickToBottomDuringCustomInputSwitch = false
+        }
     }
 
     /// 展示表情输入面板
     private func showEmojiInput() {
-        let layoutTransaction = beginMessageLayoutTransaction()
-        isSwitchingPhotoLibraryInputToKeyboard = false
-        isSwitchingEmojiInputToKeyboard = false
+        isSwitchingCustomInputPanelToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
+        resetInputBarKeyboardBottomOffset()
+        emojiPanelView.alpha = 1
         viewModel.loadEmojiPanel()
-
-        if !photoLibraryInputView.isHidden {
-            switchCustomInputPanel(
-                from: .photoLibrary,
-                to: .emoji,
-                transaction: layoutTransaction
-            )
-            inputBarView.showEmojiInput()
-            return
+        let mayDeferKeyboardDismiss = inputBarView.isEditingText
+        if mayDeferKeyboardDismiss {
+            // 同步键盘通知会发生在 showEmojiInput() 返回前，过渡状态必须先准备好。
+            shouldStickToBottomDuringCustomInputSwitch = shouldStickToBottomForLayoutChange()
+            isSwitchingKeyboardToCustomInputPanel = true
+        } else {
+            isSwitchingKeyboardToCustomInputPanel = false
+            shouldStickToBottomDuringCustomInputSwitch = false
         }
-
-        hidePhotoLibraryInput(animated: false)
-        setEmojiInputVisible(true, animated: true, transaction: layoutTransaction)
-        inputBarView.showEmojiInput()
+        let didDeferCustomPanelPresentation = inputBarView.showEmojiInput()
+        if !didDeferCustomPanelPresentation {
+            isSwitchingKeyboardToCustomInputPanel = false
+            shouldStickToBottomDuringCustomInputSwitch = false
+        }
     }
 
     /// 从自定义输入面板切回系统键盘输入。
     private func showKeyboardInput() {
-        if !photoLibraryInputView.isHidden {
-            isSwitchingPhotoLibraryInputToKeyboard = true
-            isSwitchingEmojiInputToKeyboard = false
-            shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
-            inputBarView.showKeyboardInput()
-            return
+        isSwitchingKeyboardToCustomInputPanel = false
+        shouldStickToBottomDuringCustomInputSwitch = false
+        resetInputBarKeyboardBottomOffset()
+        shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
+        isSwitchingCustomInputPanelToKeyboard = inputBarView.showKeyboardInput()
+        if !isSwitchingCustomInputPanelToKeyboard {
+            shouldStickToBottomDuringKeyboardInputSwitch = false
         }
-        if !emojiPanelView.isHidden {
-            isSwitchingPhotoLibraryInputToKeyboard = false
-            isSwitchingEmojiInputToKeyboard = true
-            shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
-            inputBarView.showKeyboardInput()
-            return
-        }
-
-        isSwitchingPhotoLibraryInputToKeyboard = false
-        isSwitchingEmojiInputToKeyboard = false
-        shouldStickToBottomDuringKeyboardInputSwitch = false
-        inputBarView.showKeyboardInput()
     }
 
     /// 隐藏图片库输入面板
     private func hidePhotoLibraryInput(animated: Bool, completion: (() -> Void)? = nil) {
-        setPhotoLibraryInputVisible(
-            false,
-            animated: animated,
-            transaction: beginMessageLayoutTransaction(),
-            completion: completion
-        )
+        isSwitchingCustomInputPanelToKeyboard = false
+        shouldStickToBottomDuringKeyboardInputSwitch = false
+        isSwitchingKeyboardToCustomInputPanel = false
+        shouldStickToBottomDuringCustomInputSwitch = false
+        resetInputBarKeyboardBottomOffset()
+        photoLibraryInputView.resetDismissGestureState()
+        inputBarView.hideCustomInputPanel(animated: animated)
+        completion?()
     }
 
     /// 隐藏表情输入面板
     private func hideEmojiInput(animated: Bool, completion: (() -> Void)? = nil) {
-        setEmojiInputVisible(
-            false,
-            animated: animated,
-            transaction: beginMessageLayoutTransaction(),
-            completion: completion
-        )
+        isSwitchingCustomInputPanelToKeyboard = false
+        shouldStickToBottomDuringKeyboardInputSwitch = false
+        isSwitchingKeyboardToCustomInputPanel = false
+        shouldStickToBottomDuringCustomInputSwitch = false
+        resetInputBarKeyboardBottomOffset()
+        inputBarView.hideCustomInputPanel(animated: animated)
+        completion?()
     }
 
-    /// 在两个自定义输入面板之间直接切换，避免先回落到键盘约束导致输入栏抖动。
-    private func switchCustomInputPanel(
-        from source: CustomInputPanel,
-        to target: CustomInputPanel,
-        transaction: MessageLayoutTransaction
-    ) {
-        switch target {
-        case .photoLibrary:
-            photoLibraryInputView.isHidden = false
-            photoLibraryInputView.resetDismissGestureState()
-            photoLibraryInputBottomConstraint?.constant = 0
-            inputBarPhotoLibraryBottomConstraint?.constant = -8
-        case .emoji:
-            emojiPanelView.isHidden = false
-            emojiPanelBottomConstraint?.constant = 0
-            inputBarEmojiBottomConstraint?.constant = -8
-        }
-
-        inputBarKeyboardBottomConstraint?.isActive = false
-        inputBarPhotoLibraryBottomConstraint?.isActive = target == .photoLibrary
-        inputBarEmojiBottomConstraint?.isActive = target == .emoji
-
-        let sourceView: UIView
-        let targetView: UIView
-        switch source {
-        case .photoLibrary:
-            sourceView = photoLibraryInputView
-        case .emoji:
-            sourceView = emojiPanelView
-        }
-        switch target {
-        case .photoLibrary:
-            targetView = photoLibraryInputView
-        case .emoji:
-            targetView = emojiPanelView
-        }
-
-        sourceView.isHidden = false
-        sourceView.alpha = 1
-
-        let layoutChanges = { [weak self] in
-            guard let self else { return }
-            sourceView.alpha = 0
-            targetView.alpha = 1
-            self.completeMessageLayoutTransaction(transaction, animated: false)
-        }
-        let completion: (Bool) -> Void = { [weak self] _ in
-            guard let self else { return }
-            self.hideInactiveCustomInputPanel(source)
-            self.completeMessageLayoutTransaction(transaction, animated: false)
-        }
-
-        UIView.animate(
-            withDuration: 0.25,
-            delay: 0,
-            options: [.beginFromCurrentState, .allowUserInteraction],
-            animations: layoutChanges,
-            completion: completion
-        )
-    }
-
-    /// 只隐藏已经不是当前输入目标的旧面板，避免快速连续切换时误藏新目标。
-    private func hideInactiveCustomInputPanel(_ panel: CustomInputPanel) {
-        switch panel {
-        case .photoLibrary:
-            guard inputBarPhotoLibraryBottomConstraint?.isActive != true else { return }
-            photoLibraryInputView.isHidden = true
-            photoLibraryInputView.resetDismissGestureState()
-        case .emoji:
-            guard inputBarEmojiBottomConstraint?.isActive != true else { return }
-            emojiPanelView.isHidden = true
-        }
-    }
-
-    /// 切换图片库输入面板布局
-    private func setPhotoLibraryInputVisible(
-        _ isVisible: Bool,
-        animated: Bool,
-        transaction: MessageLayoutTransaction,
-        completion externalCompletion: (() -> Void)? = nil
-    ) {
-        setCustomInputPanelVisible(
-            .photoLibrary,
-            isVisible: isVisible,
-            animated: animated,
-            transaction: transaction,
-            completion: externalCompletion
-        )
-    }
-
-    /// 切换表情输入面板布局
-    private func setEmojiInputVisible(
-        _ isVisible: Bool,
-        animated: Bool,
-        transaction: MessageLayoutTransaction,
-        completion externalCompletion: (() -> Void)? = nil
-    ) {
-        setCustomInputPanelVisible(
-            .emoji,
-            isVisible: isVisible,
-            animated: animated,
-            transaction: transaction,
-            completion: externalCompletion
-        )
-    }
-
-    /// 切换自定义输入面板布局
-    private func setCustomInputPanelVisible(
-        _ panel: CustomInputPanel,
-        isVisible: Bool,
-        animated: Bool,
-        transaction: MessageLayoutTransaction,
-        completion externalCompletion: (() -> Void)? = nil
-    ) {
-        let panelView: UIView
-        let inputPanelConstraint: NSLayoutConstraint?
-        let panelBottomConstraint: NSLayoutConstraint?
-
-        switch panel {
-        case .photoLibrary:
-            panelView = photoLibraryInputView
-            inputPanelConstraint = inputBarPhotoLibraryBottomConstraint
-            panelBottomConstraint = photoLibraryInputBottomConstraint
-        case .emoji:
-            panelView = emojiPanelView
-            inputPanelConstraint = inputBarEmojiBottomConstraint
-            panelBottomConstraint = emojiPanelBottomConstraint
-        }
-
-        guard panelView.isHidden == isVisible else {
-            externalCompletion?()
-            return
-        }
-
-        if isVisible {
-            panelView.isHidden = false
-            panelBottomConstraint?.constant = 0
-            inputPanelConstraint?.constant = -8
-            if panel == .photoLibrary {
-                photoLibraryInputView.resetDismissGestureState()
-            }
-        }
-
-        inputBarKeyboardBottomConstraint?.isActive = !isVisible
-        inputBarPhotoLibraryBottomConstraint?.isActive = panel == .photoLibrary && isVisible
-        inputBarEmojiBottomConstraint?.isActive = panel == .emoji && isVisible
-
-        let layoutChanges = { [weak self] in
-            guard let self else { return }
-            panelView.alpha = isVisible ? 1 : 0
-            self.completeMessageLayoutTransaction(transaction, animated: false)
-        }
-        let completion: (Bool) -> Void = { [weak self] _ in
-            guard let self else { return }
-            if !isVisible {
-                panelView.isHidden = true
-                if panel == .photoLibrary {
-                    self.photoLibraryInputView.resetDismissGestureState()
-                }
-            }
-            self.completeMessageLayoutTransaction(transaction, animated: false)
-            externalCompletion?()
-        }
-
-        if animated {
-            UIView.animate(
-                withDuration: 0.25,
-                delay: 0,
-                options: [.beginFromCurrentState, .allowUserInteraction],
-                animations: layoutChanges,
-                completion: completion
-            )
-        } else {
-            layoutChanges()
-            completion(true)
-        }
+    /// 重置输入栏相对键盘 guide 的额外偏移。
+    private func resetInputBarKeyboardBottomOffset() {
+        inputBarKeyboardBottomConstraint?.constant = 0
     }
 
     /// 应用图片库面板下滑过程中的整体位移
     private func applyPhotoLibraryDismissPanTranslation(_ translationY: CGFloat) {
         let layoutTransaction = beginMessageLayoutTransaction()
         let clampedTranslation = max(0, translationY)
-        inputBarPhotoLibraryBottomConstraint?.constant = -8
-        photoLibraryInputBottomConstraint?.constant = clampedTranslation
+        inputBarKeyboardBottomConstraint?.constant = clampedTranslation
         completeMessageLayoutTransaction(layoutTransaction, animated: false)
     }
 
@@ -981,7 +735,7 @@ final class ChatViewController: UIViewController {
     }
 
     private func reeditRevokedText(_ text: String) {
-        inputBarView.showKeyboardInput()
+        showKeyboardInput()
         inputBarView.setText(text, animated: true)
         viewModel.composerTextChanged(text)
     }
@@ -1514,44 +1268,16 @@ final class ChatViewController: UIViewController {
         return UICollectionViewCompositionalLayout(section: section)
     }
 
-    /// 语音按钮按下时开始录音
-    @objc private func voiceButtonTouchDown() {
-        isVoiceTouchActive = true
+    /// 点按语音按钮开始录音。
+    private func voiceRecordTapped() {
         Task { [weak self] in
             await self?.voiceRecorder.beginRecording()
-            guard let self, !self.isVoiceTouchActive, self.voiceRecorder.isRecording else {
-                return
-            }
-            self.voiceRecorder.finishRecording(cancelled: true)
         }
     }
 
-    /// 语音按钮拖出时进入取消态
-    @objc private func voiceButtonTouchDragExit() {
-        voiceRecorder.updateCanceling(true)
-    }
-
-    /// 语音按钮拖回时退出取消态
-    @objc private func voiceButtonTouchDragEnter() {
-        voiceRecorder.updateCanceling(false)
-    }
-
-    /// 语音按钮在内部松开时发送录音
-    @objc private func voiceButtonTouchUpInside() {
-        isVoiceTouchActive = false
+    /// 点按录音停止按钮，完成当前录音并进入预览态。
+    private func voiceRecordingStopTapped() {
         voiceRecorder.finishRecording(cancelled: false)
-    }
-
-    /// 语音按钮在外部松开时取消录音
-    @objc private func voiceButtonTouchUpOutside() {
-        isVoiceTouchActive = false
-        voiceRecorder.finishRecording(cancelled: true)
-    }
-
-    /// 语音按钮触摸取消时取消录音
-    @objc private func voiceButtonTouchCancel() {
-        isVoiceTouchActive = false
-        voiceRecorder.finishRecording(cancelled: true)
     }
 
     /// 将录音状态渲染到输入栏

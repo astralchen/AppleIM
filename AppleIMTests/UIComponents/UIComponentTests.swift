@@ -74,6 +74,18 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarVoiceButtonTapPublishesRecordAction() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.layoutIfNeeded()
+
+        button(in: inputBar, identifier: "chat.voiceButton")?.sendActions(for: .touchUpInside)
+
+        #expect(recorder.actions == [.voiceRecordTapped])
+    }
+
+    @MainActor
     @Test func chatInputBarShowsRecordingWaveformAndStopButtonWhileRecording() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
 
@@ -88,9 +100,65 @@ extension AppleIMTests {
         )
         inputBar.layoutIfNeeded()
 
-        #expect(findView(in: inputBar, identifier: "chat.recordingWaveform") != nil)
-        #expect(button(in: inputBar, identifier: "chat.voiceStopButton")?.isEnabled == true)
+        let recordingCapsule = try #require(findView(in: inputBar, identifier: "chat.recordingCapsule"))
+        let waveformView = try #require(findView(in: inputBar, identifier: "chat.recordingWaveform"))
+        let stopButton = try #require(button(in: inputBar, identifier: "chat.voiceStopButton"))
+        let capsuleFrame = recordingCapsule.convert(recordingCapsule.bounds, to: inputBar)
+        let waveformFrame = waveformView.convert(waveformView.bounds, to: inputBar)
+        let stopButtonFrame = stopButton.convert(stopButton.bounds, to: inputBar)
+
+        #expect(capsuleFrame.height >= 60)
+        #expect(waveformFrame.width > 180)
+        #expect(abs(stopButtonFrame.width - 52) < 0.5)
+        #expect(abs(stopButtonFrame.height - 52) < 0.5)
+        #expect(capsuleFrame.insetBy(dx: -0.5, dy: -0.5).contains(stopButtonFrame))
+        #expect(stopButton.isEnabled == true)
+        #expect(findView(in: inputBar, identifier: "chat.recordingMicIcon") == nil)
         #expect(button(in: inputBar, identifier: "chat.sendButton") == nil)
+        #expect(button(in: inputBar, identifier: "chat.voiceButton") == nil)
+
+        inputBar.renderVoiceRecordingState(
+            VoiceRecordingState(
+                isRecording: true,
+                isCanceling: false,
+                elapsedMilliseconds: 5_200,
+                averagePowerLevel: 0.18,
+                hintText: "Release to preview"
+            )
+        )
+        inputBar.renderVoiceRecordingState(
+            VoiceRecordingState(
+                isRecording: true,
+                isCanceling: false,
+                elapsedMilliseconds: 5_300,
+                averagePowerLevel: 0.72,
+                hintText: "Release to preview"
+            )
+        )
+        inputBar.layoutIfNeeded()
+
+        let refreshedWaveformFrame = waveformView.convert(waveformView.bounds, to: inputBar)
+        #expect(refreshedWaveformFrame.width > 180)
+    }
+
+    @MainActor
+    @Test func chatInputBarRecordingStopPublishesVoiceRecordingStopTapped() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+
+        inputBar.renderVoiceRecordingState(
+            VoiceRecordingState(
+                isRecording: true,
+                isCanceling: false,
+                elapsedMilliseconds: 4_200,
+                averagePowerLevel: 0.64,
+                hintText: "Release to preview"
+            )
+        )
+        button(in: inputBar, identifier: "chat.voiceStopButton")?.sendActions(for: .touchUpInside)
+
+        #expect(recorder.actions == [.voiceRecordingStopTapped])
     }
 
     @MainActor
@@ -100,9 +168,10 @@ extension AppleIMTests {
         inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
         inputBar.layoutIfNeeded()
 
-        #expect(button(in: inputBar, identifier: "chat.voicePreviewCancelButton")?.isEnabled == true)
+        #expect(button(in: inputBar, identifier: "chat.voicePreviewCancelButton") == nil)
         #expect(button(in: inputBar, identifier: "chat.voicePreviewPlayButton")?.isEnabled == true)
         #expect(findView(in: inputBar, identifier: "chat.voicePreviewWaveform") != nil)
+        #expect(findLabel(withText: "+ 0:04", in: inputBar) != nil)
         #expect(button(in: inputBar, identifier: "chat.voicePreviewSendButton")?.isEnabled == true)
         #expect(button(in: inputBar, identifier: "chat.sendButton") == nil)
     }
@@ -120,7 +189,7 @@ extension AppleIMTests {
         )
         inputBar.layoutIfNeeded()
 
-        #expect(findLabel(withText: "0:01/0:04", in: inputBar) != nil)
+        #expect(findLabel(withText: "+ 0:01/0:04", in: inputBar) != nil)
     }
 
     @MainActor
@@ -133,6 +202,42 @@ extension AppleIMTests {
         button(in: inputBar, identifier: "chat.voicePreviewSendButton")?.sendActions(for: .touchUpInside)
 
         #expect(recorder.actions == [.voicePreviewSend])
+    }
+
+    @MainActor
+    @Test func chatInputBarVoicePreviewDeleteFromMoreButtonAndPlayActionsStayRouted() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let recorder = ChatInputBarActionRecorder()
+        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+
+        inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
+        button(in: inputBar, identifier: "chat.voicePreviewPlayButton")?.sendActions(for: .touchUpInside)
+        button(in: inputBar, identifier: "chat.moreButton")?.sendActions(for: .touchUpInside)
+
+        #expect(recorder.actions == [.voicePreviewPlayToggle, .voicePreviewCancel])
+    }
+
+    @MainActor
+    @Test func chatInputBarVoicePreviewUsesRotatedMoreButtonForDelete() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+
+        inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
+        inputBar.layoutIfNeeded()
+
+        let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
+        #expect(moreButton.isHidden == false)
+        #expect(moreButton.showsMenuAsPrimaryAction == false)
+        #expect(moreButton.menu == nil)
+        #expect(abs(moreButton.transform.a - cos(.pi / 4)) < 0.001)
+        #expect(abs(moreButton.transform.b - sin(.pi / 4)) < 0.001)
+
+        inputBar.clearPendingVoicePreview(animated: false)
+        inputBar.layoutIfNeeded()
+
+        #expect(moreButton.transform == .identity)
+        #expect(moreButton.showsMenuAsPrimaryAction == true)
+        #expect(moreButton.menu?.children.isEmpty == false)
+        #expect(button(in: inputBar, identifier: "chat.voiceButton")?.isEnabled == true)
     }
 
     @MainActor
@@ -286,6 +391,68 @@ extension AppleIMTests {
         #expect(scrollFrame.minX == 0)
         #expect(scrollFrame.maxX == inputBar.bounds.width)
         #expect(moreButtonFrame.minX == 12)
+    }
+
+    @MainActor
+    @Test func chatInputBarUsesMessageStyleTransparentMaterial() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        inputBar.layoutIfNeeded()
+
+        #expect(countViews(ofType: ChatInputSurfaceBackgroundView.self, in: inputBar) == 1)
+        #expect(countViews(ofType: UIVisualEffectView.self, in: inputBar) == 1)
+
+        let materialView = try #require(
+            findView(in: inputBar, identifier: "chat.inputBarMaterialBackground") as? UIVisualEffectView
+        )
+        let surfaceView = try #require(findView(in: inputBar, identifier: "chat.inputBarSurface"))
+        let tintView = try #require(findView(in: inputBar, identifier: "chat.inputBarMaterialTint"))
+        let separatorView = try #require(findView(in: inputBar, identifier: "chat.inputBarTopSeparator"))
+        let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
+        let surfaceFrame = surfaceView.convert(surfaceView.bounds, to: inputBar)
+        let tintColor = try #require(tintView.backgroundColor)
+        let tintAlpha = rgbaComponents(
+            for: tintColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        ).alpha
+        let moreButtonLightColor = try #require(
+            moreButton.configuration?.baseBackgroundColor?.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        )
+        let moreButtonAlpha = rgbaComponents(for: moreButtonLightColor).alpha
+
+        #expect(materialView.effect is UIBlurEffect)
+        #expect(separatorView.backgroundColor != nil)
+        #expect(inputBar.backgroundColor == nil || inputBar.backgroundColor == .clear)
+        #expect(surfaceFrame.maxY >= inputBar.bounds.maxY + 34)
+        #expect(tintAlpha <= 0.10)
+        #expect(moreButton.layer.shadowOpacity <= 0.08)
+        #expect(moreButtonAlpha <= 0.62)
+    }
+
+    @MainActor
+    @Test func chatInputBarAttachmentPreviewUsesTransparentRail() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        inputBar.layoutIfNeeded()
+
+        let previewRail = try #require(findView(in: inputBar, identifier: "chat.pendingAttachmentPreview"))
+        let itemView = try #require(findView(in: inputBar, identifier: "chat.pendingAttachmentPreviewItem.photo-1"))
+        let removeButton = try #require(button(in: inputBar, identifier: "chat.removeAttachmentButton.photo-1"))
+        let removeButtonColor = try #require(removeButton.backgroundColor)
+        let removeButtonAlpha = rgbaComponents(
+            for: removeButtonColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        ).alpha
+
+        #expect(previewRail.backgroundColor == nil || previewRail.backgroundColor == .clear)
+        #expect(itemView.backgroundColor == nil || itemView.backgroundColor == .clear)
+        #expect(removeButtonAlpha <= 0.66)
     }
 
     @MainActor
@@ -546,6 +713,52 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatPhotoLibraryInputIsTransparentContentPanel() throws {
+        let photoPanel = ChatPhotoLibraryInputView(frame: CGRect(x: 0, y: 0, width: 390, height: 342))
+        photoPanel.layoutIfNeeded()
+
+        #expect(photoPanel.backgroundColor == nil || photoPanel.backgroundColor == .clear)
+        #expect(countViews(ofType: ChatInputSurfaceBackgroundView.self, in: photoPanel) == 0)
+        #expect(findView(in: photoPanel, identifier: "chat.photoLibraryPanelMaterialBackground") == nil)
+    }
+
+    @MainActor
+    @Test func chatEmojiPanelIsTransparentContentPanel() throws {
+        let emojiPanel = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
+        emojiPanel.layoutIfNeeded()
+
+        #expect(emojiPanel.backgroundColor == nil || emojiPanel.backgroundColor == .clear)
+        #expect(countViews(ofType: ChatInputSurfaceBackgroundView.self, in: emojiPanel) == 0)
+        #expect(findView(in: emojiPanel, identifier: "chat.emojiInputPanelMaterialBackground") == nil)
+        #expect(emojiPanel.clipsToBounds == false)
+    }
+
+    @MainActor
+    @Test func chatInputBarOwnsSingleBackgroundAcrossInstalledPanels() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 500))
+        let photoPanel = ChatPhotoLibraryInputView(frame: .zero)
+        let emojiPanel = ChatEmojiPanelView(frame: .zero)
+        inputBar.installPhotoLibraryInputView(photoPanel)
+        inputBar.installEmojiPanelView(emojiPanel)
+
+        inputBar.showPhotoLibraryInput()
+        inputBar.layoutIfNeeded()
+
+        #expect(countViews(ofType: ChatInputSurfaceBackgroundView.self, in: inputBar) == 1)
+        #expect(photoPanel.isDescendant(of: inputBar))
+        #expect(photoPanel.isHidden == false)
+        #expect(emojiPanel.isHidden)
+
+        inputBar.showEmojiInput()
+        inputBar.layoutIfNeeded()
+
+        #expect(countViews(ofType: ChatInputSurfaceBackgroundView.self, in: inputBar) == 1)
+        #expect(emojiPanel.isDescendant(of: inputBar))
+        #expect(emojiPanel.isHidden == false)
+        #expect(photoPanel.isHidden)
+    }
+
+    @MainActor
     @Test func chatPhotoLibraryInputUsesDelegateForDismissPanReset() throws {
         let photoPanel = ChatPhotoLibraryInputView(frame: CGRect(x: 0, y: 0, width: 390, height: 342))
         let delegate = ChatPhotoLibraryInputDelegateRecorder()
@@ -557,18 +770,28 @@ extension AppleIMTests {
     }
 
     @MainActor
-    @Test func chatInputBarKeepsMoreButtonOutsideInputCapsule() throws {
+    @Test func chatInputBarKeepsMoreButtonOutsideTransparentTextContainer() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         inputBar.layoutIfNeeded()
 
         let moreButton = try #require(button(in: inputBar, identifier: "chat.moreButton"))
-        let inputCapsule = try #require(findView(ofType: GlassContainerView.self, in: inputBar))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        let textContainer = try #require(textView.superview)
+        let readableFill = try #require(findView(in: textContainer, identifier: "chat.textInputReadableFill"))
+        let readableFillColor = try #require(readableFill.backgroundColor)
+        let readableFillAlpha = rgbaComponents(
+            for: readableFillColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        ).alpha
 
         let moreFrame = moreButton.convert(moreButton.bounds, to: inputBar)
-        let capsuleFrame = inputCapsule.convert(inputCapsule.bounds, to: inputBar)
+        let textContainerFrame = textContainer.convert(textContainer.bounds, to: inputBar)
+        let readableFillFrame = readableFill.convert(readableFill.bounds, to: textContainer)
 
-        #expect(moreButton.isDescendant(of: inputCapsule) == false)
-        #expect(moreFrame.maxX <= capsuleFrame.minX)
+        #expect(moreButton.isDescendant(of: textContainer) == false)
+        #expect(moreFrame.maxX <= textContainerFrame.minX)
+        #expect(textContainer.backgroundColor == nil || textContainer.backgroundColor == .clear)
+        #expect(readableFillFrame == textContainer.bounds)
+        #expect(readableFillAlpha >= 0.42)
     }
 
     @Test func chatMessageContentKindClassifiesExistingRows() {
@@ -1522,6 +1745,14 @@ private func tailTipY(in path: UIBezierPath, edgeX: CGFloat) -> CGFloat? {
         }
     }
     return candidateY
+}
+
+@MainActor
+private func countViews<T: UIView>(ofType type: T.Type, in view: UIView) -> Int {
+    let currentCount = view is T ? 1 : 0
+    return view.subviews.reduce(currentCount) { partialResult, subview in
+        partialResult + countViews(ofType: type, in: subview)
+    }
 }
 
 private func makeEmojiMessageRow(id: MessageID, isOutgoing: Bool) -> ChatMessageRowState {

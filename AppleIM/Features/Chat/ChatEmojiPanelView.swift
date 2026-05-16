@@ -41,12 +41,11 @@ enum ChatEmojiPanelAction: Equatable {
 /// 聊天表情输入面板。
 @MainActor
 final class ChatEmojiPanelView: UIControl {
-    static let panelHeight: CGFloat = 280
+    static let panelHeight: CGFloat = 335
 
     /// 最近一次发布的用户动作。
     private(set) var lastAction: ChatEmojiPanelAction?
 
-    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
     private let sectionButtonStackView = UIStackView()
     private let collectionView: UICollectionView
     private let emptyLabel = UILabel()
@@ -90,10 +89,10 @@ final class ChatEmojiPanelView: UIControl {
     }
 
     private func configureView() {
-        clipsToBounds = true
+        clipsToBounds = false
+        backgroundColor = .clear
         accessibilityIdentifier = "chat.emojiInputPanel"
 
-        blurView.translatesAutoresizingMaskIntoConstraints = false
         sectionButtonStackView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -117,17 +116,11 @@ final class ChatEmojiPanelView: UIControl {
         emptyLabel.numberOfLines = 0
         emptyLabel.text = "No emoji"
 
-        addSubview(blurView)
         addSubview(sectionButtonStackView)
         addSubview(collectionView)
         addSubview(emptyLabel)
 
         NSLayoutConstraint.activate([
-            blurView.topAnchor.constraint(equalTo: topAnchor),
-            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
             sectionButtonStackView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
             sectionButtonStackView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             sectionButtonStackView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),

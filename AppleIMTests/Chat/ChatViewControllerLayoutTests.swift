@@ -253,6 +253,59 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerPinsMessageStyleInputBarToKeyboardGuide() async throws {
+        let rows = (1...16).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "keyboard_pin_\(index)"),
+                text: "Keyboard pin message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: false, nextBeforeSortSequence: nil),
+            olderPage: ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Keyboard Pin")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let collectionView = findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView else {
+                return false
+            }
+            return collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let inputFrame = inputBar.convert(inputBar.bounds, to: viewController.view)
+        let keyboardFrame = viewController.view.keyboardLayoutGuide.layoutFrame
+
+        #expect(abs(inputFrame.minX - viewController.view.bounds.minX) <= 1)
+        #expect(abs(inputFrame.maxX - viewController.view.bounds.maxX) <= 1)
+        #expect(abs(inputFrame.maxY - keyboardFrame.minY) <= 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerUsesSoftBottomScrollEdgeEffectWhenAvailable() throws {
+        let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Edge")
+        let viewController = ChatViewController(viewModel: viewModel)
+
+        viewController.loadViewIfNeeded()
+
+        guard #available(iOS 26.0, *) else { return }
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        #expect(collectionView.bottomEdgeEffect.style === UIScrollEdgeEffect.Style.soft)
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsBottomAnchoredWhenAttachmentPreviewAppearsAfterLayoutDrift() async throws {
         let rows = (1...28).map { index in
             makeChatRow(
@@ -1757,8 +1810,11 @@ extension AppleIMTests {
         window.layoutIfNeeded()
 
         let frameBeforeKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: viewController.view))
+        #expect(photoPanel.isHidden == false)
 
         #expect(inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(photoPanel.isHidden == false)
         window.layoutIfNeeded()
 
         let frameAfterKeyboardRequest = moreButton.convert(moreButton.bounds, to: viewController.view)
@@ -1814,6 +1870,269 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerFoldsPhotoLibraryPanelDuringKeyboardNotification() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Photo Keyboard Fold",
+            rowPrefix: "photo_keyboard_fold"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: setup.viewController.view))
+        let lastItem = setup.collectionView.numberOfItems(inSection: 0) - 1
+
+        setup.inputBar.requestPhotoLibraryInput()
+        setup.window.layoutIfNeeded()
+        #expect(photoPanel.isHidden == false)
+        #expect(setup.inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(photoPanel.isHidden == false)
+
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(photoPanel.isHidden == true)
+
+        for constraint in setup.viewController.view.constraints where
+            ((constraint.firstItem as? UIView) === setup.inputBar && constraint.firstAttribute == .bottom)
+                || ((constraint.secondItem as? UIView) === setup.inputBar && constraint.secondAttribute == .bottom) {
+            constraint.isActive = false
+        }
+        setup.inputBar.bottomAnchor.constraint(
+            equalTo: setup.viewController.view.bottomAnchor,
+            constant: -300
+        ).isActive = true
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(
+            latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: lastItem,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        )
+    }
+
+    @MainActor
+    @Test func chatViewControllerFoldsEmojiPanelDuringKeyboardNotification() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Emoji Keyboard Fold",
+            rowPrefix: "emoji_keyboard_fold",
+            useEmojiUseCase: true
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: setup.viewController.view))
+
+        setup.inputBar.requestEmojiInput()
+        setup.window.layoutIfNeeded()
+        #expect(emojiPanel.isHidden == false)
+        #expect(setup.inputBar.textViewShouldBeginEditing(textView) == false)
+        #expect(emojiPanel.isHidden == false)
+
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(emojiPanel.isHidden == true)
+    }
+
+    @MainActor
+    @Test func chatViewControllerDefersPhotoLibraryPanelUntilKeyboardDismissNotification() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Keyboard To Photo",
+            rowPrefix: "keyboard_to_photo"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let moreButton = try #require(button(in: setup.inputBar, identifier: "chat.moreButton"))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: setup.viewController.view))
+        #expect(textView.becomeFirstResponder())
+        setup.window.layoutIfNeeded()
+
+        let frameBeforePanelRequest = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
+
+        setup.inputBar.requestPhotoLibraryInput()
+        setup.window.layoutIfNeeded()
+
+        #expect(photoPanel.isHidden == true)
+        let frameBeforeKeyboardDismissNotification = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
+        #expect(abs(frameBeforeKeyboardDismissNotification.minY - frameBeforePanelRequest.minY) <= 1)
+
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(photoPanel.isHidden == false)
+        #expect(photoPanel.isDescendant(of: setup.inputBar))
+    }
+
+    @MainActor
+    @Test func chatViewControllerDefersEmojiPanelUntilKeyboardDismissNotification() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Keyboard To Emoji",
+            rowPrefix: "keyboard_to_emoji",
+            useEmojiUseCase: true
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let moreButton = try #require(button(in: setup.inputBar, identifier: "chat.moreButton"))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: setup.viewController.view))
+        #expect(textView.becomeFirstResponder())
+        setup.window.layoutIfNeeded()
+
+        let frameBeforePanelRequest = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
+
+        setup.inputBar.requestEmojiInput()
+        setup.window.layoutIfNeeded()
+
+        #expect(emojiPanel.isHidden == true)
+        let frameBeforeKeyboardDismissNotification = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
+        #expect(abs(frameBeforeKeyboardDismissNotification.minY - frameBeforePanelRequest.minY) <= 1)
+
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(emojiPanel.isHidden == false)
+        #expect(emojiPanel.isDescendant(of: setup.inputBar))
+    }
+
+    @MainActor
+    @Test func chatViewControllerShowsPhotoLibraryPanelWhenKeyboardNotificationArrivesSynchronously() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Keyboard To Photo Sync",
+            rowPrefix: "keyboard_to_photo_sync"
+        )
+        defer {
+            setup.inputBar.keyboardDismissFrameNotificationHookForTesting = nil
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: setup.viewController.view))
+        #expect(textView.becomeFirstResponder())
+        setup.window.layoutIfNeeded()
+
+        setup.inputBar.keyboardDismissFrameNotificationHookForTesting = {
+            NotificationCenter.default.post(
+                name: UIResponder.keyboardWillChangeFrameNotification,
+                object: nil,
+                userInfo: [
+                    UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                    UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+                ]
+            )
+        }
+        setup.inputBar.requestPhotoLibraryInput()
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(photoPanel.isHidden == false)
+        #expect(photoPanel.isDescendant(of: setup.inputBar))
+
+        setup.inputBar.keyboardDismissFrameNotificationHookForTesting = nil
+        #expect(setup.inputBar.textViewShouldBeginEditing(textView) == false)
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(photoPanel.isHidden == true)
+    }
+
+    @MainActor
+    @Test func chatViewControllerCancelsDeferredPanelWhenTextInputBeginsBeforeKeyboardNotification() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Cancel Pending Panel",
+            rowPrefix: "cancel_pending_panel"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let photoPanel = try #require(findView(ofType: ChatPhotoLibraryInputView.self, in: setup.viewController.view))
+        #expect(textView.becomeFirstResponder())
+        setup.window.layoutIfNeeded()
+
+        setup.inputBar.requestPhotoLibraryInput()
+        setup.window.layoutIfNeeded()
+        #expect(photoPanel.isHidden == true)
+
+        #expect(setup.inputBar.textViewShouldBeginEditing(textView) == true)
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(photoPanel.isHidden == true)
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsPhotoLibraryPanelVisibleWhileSwitchingToEmojiPanel() async throws {
         let rows = (1...16).map { index in
             makeChatRow(
@@ -1857,7 +2176,9 @@ extension AppleIMTests {
         let emojiPanelFrame = emojiPanel.convert(emojiPanel.bounds, to: viewController.view)
         #expect(photoPanel.isHidden == false)
         #expect(emojiPanel.isHidden == false)
-        #expect(abs(inputBarFrame.maxY - (emojiPanelFrame.minY - 8)) <= 1)
+        #expect(emojiPanel.isDescendant(of: inputBar))
+        #expect(emojiPanelFrame.minY >= inputBarFrame.minY - 1)
+        #expect(emojiPanelFrame.maxY <= inputBarFrame.maxY + 1)
     }
 
     @MainActor
@@ -1904,6 +2225,8 @@ extension AppleIMTests {
         let photoPanelFrame = photoPanel.convert(photoPanel.bounds, to: viewController.view)
         #expect(emojiPanel.isHidden == false)
         #expect(photoPanel.isHidden == false)
-        #expect(abs(inputBarFrame.maxY - (photoPanelFrame.minY - 8)) <= 1)
+        #expect(photoPanel.isDescendant(of: inputBar))
+        #expect(photoPanelFrame.minY >= inputBarFrame.minY - 1)
+        #expect(photoPanelFrame.maxY <= inputBarFrame.maxY + 1)
     }
 }

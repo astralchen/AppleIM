@@ -124,7 +124,7 @@ final class ChatPhotoLibraryInputView: UIControl {
     weak var inputDelegate: ChatPhotoLibraryInputViewDelegate?
 
     /// 面板固定高度
-    static let panelHeight: CGFloat = 342
+    static let panelHeight: CGFloat = 335
     /// 图片网格间距
     private static let interItemSpacing: CGFloat = 2
     /// 下滑关闭最小距离
@@ -147,10 +147,6 @@ final class ChatPhotoLibraryInputView: UIControl {
         }
     }
 
-    /// 面板模糊背景
-    private let panelView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
-    /// 面板着色层
-    private let tintView = UIView()
     /// 顶部拖拽提示条
     private let grabberView = UIView()
     /// 图片和视频网格
@@ -252,19 +248,10 @@ final class ChatPhotoLibraryInputView: UIControl {
     /// 配置面板视图层级和约束
     private func configureView() {
         backgroundColor = .clear
-
-        panelView.translatesAutoresizingMaskIntoConstraints = false
-        panelView.clipsToBounds = true
-        panelView.layer.cornerRadius = 32
-        panelView.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
-
-        tintView.translatesAutoresizingMaskIntoConstraints = false
-        tintView.backgroundColor = UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor.black.withAlphaComponent(0.18)
-                : UIColor.white.withAlphaComponent(0.34)
-        }
-        tintView.isUserInteractionEnabled = false
+        clipsToBounds = true
+        layer.cornerRadius = 22
+        layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        layer.cornerCurve = .continuous
 
         grabberView.translatesAutoresizingMaskIntoConstraints = false
         grabberView.backgroundColor = UIColor { traits in
@@ -302,41 +289,29 @@ final class ChatPhotoLibraryInputView: UIControl {
         addGestureRecognizer(dismissPanGesture)
         collectionView.panGestureRecognizer.require(toFail: dismissPanGesture)
 
-        addSubview(panelView)
-        panelView.contentView.addSubview(tintView)
-        panelView.contentView.addSubview(collectionView)
-        panelView.contentView.addSubview(grabberView)
-        panelView.contentView.addSubview(statusView)
+        addSubview(collectionView)
+        addSubview(grabberView)
+        addSubview(statusView)
         statusView.addSubview(statusLabel)
         statusView.addSubview(statusButton)
 
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: Self.panelHeight),
 
-            panelView.topAnchor.constraint(equalTo: topAnchor),
-            panelView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            panelView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            panelView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            tintView.topAnchor.constraint(equalTo: panelView.contentView.topAnchor),
-            tintView.leadingAnchor.constraint(equalTo: panelView.contentView.leadingAnchor),
-            tintView.trailingAnchor.constraint(equalTo: panelView.contentView.trailingAnchor),
-            tintView.bottomAnchor.constraint(equalTo: panelView.contentView.bottomAnchor),
-
-            grabberView.topAnchor.constraint(equalTo: panelView.contentView.topAnchor, constant: 14),
-            grabberView.centerXAnchor.constraint(equalTo: panelView.contentView.centerXAnchor),
+            grabberView.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            grabberView.centerXAnchor.constraint(equalTo: centerXAnchor),
             grabberView.widthAnchor.constraint(equalToConstant: 54),
             grabberView.heightAnchor.constraint(equalToConstant: 6),
 
-            collectionView.topAnchor.constraint(equalTo: panelView.contentView.topAnchor),
-            collectionView.leadingAnchor.constraint(equalTo: panelView.contentView.leadingAnchor),
-            collectionView.trailingAnchor.constraint(equalTo: panelView.contentView.trailingAnchor),
-            collectionView.bottomAnchor.constraint(equalTo: panelView.contentView.bottomAnchor),
+            collectionView.topAnchor.constraint(equalTo: topAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            statusView.topAnchor.constraint(equalTo: panelView.contentView.topAnchor),
-            statusView.leadingAnchor.constraint(equalTo: panelView.contentView.leadingAnchor),
-            statusView.trailingAnchor.constraint(equalTo: panelView.contentView.trailingAnchor),
-            statusView.bottomAnchor.constraint(equalTo: panelView.contentView.bottomAnchor),
+            statusView.topAnchor.constraint(equalTo: topAnchor),
+            statusView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            statusView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            statusView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             statusLabel.centerYAnchor.constraint(equalTo: statusView.centerYAnchor, constant: -18),
             statusLabel.leadingAnchor.constraint(equalTo: statusView.layoutMarginsGuide.leadingAnchor, constant: 20),
@@ -929,7 +904,11 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
 
     /// 配置单元格视图层级、样式和约束
     private func configureView() {
-        contentView.backgroundColor = .secondarySystemGroupedBackground
+        contentView.backgroundColor = UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.secondarySystemGroupedBackground.withAlphaComponent(0.46)
+                : UIColor.systemFill.withAlphaComponent(0.18)
+        }
         contentView.clipsToBounds = true
         contentView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment
         contentView.layer.cornerCurve = .continuous
@@ -939,7 +918,7 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         imageView.clipsToBounds = true
 
         gradientView.translatesAutoresizingMaskIntoConstraints = false
-        gradientView.backgroundColor = UIColor.black.withAlphaComponent(0.32)
+        gradientView.backgroundColor = UIColor.black.withAlphaComponent(0.28)
         gradientView.isUserInteractionEnabled = false
 
         videoIconView.translatesAutoresizingMaskIntoConstraints = false

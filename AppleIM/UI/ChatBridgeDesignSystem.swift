@@ -323,6 +323,115 @@ final class GlassContainerView: UIView {
     }
 }
 
+/// 聊天输入区与输入面板共享的系统材质背景。
+final class ChatInputSurfaceBackgroundView: UIView {
+    /// 背景使用场景。
+    enum Style {
+        /// 键盘上方输入栏。
+        case inputBar
+        /// 自定义输入面板。
+        case inputPanel
+    }
+
+    /// 系统模糊层。
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    /// 轻量着色层。
+    private let tintView = UIView()
+    /// 顶部分隔线。
+    private let separatorView = UIView()
+    /// 当前背景场景。
+    private let style: Style
+
+    /// 初始化材质背景。
+    init(style: Style, accessibilityPrefix: String) {
+        self.style = style
+        super.init(frame: .zero)
+        accessibilityIdentifier = "\(accessibilityPrefix)Surface"
+        blurView.accessibilityIdentifier = "\(accessibilityPrefix)MaterialBackground"
+        tintView.accessibilityIdentifier = "\(accessibilityPrefix)MaterialTint"
+        separatorView.accessibilityIdentifier = "\(accessibilityPrefix)TopSeparator"
+        configure()
+    }
+
+    /// 从 storyboard/xib 初始化材质背景。
+    required init?(coder: NSCoder) {
+        style = .inputBar
+        super.init(coder: coder)
+        accessibilityIdentifier = "chat.inputBarSurface"
+        blurView.accessibilityIdentifier = "chat.inputBarMaterialBackground"
+        tintView.accessibilityIdentifier = "chat.inputBarMaterialTint"
+        separatorView.accessibilityIdentifier = "chat.inputBarTopSeparator"
+        configure()
+    }
+
+    /// 配置材质、着色和边界。
+    private func configure() {
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        clipsToBounds = style == .inputPanel
+
+        if style == .inputPanel {
+            layer.cornerRadius = 22
+            layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+            layer.cornerCurve = .continuous
+        }
+
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        blurView.backgroundColor = .clear
+        tintView.translatesAutoresizingMaskIntoConstraints = false
+        separatorView.translatesAutoresizingMaskIntoConstraints = false
+
+        tintView.backgroundColor = materialTintColor
+        separatorView.backgroundColor = separatorColor
+
+        addSubview(blurView)
+        blurView.contentView.addSubview(tintView)
+        addSubview(separatorView)
+
+        NSLayoutConstraint.activate([
+            blurView.topAnchor.constraint(equalTo: topAnchor),
+            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            tintView.topAnchor.constraint(equalTo: blurView.contentView.topAnchor),
+            tintView.leadingAnchor.constraint(equalTo: blurView.contentView.leadingAnchor),
+            tintView.trailingAnchor.constraint(equalTo: blurView.contentView.trailingAnchor),
+            tintView.bottomAnchor.constraint(equalTo: blurView.contentView.bottomAnchor),
+
+            separatorView.topAnchor.constraint(equalTo: topAnchor),
+            separatorView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            separatorView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            separatorView.heightAnchor.constraint(equalToConstant: 1 / UIScreen.main.scale)
+        ])
+    }
+
+    /// 当前场景的轻量着色。
+    private var materialTintColor: UIColor {
+        UIColor { [style] traits in
+            switch (style, traits.userInterfaceStyle) {
+            case (.inputBar, .dark):
+                return UIColor.systemBackground.withAlphaComponent(0.10)
+            case (.inputBar, _):
+                return UIColor.white.withAlphaComponent(0.08)
+            case (.inputPanel, .dark):
+                return UIColor.black.withAlphaComponent(0.10)
+            case (.inputPanel, _):
+                return UIColor.white.withAlphaComponent(0.14)
+            }
+        }
+    }
+
+    /// 顶部细线颜色。
+    private var separatorColor: UIColor {
+        UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor.white.withAlphaComponent(0.08)
+                : UIColor.black.withAlphaComponent(0.06)
+        }
+    }
+}
+
 /// 聊天气泡样式
 enum ChatBubbleStyle {
     /// 当前用户发出的消息
