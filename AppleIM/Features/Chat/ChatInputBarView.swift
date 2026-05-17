@@ -115,6 +115,8 @@ final class ChatInputBarView: UIView {
     private var textInputHeightConstraint: NSLayoutConstraint?
     /// 自定义输入面板高度约束
     private var customPanelHeightConstraint: NSLayoutConstraint?
+    /// 根内容栈底部约束；自定义面板显示时贴到输入栏底部，普通输入模式保留底部边距。
+    private var contentStackBottomConstraint: NSLayoutConstraint?
     /// 当前输入模式
     private var inputMode: InputMode = .keyboard
     /// 等待系统键盘动画接管时保留的旧自定义面板。
@@ -147,8 +149,12 @@ final class ChatInputBarView: UIView {
     private var pendingAttachmentPreviewItems: [ChatPendingAttachmentPreviewItem] = []
     /// 最近一次测量的文本宽度
     private var lastMeasuredTextWidth: CGFloat = 0
+    /// 最近一次参与高度测量的文本。
+    private var lastMeasuredText = ""
     /// 临时状态自动隐藏任务
     private var statusHideTask: Task<Void, Never>?
+    /// 输入栏向底部安全区外延展时，内容需要避让的高度。
+    private var bottomSafeAreaExtension: CGFloat = 0
 #if DEBUG
     /// 测试用：模拟 `resignFirstResponder()` 同步触发键盘 frame 通知。
     var keyboardDismissFrameNotificationHookForTesting: (() -> Void)?
@@ -179,10 +185,10 @@ final class ChatInputBarView: UIView {
         stateMachine.canRecordVoice
     }
 
-    /// 输入区背景向底部安全区外延展的高度，模拟系统 TabBar 的连续材质。
-    private static let bottomBackgroundExtension: CGFloat = 48
     /// 录音态输入胶囊高度，容纳 Apple Messages 风格的 52pt 停止按钮。
     private static let recordingInputHeight: CGFloat = 64
+    /// 普通输入模式下，输入行底部保留的视觉呼吸空间。
+    private static let defaultContentBottomInset: CGFloat = 6
 
     /// 初始化输入栏
     override init(frame: CGRect) {
@@ -209,8 +215,10 @@ final class ChatInputBarView: UIView {
         defer { normalizeAttachmentPreviewScrollOffset() }
 
         let width = composerFieldView.textInputWidth
-        guard abs(width - lastMeasuredTextWidth) > 0.5 else { return }
+        let text = composerFieldView.text
+        guard abs(width - lastMeasuredTextWidth) > 0.5 || text != lastMeasuredText else { return }
         lastMeasuredTextWidth = width
+        lastMeasuredText = text
         updateTextViewHeight(animated: false)
     }
 
@@ -243,12 +251,12 @@ final class ChatInputBarView: UIView {
         isRecording = state.isRecording
         recordingStatusLabel.isHidden = true
         recordingStatusLabel.text = nil
+        moreButton.isEnabled = !state.isRecording
+        moreButton.isHidden = state.isRecording
 
         renderRecordingCapsule(state)
         composerFieldView.setTextEditable(!state.isRecording)
         updateTextViewHeight(animated: false)
-        moreButton.isEnabled = !state.isRecording
-        moreButton.isHidden = state.isRecording
         renderMoreButtonState(animated: false)
         renderTextViewPlaceholder()
         renderTrailingActionState()
@@ -329,7 +337,9 @@ final class ChatInputBarView: UIView {
     func applyDeferredKeyboardPanelCollapse() {
         guard let panel = deferredKeyboardCollapsePanel else { return }
         panelView(for: panel)?.alpha = 0
+        panelView(for: panel)?.isHidden = true
         customPanelHeightConstraint?.constant = 0
+        setContentStackExtendsToBottom(false)
     }
 
     /// 系统键盘动画结束后真正隐藏旧面板。
@@ -345,6 +355,7 @@ final class ChatInputBarView: UIView {
         panelView(for: panel)?.alpha = 1
         customPanelHeightConstraint?.constant = 0
         customPanelContainerView.isHidden = true
+        setContentStackExtendsToBottom(false)
         deferredKeyboardCollapsePanel = nil
     }
 
@@ -363,6 +374,7 @@ final class ChatInputBarView: UIView {
         photoLibraryInputView?.alpha = 1
         emojiPanelView?.alpha = 1
         customPanelHeightConstraint?.constant = targetHeight
+        setContentStackExtendsToBottom(true)
     }
 
     /// 系统键盘收起动画结束后清理延迟展示状态。
@@ -393,6 +405,27 @@ final class ChatInputBarView: UIView {
         emojiPanelView = panelView
         installCustomPanelView(panelView)
         panelView.isHidden = inputMode != .emoji
+    }
+
+    /// 设置输入栏需要覆盖的底部安全区高度。
+    func setCustomPanelBottomSafeAreaExtension(_ extensionHeight: CGFloat) {
+        let normalizedHeight = max(0, extensionHeight.rounded(.toNearestOrAwayFromZero))
+        guard bottomSafeAreaExtension != normalizedHeight else { return }
+
+        bottomSafeAreaExtension = normalizedHeight
+        setContentStackExtendsToBottom(inputMode.isCustomPanel || deferredCustomPanelPresentation != nil)
+        let visiblePanel: InputMode?
+        if inputMode.isCustomPanel {
+            visiblePanel = inputMode
+        } else {
+            visiblePanel = deferredKeyboardCollapsePanel
+        }
+        guard
+            let visiblePanel,
+            let targetHeight = customPanelHeight(for: visiblePanel)
+        else { return }
+
+        customPanelHeightConstraint?.constant = targetHeight
     }
 
     /// 把自定义输入面板安装到统一输入区内容容器。
@@ -477,6 +510,7 @@ final class ChatInputBarView: UIView {
             }
             self.customPanelContainerView.isHidden = false
             self.customPanelHeightConstraint?.constant = targetHeight
+            self.setContentStackExtendsToBottom(true)
         }
         let completion = { [weak self] in
             guard let self else { return }
@@ -505,8 +539,15 @@ final class ChatInputBarView: UIView {
             self.emojiPanelView?.isHidden = true
             self.customPanelHeightConstraint?.constant = 0
             self.customPanelContainerView.isHidden = true
+            self.setContentStackExtendsToBottom(false)
         }
         performHeightChange(animated: animated, changes: changes)
+    }
+
+    /// 自定义输入面板显示时让内容栈贴到输入栏真实底部，普通输入模式保留底部边距。
+    private func setContentStackExtendsToBottom(_ extendsToBottom: Bool) {
+        let contentBottomInset = Self.defaultContentBottomInset + bottomSafeAreaExtension
+        contentStackBottomConstraint?.constant = extendsToBottom ? 0 : -contentBottomInset
     }
 
     /// 查找指定输入面板对应的内容视图。
@@ -526,10 +567,10 @@ final class ChatInputBarView: UIView {
         switch panel {
         case .photoLibrary:
             guard photoLibraryInputView != nil else { return nil }
-            return ChatPhotoLibraryInputView.panelHeight
+            return ChatPhotoLibraryInputView.panelHeight + bottomSafeAreaExtension
         case .emoji:
             guard emojiPanelView != nil else { return nil }
-            return ChatEmojiPanelView.panelHeight
+            return ChatEmojiPanelView.panelHeight + bottomSafeAreaExtension
         case .keyboard:
             return nil
         }
@@ -647,6 +688,7 @@ final class ChatInputBarView: UIView {
     /// 配置输入栏视图层级和约束
     private func configureView() {
         backgroundColor = .clear
+        insetsLayoutMarginsFromSafeArea = false
         directionalLayoutMargins = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
 
         inputSurfaceBackgroundView.translatesAutoresizingMaskIntoConstraints = false
@@ -686,20 +728,22 @@ final class ChatInputBarView: UIView {
         self.textInputHeightConstraint = textInputHeightConstraint
         let customPanelHeightConstraint = customPanelContainerView.heightAnchor.constraint(equalToConstant: 0)
         self.customPanelHeightConstraint = customPanelHeightConstraint
+        let contentStackBottomConstraint = contentStackView.bottomAnchor.constraint(
+            equalTo: bottomAnchor,
+            constant: -Self.defaultContentBottomInset
+        )
+        self.contentStackBottomConstraint = contentStackBottomConstraint
 
         NSLayoutConstraint.activate([
             inputSurfaceBackgroundView.topAnchor.constraint(equalTo: topAnchor),
             inputSurfaceBackgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
             inputSurfaceBackgroundView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            inputSurfaceBackgroundView.bottomAnchor.constraint(
-                equalTo: bottomAnchor,
-                constant: Self.bottomBackgroundExtension
-            ),
+            inputSurfaceBackgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
             contentStackView.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             contentStackView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
             contentStackView.topAnchor.constraint(equalTo: layoutMarginsGuide.topAnchor),
-            contentStackView.bottomAnchor.constraint(equalTo: layoutMarginsGuide.bottomAnchor),
+            contentStackBottomConstraint,
 
             moreButton.widthAnchor.constraint(equalToConstant: 44),
             moreButton.heightAnchor.constraint(equalToConstant: 44),
@@ -929,6 +973,7 @@ final class ChatInputBarView: UIView {
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
+            self.layoutIfNeeded()
             self.superview?.layoutIfNeeded()
         }
         let completion: (Bool) -> Void = { [weak self] _ in
@@ -936,7 +981,7 @@ final class ChatInputBarView: UIView {
             self.layoutDelegate?.chatInputBar(self, didChangeHeightKeepingBottom: shouldStickToBottom)
         }
 
-        if animated {
+        if animated && window != nil {
             UIView.animate(
                 withDuration: 0.18,
                 delay: 0,
@@ -977,7 +1022,7 @@ final class ChatInputBarView: UIView {
             externalCompletion?()
         }
 
-        if animated {
+        if animated && window != nil {
             UIView.animate(
                 withDuration: duration,
                 delay: 0,
@@ -1102,10 +1147,15 @@ extension ChatInputBarView: UITextViewDelegate {
 
     /// 文本变化时刷新占位、按钮和高度
     func textViewDidChange(_ textView: UITextView) {
-        stateMachine.reduce(.setText(composerFieldView.text))
+        let currentText = textView.text ?? ""
+        if composerFieldView.text != currentText {
+            composerFieldView.setText(currentText)
+        }
+        stateMachine.reduce(.setText(currentText))
+        setNeedsLayout()
         renderTextViewPlaceholder()
         renderTrailingActionState()
         updateTextViewHeight(animated: true)
-        publish(.textChanged(composerFieldView.text))
+        publish(.textChanged(currentText))
     }
 }

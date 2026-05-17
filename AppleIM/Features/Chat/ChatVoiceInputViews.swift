@@ -126,7 +126,7 @@ final class ChatRecordingCapsuleView: UIView {
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .horizontal
         stackView.alignment = .center
-        stackView.spacing = 14
+        stackView.spacing = 8
 
         levelMeterView.translatesAutoresizingMaskIntoConstraints = false
         levelMeterView.tintColor = .systemRed

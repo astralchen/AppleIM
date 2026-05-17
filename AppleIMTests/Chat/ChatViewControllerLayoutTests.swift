@@ -2048,6 +2048,126 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerExtendsEmojiPanelThroughBottomSafeArea() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Emoji Safe Area",
+            rowPrefix: "emoji_safe_area",
+            useEmojiUseCase: true
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        setup.viewController.additionalSafeAreaInsets.bottom = 34
+        setup.window.layoutIfNeeded()
+        let bottomSafeArea = setup.viewController.view.safeAreaInsets.bottom
+        try #require(bottomSafeArea > 0)
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        let moreButton = try #require(button(in: setup.inputBar, identifier: "chat.moreButton"))
+        let emojiPanel = try #require(findView(ofType: ChatEmojiPanelView.self, in: setup.viewController.view))
+
+        setup.inputBar.requestEmojiInput()
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        let panelFrame = emojiPanel.convert(emojiPanel.bounds, to: setup.viewController.view)
+        let textFrame = textView.convert(textView.bounds, to: setup.viewController.view)
+        let moreFrame = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
+
+        #expect(abs(inputFrame.maxY - setup.viewController.view.bounds.maxY) <= 1)
+        #expect(abs(panelFrame.maxY - setup.viewController.view.bounds.maxY) <= 1)
+        #expect(abs(panelFrame.height - (ChatEmojiPanelView.panelHeight + bottomSafeArea)) <= 1)
+        #expect(textFrame.maxY <= panelFrame.minY - 4)
+        #expect(moreFrame.maxY <= panelFrame.minY - 4)
+    }
+
+    @MainActor
+    @Test func chatViewControllerAnchorsEmojiPanelToScreenBottomWhenSafeAreaIsZero() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Emoji Zero Safe Area",
+            rowPrefix: "emoji_zero_safe_area",
+            useEmojiUseCase: true
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        setup.viewController.additionalSafeAreaInsets.bottom = 0
+        setup.window.layoutIfNeeded()
+        let bottomSafeArea = setup.viewController.view.safeAreaInsets.bottom
+        try #require(bottomSafeArea <= 0.5)
+
+        setup.inputBar.requestEmojiInput()
+        setup.window.layoutIfNeeded()
+
+        let usesScreenBottomConstraint = setup.viewController.view.constraints.contains { constraint in
+            guard constraint.isActive else { return false }
+            let firstMatches = (constraint.firstItem as? UIView) === setup.inputBar
+                && constraint.firstAttribute == .bottom
+                && (constraint.secondItem as? UIView) === setup.viewController.view
+                && constraint.secondAttribute == .bottom
+            let secondMatches = (constraint.secondItem as? UIView) === setup.inputBar
+                && constraint.secondAttribute == .bottom
+                && (constraint.firstItem as? UIView) === setup.viewController.view
+                && constraint.firstAttribute == .bottom
+            return firstMatches || secondMatches
+        }
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+
+        #expect(usesScreenBottomConstraint)
+        #expect(abs(inputFrame.maxY - setup.viewController.view.bounds.maxY) <= 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerExtendsInputBarBackgroundThroughBottomSafeAreaWhenKeyboardHidden() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Input Background Safe Area",
+            rowPrefix: "input_background_safe_area"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        setup.viewController.additionalSafeAreaInsets.bottom = 34
+        setup.window.layoutIfNeeded()
+        let bottomSafeArea = setup.viewController.view.safeAreaInsets.bottom
+        try #require(bottomSafeArea > 0)
+
+        let backgroundView = try #require(findView(ofType: ChatInputSurfaceBackgroundView.self, in: setup.inputBar))
+        let moreButton = try #require(button(in: setup.inputBar, identifier: "chat.moreButton"))
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+
+        let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
+        let backgroundFrame = backgroundView.convert(backgroundView.bounds, to: setup.viewController.view)
+        let moreFrame = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
+        let textFrame = textView.convert(textView.bounds, to: setup.viewController.view)
+        let safeAreaTop = setup.viewController.view.bounds.maxY - bottomSafeArea
+        let usesScreenBottomConstraint = setup.viewController.view.constraints.contains { constraint in
+            guard constraint.isActive else { return false }
+            let firstMatches = (constraint.firstItem as? UIView) === setup.inputBar
+                && constraint.firstAttribute == .bottom
+                && (constraint.secondItem as? UIView) === setup.viewController.view
+                && constraint.secondAttribute == .bottom
+            let secondMatches = (constraint.secondItem as? UIView) === setup.inputBar
+                && constraint.secondAttribute == .bottom
+                && (constraint.firstItem as? UIView) === setup.viewController.view
+                && constraint.firstAttribute == .bottom
+            return firstMatches || secondMatches
+        }
+
+        #expect(usesScreenBottomConstraint)
+        #expect(abs(inputFrame.maxY - setup.viewController.view.bounds.maxY) <= 1)
+        #expect(abs(backgroundFrame.maxY - setup.viewController.view.bounds.maxY) <= 1)
+        #expect(moreFrame.maxY <= safeAreaTop - 4)
+        #expect(textFrame.maxY <= safeAreaTop - 4)
+    }
+
+    @MainActor
     @Test func chatViewControllerShowsPhotoLibraryPanelWhenKeyboardNotificationArrivesSynchronously() async throws {
         let setup = try await makeScrollableChatViewController(
             title: "Keyboard To Photo Sync",
