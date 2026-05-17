@@ -53,6 +53,7 @@ final class ChatEmojiPanelView: UIControl {
     private var panelState = ChatEmojiPanelState.empty
     private var visibleSections: [Section] = []
     private var selectedSectionID: Section.ID?
+    private var isUserSelectedSection = false
     private var renderedSectionIDs: [Section.ID] = []
     private var sectionButtonsByID: [Section.ID: UIButton] = [:]
     private var renderedGridSignature: GridSignature?
@@ -174,10 +175,11 @@ final class ChatEmojiPanelView: UIControl {
         let firstNonEmptySectionID = visibleSections.first { !$0.emojis.isEmpty }?.id
         if let selectedSectionID,
            let selectedSection = visibleSections.first(where: { $0.id == selectedSectionID }),
-           !selectedSection.emojis.isEmpty || firstNonEmptySectionID == nil {
+           isUserSelectedSection || !selectedSection.emojis.isEmpty || firstNonEmptySectionID == nil {
             return
         }
 
+        isUserSelectedSection = false
         selectedSectionID = firstNonEmptySectionID
             ?? visibleSections.first?.id
     }
@@ -217,6 +219,7 @@ final class ChatEmojiPanelView: UIControl {
         updateSectionButton(button, for: section)
         button.addAction(UIAction { [weak self] _ in
             self?.selectedSectionID = section.id
+            self?.isUserSelectedSection = true
             self?.updateSectionButtonStyles()
             self?.rebuildGrid(force: true)
         }, for: .touchUpInside)

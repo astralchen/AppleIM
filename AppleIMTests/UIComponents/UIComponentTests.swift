@@ -77,7 +77,9 @@ extension AppleIMTests {
     @Test func chatInputBarVoiceButtonTapPublishesRecordAction() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
         inputBar.layoutIfNeeded()
 
         button(in: inputBar, identifier: "chat.voiceButton")?.sendActions(for: .touchUpInside)
@@ -145,7 +147,9 @@ extension AppleIMTests {
     @Test func chatInputBarRecordingStopPublishesVoiceRecordingStopTapped() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
 
         inputBar.renderVoiceRecordingState(
             VoiceRecordingState(
@@ -196,7 +200,9 @@ extension AppleIMTests {
     @Test func chatInputBarPreviewSendDoesNotTriggerTextSend() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
 
         inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
         button(in: inputBar, identifier: "chat.voicePreviewSendButton")?.sendActions(for: .touchUpInside)
@@ -208,7 +214,9 @@ extension AppleIMTests {
     @Test func chatInputBarVoicePreviewDeleteFromMoreButtonAndPlayActionsStayRouted() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
 
         inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
         button(in: inputBar, identifier: "chat.voicePreviewPlayButton")?.sendActions(for: .touchUpInside)
@@ -269,7 +277,9 @@ extension AppleIMTests {
     @Test func chatInputBarRemovesSelectedAttachmentPreviewItem() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
 
         inputBar.setPendingAttachmentPreviews([
             ChatPendingAttachmentPreviewItem(
@@ -581,7 +591,9 @@ extension AppleIMTests {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
 
         inputBar.showPhotoLibraryInput()
 
@@ -600,7 +612,9 @@ extension AppleIMTests {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
         let recorder = ChatInputBarActionRecorder()
-        inputBar.addTarget(recorder, action: #selector(ChatInputBarActionRecorder.record(_:)), for: .primaryActionTriggered)
+        inputBar.onAction = { action in
+            recorder.record(action)
+        }
 
         inputBar.showEmojiInput()
 
@@ -650,6 +664,39 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatEmojiPanelKeepsManualRecentSelectionAcrossRenderRefresh() throws {
+        let panelView = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.addSubview(panelView)
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            panelView.removeFromSuperview()
+        }
+        let state = makeEmojiPanelState(
+            recentEmojis: [],
+            favoriteEmojis: [makeEmojiAsset(emojiID: "favorite_stub", name: "Favorite Stub", isFavorite: true)],
+            packageEmojis: [makeEmojiAsset(emojiID: "package_stub", name: "Package Stub")]
+        )
+
+        panelView.render(state)
+        panelView.layoutIfNeeded()
+        let grid = try #require(findView(in: panelView, identifier: "chat.emojiGrid") as? UICollectionView)
+        #expect(grid.numberOfItems(inSection: 0) == 1)
+
+        let recentButton = try #require(button(in: panelView, accessibilityLabel: "最近"))
+        let favoritesButton = try #require(button(in: panelView, accessibilityLabel: "收藏"))
+
+        recentButton.sendActions(for: .touchUpInside)
+        panelView.render(state)
+        panelView.layoutIfNeeded()
+
+        #expect(isSelectedEmojiSectionButton(recentButton))
+        #expect(isSelectedEmojiSectionButton(favoritesButton) == false)
+        #expect(grid.numberOfItems(inSection: 0) == 0)
+    }
+
+    @MainActor
     @Test func chatEmojiPanelPublishesControlActionsForSelectionAndFavoriteToggle() throws {
         let panelView = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
         let recorder = ChatEmojiPanelActionRecorder()
@@ -666,6 +713,44 @@ extension AppleIMTests {
 
         #expect(recorder.actions.map(\.emojiID) == ["recent_stub", "recent_stub"])
         #expect(recorder.actions.map(\.kind) == [.selected, .favoriteToggled])
+    }
+
+    @MainActor
+    @Test func chatEmojiPanelScrollsToTailEmojiWhenPackageHasManyItems() throws {
+        let panelView = ChatEmojiPanelView(frame: CGRect(x: 0, y: 0, width: 390, height: 280))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.addSubview(panelView)
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            panelView.removeFromSuperview()
+        }
+        let packageEmojis = (1...31).map { index in
+            makeEmojiAsset(emojiID: "scroll_stub_\(index)", name: "Scroll Stub \(index)")
+        } + [
+            makeEmojiAsset(emojiID: "scroll_tail", name: "Scroll Tail")
+        ]
+        let state = makeEmojiPanelState(
+            recentEmojis: [],
+            favoriteEmojis: [],
+            packageEmojis: packageEmojis
+        )
+
+        panelView.render(state)
+        button(in: panelView, accessibilityLabel: "全部表情")?.sendActions(for: .touchUpInside)
+        panelView.layoutIfNeeded()
+
+        let grid = try #require(findView(in: panelView, identifier: "chat.emojiGrid") as? UICollectionView)
+        grid.layoutIfNeeded()
+        let contentHeight = grid.collectionViewLayout.collectionViewContentSize.height
+
+        #expect(contentHeight > grid.bounds.height)
+
+        grid.scrollToItem(at: IndexPath(item: packageEmojis.count - 1, section: 0), at: .bottom, animated: false)
+        grid.layoutIfNeeded()
+
+        #expect(grid.contentOffset.y > 0)
+        #expect(findView(in: panelView, identifier: "chat.emojiItem.scroll_tail") != nil)
     }
 
     @MainActor
@@ -1775,6 +1860,23 @@ private func countViews<T: UIView>(ofType type: T.Type, in view: UIView) -> Int 
     }
 }
 
+@MainActor
+private func isSelectedEmojiSectionButton(_ button: UIButton) -> Bool {
+    guard let backgroundColor = button.configuration?.baseBackgroundColor else {
+        return false
+    }
+    let actual = rgbaComponents(
+        for: backgroundColor.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+    )
+    let expected = rgbaComponents(
+        for: UIColor.systemBlue.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+    )
+    return abs(actual.red - expected.red) < 0.01
+        && abs(actual.green - expected.green) < 0.01
+        && abs(actual.blue - expected.blue) < 0.01
+        && abs(actual.alpha - expected.alpha) < 0.01
+}
+
 private func makeEmojiMessageRow(id: MessageID, isOutgoing: Bool) -> ChatMessageRowState {
     ChatMessageRowState(
         id: id,
@@ -1818,8 +1920,7 @@ private func solidFillColor(
 private final class ChatInputBarActionRecorder: NSObject {
     private(set) var actions: [ChatInputBarAction] = []
 
-    @objc func record(_ sender: ChatInputBarView) {
-        guard let action = sender.lastAction else { return }
+    func record(_ action: ChatInputBarAction) {
         actions.append(action)
     }
 }
