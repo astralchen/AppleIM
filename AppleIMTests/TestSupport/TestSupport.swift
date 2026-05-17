@@ -2243,6 +2243,20 @@ func assertChatCollectionCanLeaveBottomAfterUserDrag(
 }
 
 @MainActor
+func moveChatCollectionAwayFromBottom(
+    viewController: ChatViewController,
+    collectionView: UICollectionView,
+    window: UIWindow
+) throws {
+    try assertChatCollectionCanLeaveBottomAfterUserDrag(
+        viewController: viewController,
+        collectionView: collectionView,
+        window: window
+    )
+    viewController.scrollViewDidEndDragging(collectionView, willDecelerate: false)
+}
+
+@MainActor
 func latestMessageCellIsAboveInputBar(
     collectionView: UICollectionView,
     item: Int,
