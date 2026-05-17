@@ -238,7 +238,7 @@ final class AppleIMUITests: XCTestCase {
         loginAsUITestUser(in: app)
         openSondraConversation(in: app)
         openEmojiPanel(in: app)
-        selectEmojiPanelSection("ChatBridge", in: app)
+        selectEmojiPanelSection("全部表情", in: app)
 
         let favoriteButton = app.buttons["chat.emojiFavorite.cb_ok"]
         XCTAssertTrue(favoriteButton.waitForExistence(timeout: 5), "Expected package emoji favorite button")
@@ -250,6 +250,31 @@ final class AppleIMUITests: XCTestCase {
 
         app.buttons["chat.emojiFavorite.cb_ok"].tap()
         XCTAssertTrue(waitForDisappearance(of: favoritedEmoji, timeout: 5), "Expected emoji to leave favorites")
+    }
+
+    @MainActor
+    func testEmojiPanelScrollsThroughLargeChatBridgePack() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openSondraConversation(in: app)
+        openEmojiPanel(in: app)
+        selectEmojiPanelSection("全部表情", in: app)
+
+        let grid = app.collectionViews["chat.emojiGrid"]
+        XCTAssertTrue(grid.waitForExistence(timeout: 5), "Expected emoji grid")
+        XCTAssertTrue(
+            app.buttons["chat.emojiItem.cb_smile"].waitForExistence(timeout: 5),
+            "Expected first seeded emoji"
+        )
+
+        let tailEmoji = app.buttons["chat.emojiItem.cb_fireworks"].firstMatch
+        for _ in 0..<6 where !tailEmoji.exists || !tailEmoji.isHittable {
+            grid.swipeUp()
+        }
+
+        XCTAssertTrue(tailEmoji.waitForExistence(timeout: 5), "Expected to scroll to the end of the seeded emoji pack")
+        XCTAssertTrue(tailEmoji.isHittable, "Expected the tail emoji to be visible after scrolling")
     }
 
     @MainActor

@@ -349,14 +349,13 @@ final class ChatViewController: UIViewController {
     /// 绑定输入栏按钮和文本变化回调
     private func configureInputBarCallbacks() {
         inputBarView.layoutDelegate = self
-        inputBarView.addTarget(self, action: #selector(inputBarActionTriggered(_:)), for: .primaryActionTriggered)
-        inputBarView.addTarget(self, action: #selector(inputBarActionTriggered(_:)), for: .editingChanged)
+        inputBarView.onAction = { [weak self] action in
+            self?.handleInputBarAction(action)
+        }
     }
 
-    /// 处理输入栏按 Apple SDK target-action 形式发布的动作。
-    @objc private func inputBarActionTriggered(_ sender: ChatInputBarView) {
-        guard let action = sender.lastAction else { return }
-
+    /// 处理输入栏发布的强类型动作。
+    private func handleInputBarAction(_ action: ChatInputBarAction) {
         switch action {
         case let .textChanged(text):
             viewModel.composerTextChanged(text)

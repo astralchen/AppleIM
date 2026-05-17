@@ -3065,7 +3065,7 @@ func makeEmojiPanelState(
     let package = EmojiPackageRecord(
         packageID: "pkg_stub",
         userID: "emoji_panel_user",
-        title: "ChatBridge",
+        title: "全部表情",
         author: "Tests",
         coverURL: nil,
         localCoverPath: nil,

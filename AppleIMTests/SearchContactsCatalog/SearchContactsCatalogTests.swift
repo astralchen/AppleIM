@@ -460,6 +460,34 @@ extension AppleIMTests {
         #expect(groupMembers.map(\.memberID.rawValue).contains("sondra"))
     }
 
+    @Test func demoDataSeederSeedsEnoughEmojiForPanelScrolling() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "emoji_scroll_user")
+
+        try await DemoDataSeeder.seedIfNeeded(
+            repository: repository,
+            userID: "emoji_scroll_user",
+            catalog: BundleDemoDataCatalog(resourceURL: try makeMockDemoDataFile(messageCount: 1)),
+            contactCatalog: BundleContactCatalog(resourceURL: try makeMockContactsFile())
+        )
+
+        let packages = try await repository.listEmojiPackages(for: "emoji_scroll_user")
+        let package = try #require(packages.first { $0.packageID == "chatbridge_default_emoji" })
+        #expect(package.title == "全部表情")
+        let emojis = try await repository.listPackageEmojis(
+            for: "emoji_scroll_user",
+            packageID: package.packageID
+        )
+
+        #expect(emojis.count >= 24)
+        #expect(emojis.last?.emojiID == "cb_fireworks")
+        #expect(emojis.last?.name == "Fireworks")
+    }
+
     @Test func demoDataSeederSeedsUITestAccountAndConversationPageLoads() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

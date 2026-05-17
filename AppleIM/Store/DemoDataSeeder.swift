@@ -65,7 +65,7 @@ nonisolated enum DemoDataSeeder {
             EmojiPackageRecord(
                 packageID: packageID,
                 userID: userID,
-                title: "ChatBridge",
+                title: "全部表情",
                 author: "ChatBridge",
                 coverURL: nil,
                 localCoverPath: nil,
@@ -85,7 +85,31 @@ nonisolated enum DemoDataSeeder {
             ("cb_thanks", "Thanks"),
             ("cb_heart", "Heart"),
             ("cb_working", "Working"),
-            ("cb_done", "Done")
+            ("cb_done", "Done"),
+            ("cb_laugh", "Laugh"),
+            ("cb_wink", "Wink"),
+            ("cb_clap", "Clap"),
+            ("cb_thumbsup", "Thumbs Up"),
+            ("cb_coffee", "Coffee"),
+            ("cb_focus", "Focus"),
+            ("cb_idea", "Idea"),
+            ("cb_rocket", "Rocket"),
+            ("cb_star", "Star"),
+            ("cb_highfive", "High Five"),
+            ("cb_ping", "Ping"),
+            ("cb_bell", "Bell"),
+            ("cb_note", "Note"),
+            ("cb_camera", "Camera"),
+            ("cb_music", "Music"),
+            ("cb_sleep", "Sleep"),
+            ("cb_spark", "Spark"),
+            ("cb_sun", "Sun"),
+            ("cb_moon", "Moon"),
+            ("cb_cloud", "Cloud"),
+            ("cb_rainbow", "Rainbow"),
+            ("cb_gift", "Gift"),
+            ("cb_medal", "Medal"),
+            ("cb_fireworks", "Fireworks")
         ]
 
         for (index, item) in names.enumerated() {
