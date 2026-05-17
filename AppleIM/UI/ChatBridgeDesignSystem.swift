@@ -411,9 +411,9 @@ final class ChatInputSurfaceBackgroundView: UIView {
         UIColor { [style] traits in
             switch (style, traits.userInterfaceStyle) {
             case (.inputBar, .dark):
-                return UIColor.systemBackground.withAlphaComponent(0.10)
+                return UIColor.black.withAlphaComponent(0.22)
             case (.inputBar, _):
-                return UIColor.white.withAlphaComponent(0.08)
+                return UIColor.systemGray6.withAlphaComponent(0.86)
             case (.inputPanel, .dark):
                 return UIColor.black.withAlphaComponent(0.10)
             case (.inputPanel, _):

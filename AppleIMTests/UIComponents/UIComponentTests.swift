@@ -105,11 +105,13 @@ extension AppleIMTests {
         let recordingCapsule = try #require(findView(in: inputBar, identifier: "chat.recordingCapsule"))
         let waveformView = try #require(findView(in: inputBar, identifier: "chat.recordingWaveform"))
         let stopButton = try #require(button(in: inputBar, identifier: "chat.voiceStopButton"))
+        let recordingContainer = try #require(recordingCapsule.superview)
         let capsuleFrame = recordingCapsule.convert(recordingCapsule.bounds, to: inputBar)
         let waveformFrame = waveformView.convert(waveformView.bounds, to: inputBar)
         let stopButtonFrame = stopButton.convert(stopButton.bounds, to: inputBar)
 
         #expect(capsuleFrame.height >= 60)
+        #expect(abs(recordingContainer.layer.cornerRadius - recordingContainer.bounds.height / 2) <= 0.5)
         #expect(waveformFrame.width > 180)
         #expect(abs(stopButtonFrame.width - 52) < 0.5)
         #expect(abs(stopButtonFrame.height - 52) < 0.5)
@@ -431,8 +433,9 @@ extension AppleIMTests {
         #expect(materialView.effect is UIBlurEffect)
         #expect(separatorView.backgroundColor != nil)
         #expect(inputBar.backgroundColor == nil || inputBar.backgroundColor == .clear)
-        #expect(surfaceFrame.maxY >= inputBar.bounds.maxY + 34)
-        #expect(tintAlpha <= 0.10)
+        #expect(abs(surfaceFrame.maxY - inputBar.bounds.maxY) <= 1)
+        #expect(tintAlpha >= 0.70)
+        #expect(tintAlpha <= 0.95)
         #expect(moreButton.layer.shadowOpacity <= 0.08)
         #expect(moreButtonAlpha <= 0.62)
     }
@@ -841,6 +844,34 @@ extension AppleIMTests {
         #expect(emojiPanel.isDescendant(of: inputBar))
         #expect(emojiPanel.isHidden == false)
         #expect(photoPanel.isHidden)
+    }
+
+    @MainActor
+    @Test func chatInputBarBackgroundFillsInputBarBounds() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 500))
+        inputBar.layoutIfNeeded()
+
+        let backgroundView = try #require(findView(ofType: ChatInputSurfaceBackgroundView.self, in: inputBar))
+        let backgroundFrame = backgroundView.convert(backgroundView.bounds, to: inputBar)
+
+        #expect(abs(backgroundFrame.minY - inputBar.bounds.minY) <= 1)
+        #expect(abs(backgroundFrame.maxY - inputBar.bounds.maxY) <= 1)
+    }
+
+    @MainActor
+    @Test func chatInputBarContentStackReachesBottomWhenCustomPanelIsVisible() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 500))
+        let emojiPanel = ChatEmojiPanelView(frame: .zero)
+        inputBar.installEmojiPanelView(emojiPanel)
+        inputBar.setCustomPanelBottomSafeAreaExtension(34)
+
+        inputBar.showEmojiInput()
+        inputBar.layoutIfNeeded()
+
+        let contentStackView = try #require(inputBar.subviews.compactMap { $0 as? UIStackView }.first)
+        let stackFrame = contentStackView.convert(contentStackView.bounds, to: inputBar)
+
+        #expect(abs(stackFrame.maxY - inputBar.bounds.maxY) <= 1)
     }
 
     @MainActor

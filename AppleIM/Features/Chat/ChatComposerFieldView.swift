@@ -57,6 +57,8 @@ final class ChatComposerFieldView: UIView {
     private let voicePreviewCapsuleView = ChatVoicePreviewCapsuleView()
     /// 尾部按钮当前是否显示发送动作。
     private var trailingActionShowsSend = false
+    /// 录音态高度更高，需要使用真实胶囊圆角；文本输入多行增长时仍保持固定圆角。
+    private var usesRecordingCapsuleShape = false
 
     /// 当前输入文本。
     var text: String {
@@ -76,6 +78,12 @@ final class ChatComposerFieldView: UIView {
     /// 当前文本输入宽度。
     var textInputWidth: CGFloat {
         textView.bounds.width
+    }
+
+    /// 根据当前输入形态刷新胶囊圆角。
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateContainerCornerRadius()
     }
 
     /// 初始化文本输入胶囊。
@@ -142,7 +150,9 @@ final class ChatComposerFieldView: UIView {
         trailingActionButton.accessibilityElementsHidden = hidesTrailingAction
         trailingActionButton.isEnabled = isEnabled
         trailingActionButton.accessibilityLabel = showsSend ? "Send" : "Record Voice"
-        trailingActionButton.accessibilityIdentifier = showsSend ? "chat.sendButton" : "chat.voiceButton"
+        trailingActionButton.accessibilityIdentifier = hidesTrailingAction
+            ? nil
+            : (showsSend ? "chat.sendButton" : "chat.voiceButton")
 
         var configuration = UIButton.Configuration.filled()
         configuration.image = UIImage(systemName: showsSend ? "arrow.up" : "mic")
@@ -156,6 +166,7 @@ final class ChatComposerFieldView: UIView {
     /// 渲染录音状态。
     func renderRecording(_ state: VoiceRecordingState) {
         recordingCapsuleView.isHidden = !state.isRecording
+        setUsesRecordingCapsuleShape(state.isRecording)
         recordingCapsuleView.render(state)
     }
 
@@ -189,7 +200,10 @@ final class ChatComposerFieldView: UIView {
     /// 测量文本输入高度。
     func measureTextHeight(maximumHeight: CGFloat) -> ChatComposerTextHeightMeasurement {
         let fittingSize = CGSize(width: max(textView.bounds.width, 1), height: .greatestFiniteMagnitude)
-        let measuredHeight = textView.sizeThatFits(fittingSize).height
+        let measuredHeight = max(
+            textView.sizeThatFits(fittingSize).height,
+            estimatedTextHeight(forWidth: fittingSize.width)
+        )
         let targetHeight = min(max(44, ceil(measuredHeight)), maximumHeight)
         return ChatComposerTextHeightMeasurement(
             targetHeight: targetHeight,
@@ -313,9 +327,46 @@ final class ChatComposerFieldView: UIView {
         }
     }
 
+    /// 切换录音态胶囊圆角策略。
+    private func setUsesRecordingCapsuleShape(_ usesRecordingCapsuleShape: Bool) {
+        guard self.usesRecordingCapsuleShape != usesRecordingCapsuleShape else { return }
+        self.usesRecordingCapsuleShape = usesRecordingCapsuleShape
+        updateContainerCornerRadius()
+    }
+
+    /// 文本态保持固定圆角；录音态按当前高度形成完整胶囊。
+    private func updateContainerCornerRadius() {
+        let targetRadius = usesRecordingCapsuleShape
+            ? bounds.height / 2
+            : Self.cornerRadius
+        guard abs(layer.cornerRadius - targetRadius) > 0.5 else { return }
+        layer.cornerRadius = targetRadius
+    }
+
+    /// `UITextView.sizeThatFits` 在未入窗或动画事务中偶尔会沿用旧布局，这里用字体排版结果兜底。
+    private func estimatedTextHeight(forWidth width: CGFloat) -> CGFloat {
+        guard !text.isEmpty else { return 44 }
+
+        let font = textView.font ?? .preferredFont(forTextStyle: .body)
+        let textInsets = textView.textContainerInset
+        let contentWidth = max(
+            width
+                - textInsets.left
+                - textInsets.right
+                - textView.textContainer.lineFragmentPadding * 2,
+            1
+        )
+        let boundingRect = (text as NSString).boundingRect(
+            with: CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        return ceil(boundingRect.height + textInsets.top + textInsets.bottom)
+    }
+
     /// 尾部按钮点击事件。
     @objc private func trailingActionButtonTapped() {
         onAction?(trailingActionShowsSend ? .sendTapped : .voiceRecordTapped)
     }
 }
-

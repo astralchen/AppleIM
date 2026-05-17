@@ -165,6 +165,14 @@ final class ChatViewController: UIViewController {
     private lazy var emojiPanelView = makeEmojiPanelView()
     /// 输入栏贴系统键盘约束
     private var inputBarKeyboardBottomConstraint: NSLayoutConstraint?
+    /// 输入栏贴屏幕底部约束，用于覆盖底部安全区背景。
+    private var inputBarCustomPanelBottomConstraint: NSLayoutConstraint?
+    /// 输入栏贴屏幕底部时，内容需要避让的底部安全区高度。
+    private var inputBarBottomSafeAreaExtension: CGFloat = 0
+    /// 输入栏是否需要贴到屏幕底部。
+    private var isInputBarAnchoredToScreenBottom = true
+    /// 相册面板下滑关闭过程中的临时位移。
+    private var photoLibraryDismissTranslationY: CGFloat = 0
     /// 语音录制控制器
     private let voiceRecorder = VoiceRecordingController()
     /// 语音播放控制器
@@ -208,6 +216,7 @@ final class ChatViewController: UIViewController {
     /// 窗口、安全区或输入栏完成布局后，继续保持最新消息不被底部输入区遮挡。
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        refreshInputBarBottomSafeAreaExtensionIfNeeded()
         updateCollectionViewOverlayInsets()
         if needsInitialBottomPositioning {
             _ = resolveInitialBottomPositioningIfPossible()
@@ -224,6 +233,12 @@ final class ChatViewController: UIViewController {
             shouldReanchorMaintainedBottomMessage || shouldRestoreOccludedNearBottomMessage
         else { return }
         scrollToBottom(animated: false)
+    }
+
+    /// 安全区变化时同步输入栏延展，避免旋转或分屏后底部背景和命中区域错位。
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        refreshInputBarBottomSafeAreaExtensionIfNeeded()
     }
 
     /// 页面消失时停止播放、取消任务并保存草稿
@@ -298,7 +313,12 @@ final class ChatViewController: UIViewController {
         let inputBarKeyboardBottomConstraint = inputBarView.bottomAnchor.constraint(
             equalTo: view.keyboardLayoutGuide.topAnchor
         )
+        inputBarKeyboardBottomConstraint.isActive = false
         self.inputBarKeyboardBottomConstraint = inputBarKeyboardBottomConstraint
+        let inputBarCustomPanelBottomConstraint = inputBarView.bottomAnchor.constraint(
+            equalTo: view.bottomAnchor
+        )
+        self.inputBarCustomPanelBottomConstraint = inputBarCustomPanelBottomConstraint
 
         NSLayoutConstraint.activate([
             topBannerStackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
@@ -317,7 +337,7 @@ final class ChatViewController: UIViewController {
 
             inputBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             inputBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            inputBarKeyboardBottomConstraint,
+            inputBarCustomPanelBottomConstraint,
 
             mentionPickerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             mentionPickerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -459,15 +479,22 @@ final class ChatViewController: UIViewController {
         let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt
             ?? UIView.AnimationOptions.curveEaseInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
+        let keyboardVisibleAfterChange = keyboardVisibilityAfterChange(notification)
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
-            self.resetInputBarKeyboardBottomOffset()
             if isCompletingCustomInputKeyboardSwitch {
+                self.activateInputBarKeyboardBottomAnchor()
                 self.inputBarView.applyDeferredKeyboardPanelCollapse()
-            }
-            if isCompletingKeyboardCustomInputSwitch {
+            } else if isCompletingKeyboardCustomInputSwitch {
+                self.activateInputBarScreenBottomAnchor(extensionHeight: self.currentBottomSafeAreaExtension())
                 self.inputBarView.applyDeferredCustomPanelPresentation()
+            } else if let keyboardVisibleAfterChange {
+                if keyboardVisibleAfterChange {
+                    self.activateInputBarKeyboardBottomAnchor()
+                } else {
+                    self.activateInputBarScreenBottomAnchor(extensionHeight: self.currentBottomSafeAreaExtension())
+                }
             }
             self.completeMessageLayoutTransaction(layoutTransaction, animated: false)
         }
@@ -529,7 +556,7 @@ final class ChatViewController: UIViewController {
     private func showPhotoLibraryInput() {
         isSwitchingCustomInputPanelToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
-        resetInputBarKeyboardBottomOffset()
+        resetPhotoLibraryDismissTranslation()
         photoLibraryInputView.alpha = 1
         photoLibraryInputView.refreshAuthorization()
         let mayDeferKeyboardDismiss = inputBarView.isEditingText
@@ -541,6 +568,7 @@ final class ChatViewController: UIViewController {
         } else {
             isSwitchingKeyboardToCustomInputPanel = false
             shouldStickToBottomDuringCustomInputSwitch = false
+            activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         }
         let didDeferCustomPanelPresentation = inputBarView.showPhotoLibraryInput()
         if !didDeferCustomPanelPresentation {
@@ -553,7 +581,7 @@ final class ChatViewController: UIViewController {
     private func showEmojiInput() {
         isSwitchingCustomInputPanelToKeyboard = false
         shouldStickToBottomDuringKeyboardInputSwitch = false
-        resetInputBarKeyboardBottomOffset()
+        resetPhotoLibraryDismissTranslation()
         emojiPanelView.alpha = 1
         viewModel.loadEmojiPanel()
         let mayDeferKeyboardDismiss = inputBarView.isEditingText
@@ -564,6 +592,7 @@ final class ChatViewController: UIViewController {
         } else {
             isSwitchingKeyboardToCustomInputPanel = false
             shouldStickToBottomDuringCustomInputSwitch = false
+            activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         }
         let didDeferCustomPanelPresentation = inputBarView.showEmojiInput()
         if !didDeferCustomPanelPresentation {
@@ -576,9 +605,12 @@ final class ChatViewController: UIViewController {
     private func showKeyboardInput() {
         isSwitchingKeyboardToCustomInputPanel = false
         shouldStickToBottomDuringCustomInputSwitch = false
-        resetInputBarKeyboardBottomOffset()
+        resetPhotoLibraryDismissTranslation()
         shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
         isSwitchingCustomInputPanelToKeyboard = inputBarView.showKeyboardInput()
+        if !isSwitchingCustomInputPanelToKeyboard {
+            activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
+        }
         if !isSwitchingCustomInputPanelToKeyboard {
             shouldStickToBottomDuringKeyboardInputSwitch = false
         }
@@ -590,7 +622,8 @@ final class ChatViewController: UIViewController {
         shouldStickToBottomDuringKeyboardInputSwitch = false
         isSwitchingKeyboardToCustomInputPanel = false
         shouldStickToBottomDuringCustomInputSwitch = false
-        resetInputBarKeyboardBottomOffset()
+        resetPhotoLibraryDismissTranslation()
+        activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         photoLibraryInputView.resetDismissGestureState()
         inputBarView.hideCustomInputPanel(animated: animated)
         completion?()
@@ -602,21 +635,74 @@ final class ChatViewController: UIViewController {
         shouldStickToBottomDuringKeyboardInputSwitch = false
         isSwitchingKeyboardToCustomInputPanel = false
         shouldStickToBottomDuringCustomInputSwitch = false
-        resetInputBarKeyboardBottomOffset()
+        resetPhotoLibraryDismissTranslation()
+        activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         inputBarView.hideCustomInputPanel(animated: animated)
         completion?()
     }
 
-    /// 重置输入栏相对键盘 guide 的额外偏移。
-    private func resetInputBarKeyboardBottomOffset() {
+    /// 当前底部安全区延展高度。
+    private func currentBottomSafeAreaExtension() -> CGFloat {
+        max(0, view.safeAreaInsets.bottom)
+    }
+
+    /// 读取键盘通知后的可见状态；测试通知可能没有 frame，此时保持当前约束状态。
+    private func keyboardVisibilityAfterChange(_ notification: Notification) -> Bool? {
+        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
+            return nil
+        }
+        let endFrameInView = view.convert(endFrame, from: nil)
+        return endFrameInView.minY < view.bounds.maxY - 0.5 && endFrameInView.height > 0
+    }
+
+    /// 激活输入栏贴屏幕底部布局，并同步内部内容的安全区避让。
+    private func activateInputBarScreenBottomAnchor(extensionHeight: CGFloat) {
+        isInputBarAnchoredToScreenBottom = true
+        updateInputBarBottomSafeAreaExtension(extensionHeight)
+    }
+
+    /// 输入栏切到系统键盘 guide 驱动，避免键盘弹出时额外保留底部安全区。
+    private func activateInputBarKeyboardBottomAnchor() {
+        isInputBarAnchoredToScreenBottom = false
+        updateInputBarBottomSafeAreaExtension(0)
+    }
+
+    /// 设置输入栏底部安全区延展，并同步输入栏外部约束和内部面板高度。
+    private func updateInputBarBottomSafeAreaExtension(_ extensionHeight: CGFloat) {
+        let normalizedHeight = max(0, extensionHeight)
+        inputBarBottomSafeAreaExtension = normalizedHeight
+        inputBarView.setCustomPanelBottomSafeAreaExtension(normalizedHeight)
+        updateInputBarKeyboardBottomConstraint()
+    }
+
+    /// 安全区变化时刷新输入栏贴屏幕底部时的延展高度。
+    private func refreshInputBarBottomSafeAreaExtensionIfNeeded() {
+        guard isInputBarAnchoredToScreenBottom else { return }
+        let targetExtension = currentBottomSafeAreaExtension()
+        guard abs(inputBarBottomSafeAreaExtension - targetExtension) > 0.5 else { return }
+        updateInputBarBottomSafeAreaExtension(targetExtension)
+    }
+
+    /// 重置相册下滑关闭过程中的额外位移。
+    private func resetPhotoLibraryDismissTranslation() {
+        photoLibraryDismissTranslationY = 0
+        updateInputBarKeyboardBottomConstraint()
+    }
+
+    /// 更新输入栏相对键盘 guide 的额外偏移。
+    private func updateInputBarKeyboardBottomConstraint() {
         inputBarKeyboardBottomConstraint?.constant = 0
+        inputBarCustomPanelBottomConstraint?.constant = photoLibraryDismissTranslationY
+        inputBarKeyboardBottomConstraint?.isActive = !isInputBarAnchoredToScreenBottom
+        inputBarCustomPanelBottomConstraint?.isActive = isInputBarAnchoredToScreenBottom
     }
 
     /// 应用图片库面板下滑过程中的整体位移
     private func applyPhotoLibraryDismissPanTranslation(_ translationY: CGFloat) {
         let layoutTransaction = beginMessageLayoutTransaction()
         let clampedTranslation = max(0, translationY)
-        inputBarKeyboardBottomConstraint?.constant = clampedTranslation
+        photoLibraryDismissTranslationY = clampedTranslation
+        updateInputBarKeyboardBottomConstraint()
         completeMessageLayoutTransaction(layoutTransaction, animated: false)
     }
 
