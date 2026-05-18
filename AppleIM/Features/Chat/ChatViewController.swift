@@ -266,6 +266,8 @@ final class ChatViewController: UIViewController {
     private var isSwitchingKeyboardToCustomInputPanel = false
     /// 系统键盘到自定义面板过渡期间是否需要保持列表贴底。
     private var shouldStickToBottomDuringCustomInputSwitch = false
+    /// 下一次输入栏向上扩展时需要强制露出最新消息。
+    private var shouldRevealLatestMessageDuringNextInputBarRise = false
     /// 输入栏一次高度变化跨越 will/did 两个回调，这里暂存变化前的滚动状态。
     private var pendingInputBarLayoutTransaction: MessageLayoutTransaction?
     /// 动画贴底校正代次；用户开始拖动后让旧的延迟校正失效。
@@ -287,8 +289,14 @@ final class ChatViewController: UIViewController {
     private struct MessageLayoutTransaction {
         /// 变化发生前是否应该维持底部消息可见。
         let shouldStickToBottom: Bool
+        /// 本次变化由用户主动唤起输入区触发，需要无条件露出最新消息。
+        let shouldRevealLatestMessage: Bool
         /// 不贴底时保留用户当前阅读位置，避免输入栏变化把历史消息推走。
         let previousContentOffset: CGPoint
+        /// 输入栏变化前的顶部位置，用于判断输入栏是否向上升起。
+        let previousInputBarMinY: CGFloat?
+        /// 创建事务时的滚动代次；用户拖动后旧事务不能再抢回底部。
+        let scrollControlGeneration: Int
     }
 
     /// 上拉加载历史消息时用于保持阅读位置的旧消息锚点。
@@ -700,6 +708,7 @@ final class ChatViewController: UIViewController {
     @objc private func keyboardWillChangeFrame(_ notification: Notification) {
         let isCompletingCustomInputKeyboardSwitch = isSwitchingCustomInputPanelToKeyboard
         let isCompletingKeyboardCustomInputSwitch = isSwitchingKeyboardToCustomInputPanel
+        let keyboardVisibleAfterChange = keyboardVisibilityAfterChange(notification)
         let shouldKeepBottomDuringInputSwitch: Bool
         if isCompletingCustomInputKeyboardSwitch {
             shouldKeepBottomDuringInputSwitch = shouldStickToBottomDuringKeyboardInputSwitch
@@ -708,19 +717,22 @@ final class ChatViewController: UIViewController {
         } else {
             shouldKeepBottomDuringInputSwitch = shouldStickToBottomForLayoutChange()
         }
+        let shouldRevealLatestMessage = isCompletingCustomInputKeyboardSwitch || keyboardVisibleAfterChange == true
         let layoutTransaction = MessageLayoutTransaction(
             // 从自定义面板切回键盘时，输入栏会先保留旧面板等待键盘动画接管。
             // 从键盘切自定义面板时也要等键盘收起通知一起展开面板。这里必须沿用切换发起前的贴底判断，
             // 否则 keyboardLayoutGuide 晚一轮稳定时，
             // 最新消息可能被抬高后的输入栏盖住，或者离底阅读被错误拉回底部。
-            shouldStickToBottom: shouldKeepBottomDuringInputSwitch,
-            previousContentOffset: collectionView.contentOffset
+            shouldStickToBottom: shouldKeepBottomDuringInputSwitch || shouldRevealLatestMessage,
+            shouldRevealLatestMessage: shouldRevealLatestMessage,
+            previousContentOffset: collectionView.contentOffset,
+            previousInputBarMinY: inputBarMinYInView(),
+            scrollControlGeneration: bottomPositionCorrectionGeneration
         )
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
         let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt
             ?? UIView.AnimationOptions.curveEaseInOut.rawValue
         let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
-        let keyboardVisibleAfterChange = keyboardVisibilityAfterChange(notification)
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
@@ -750,6 +762,7 @@ final class ChatViewController: UIViewController {
                 self.inputBarView.finalizeDeferredCustomPanelPresentation()
                 self.isSwitchingKeyboardToCustomInputPanel = false
                 self.shouldStickToBottomDuringCustomInputSwitch = false
+                self.shouldRevealLatestMessageDuringNextInputBarRise = false
             }
             self.completeMessageLayoutTransaction(layoutTransaction, animated: false)
         }
@@ -804,14 +817,18 @@ final class ChatViewController: UIViewController {
         if mayDeferKeyboardDismiss {
             // `resignFirstResponder()` 可能同步触发键盘通知；必须先标记过渡，
             // 否则通知到来时控制器还不知道要在同一动画事务里展开面板。
-            shouldStickToBottomDuringCustomInputSwitch = shouldStickToBottomForLayoutChange()
+            shouldStickToBottomDuringCustomInputSwitch = true
             isSwitchingKeyboardToCustomInputPanel = true
         } else {
             isSwitchingKeyboardToCustomInputPanel = false
             shouldStickToBottomDuringCustomInputSwitch = false
             activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         }
+        shouldRevealLatestMessageDuringNextInputBarRise = true
         let didDeferCustomPanelPresentation = inputBarView.showPhotoLibraryInput()
+        if !didDeferCustomPanelPresentation, shouldRevealLatestMessageDuringNextInputBarRise {
+            shouldRevealLatestMessageDuringNextInputBarRise = false
+        }
         if !didDeferCustomPanelPresentation {
             isSwitchingKeyboardToCustomInputPanel = false
             shouldStickToBottomDuringCustomInputSwitch = false
@@ -828,14 +845,18 @@ final class ChatViewController: UIViewController {
         let mayDeferKeyboardDismiss = inputBarView.isEditingText
         if mayDeferKeyboardDismiss {
             // 同步键盘通知会发生在 showEmojiInput() 返回前，过渡状态必须先准备好。
-            shouldStickToBottomDuringCustomInputSwitch = shouldStickToBottomForLayoutChange()
+            shouldStickToBottomDuringCustomInputSwitch = true
             isSwitchingKeyboardToCustomInputPanel = true
         } else {
             isSwitchingKeyboardToCustomInputPanel = false
             shouldStickToBottomDuringCustomInputSwitch = false
             activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         }
+        shouldRevealLatestMessageDuringNextInputBarRise = true
         let didDeferCustomPanelPresentation = inputBarView.showEmojiInput()
+        if !didDeferCustomPanelPresentation, shouldRevealLatestMessageDuringNextInputBarRise {
+            shouldRevealLatestMessageDuringNextInputBarRise = false
+        }
         if !didDeferCustomPanelPresentation {
             isSwitchingKeyboardToCustomInputPanel = false
             shouldStickToBottomDuringCustomInputSwitch = false
@@ -847,7 +868,7 @@ final class ChatViewController: UIViewController {
         isSwitchingKeyboardToCustomInputPanel = false
         shouldStickToBottomDuringCustomInputSwitch = false
         resetPhotoLibraryDismissTranslation()
-        shouldStickToBottomDuringKeyboardInputSwitch = shouldStickToBottomForLayoutChange()
+        shouldStickToBottomDuringKeyboardInputSwitch = true
         isSwitchingCustomInputPanelToKeyboard = inputBarView.showKeyboardInput()
         if !isSwitchingCustomInputPanelToKeyboard {
             activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
@@ -863,6 +884,7 @@ final class ChatViewController: UIViewController {
         shouldStickToBottomDuringKeyboardInputSwitch = false
         isSwitchingKeyboardToCustomInputPanel = false
         shouldStickToBottomDuringCustomInputSwitch = false
+        shouldRevealLatestMessageDuringNextInputBarRise = false
         resetPhotoLibraryDismissTranslation()
         activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         photoLibraryInputView.resetDismissGestureState()
@@ -876,6 +898,7 @@ final class ChatViewController: UIViewController {
         shouldStickToBottomDuringKeyboardInputSwitch = false
         isSwitchingKeyboardToCustomInputPanel = false
         shouldStickToBottomDuringCustomInputSwitch = false
+        shouldRevealLatestMessageDuringNextInputBarRise = false
         resetPhotoLibraryDismissTranslation()
         activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
         inputBarView.hideCustomInputPanel(animated: animated)
@@ -1249,7 +1272,9 @@ final class ChatViewController: UIViewController {
                     }
                 }
             } else if shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows)
-                || (layoutTransaction.shouldStickToBottom && !self.isLatestRenderedMessageVisibleAboveInputBar()) {
+                || (self.canUseMessageLayoutTransactionForBottomPosition(layoutTransaction)
+                    && layoutTransaction.shouldStickToBottom
+                    && !self.isLatestRenderedMessageVisibleAboveInputBar()) {
                 // 新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: didAppendNewMessage)
             } else {
@@ -1445,7 +1470,7 @@ final class ChatViewController: UIViewController {
 
         let normalizedVoice = ChatMessageRowContent.VoiceContent(
             localPath: voice.localPath,
-            durationMilliseconds: voice.durationMilliseconds,
+            durationMilliseconds: 0,
             isUnplayed: voice.isUnplayed,
             isPlaying: false,
             playbackProgress: 0,
@@ -1814,10 +1839,16 @@ final class ChatViewController: UIViewController {
     }
 
     /// 开始一次会影响输入区域覆盖范围的布局事务。
-    private func beginMessageLayoutTransaction() -> MessageLayoutTransaction {
+    private func beginMessageLayoutTransaction(
+        shouldRevealLatestMessage: Bool = false,
+        tracksInputBarRise: Bool = false
+    ) -> MessageLayoutTransaction {
         MessageLayoutTransaction(
-            shouldStickToBottom: shouldStickToBottomForLayoutChange(),
-            previousContentOffset: collectionView.contentOffset
+            shouldStickToBottom: shouldRevealLatestMessage || shouldStickToBottomForLayoutChange(),
+            shouldRevealLatestMessage: shouldRevealLatestMessage,
+            previousContentOffset: collectionView.contentOffset,
+            previousInputBarMinY: tracksInputBarRise ? inputBarMinYInView() : nil,
+            scrollControlGeneration: bottomPositionCorrectionGeneration
         )
     }
 
@@ -1825,11 +1856,28 @@ final class ChatViewController: UIViewController {
     private func completeMessageLayoutTransaction(_ transaction: MessageLayoutTransaction, animated: Bool) {
         view.layoutIfNeeded()
         updateCollectionViewOverlayInsets()
-        if transaction.shouldStickToBottom {
+        if canUseMessageLayoutTransactionForBottomPosition(transaction)
+            && (transaction.shouldRevealLatestMessage || transaction.shouldStickToBottom) {
             scrollToBottom(animated: animated)
         } else {
             preserveMessageContentOffsetIfNeeded(transaction)
         }
+    }
+
+    /// 用户开始拖动后，旧布局事务不能继续执行贴底滚动。
+    private func canUseMessageLayoutTransactionForBottomPosition(_ transaction: MessageLayoutTransaction) -> Bool {
+        transaction.scrollControlGeneration == bottomPositionCorrectionGeneration
+    }
+
+    /// 输入栏在本次布局事务中是否向上升起。
+    private func inputBarDidRise(during transaction: MessageLayoutTransaction) -> Bool {
+        guard let previousInputBarMinY = transaction.previousInputBarMinY else { return false }
+        return inputBarMinYInView() < previousInputBarMinY - 0.5
+    }
+
+    /// 当前输入栏顶部在聊天页坐标系中的位置。
+    private func inputBarMinYInView() -> CGFloat {
+        inputBarView.convert(inputBarView.bounds, to: view).minY
     }
 
     /// 用户手动离底后，输入栏或面板变化只能刷新 inset，不能把列表推回底部。
@@ -1970,6 +2018,44 @@ final class ChatViewController: UIViewController {
                 )
             }
         }
+    }
+
+    /// 输入栏主动升起后再做一次贴底兜底，覆盖 UIKit 高度动画完成时机不稳定的情况。
+    private func scheduleInputBarRiseRevealCorrectionIfNeeded(
+        previousInputBarMinY: CGFloat?,
+        shouldRevealRegardlessOfRise: Bool,
+        shouldRevealWhenInputBarRises: Bool
+    ) {
+        guard shouldRevealRegardlessOfRise || (shouldRevealWhenInputBarRises && previousInputBarMinY != nil) else { return }
+        let correctionGeneration = bottomPositionCorrectionGeneration
+        let correctionDelays: [TimeInterval] = [0, 0.25]
+
+        for delay in correctionDelays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard
+                    let self,
+                    correctionGeneration == self.bottomPositionCorrectionGeneration,
+                    !self.isUserControllingMessageScroll,
+                    !self.lastRenderedRowIDs.isEmpty
+                else { return }
+
+                self.view.layoutIfNeeded()
+                self.collectionView.layoutIfNeeded()
+                let didRise = previousInputBarMinY.map { self.inputBarMinYInView() < $0 - 0.5 } ?? false
+                guard shouldRevealRegardlessOfRise || (shouldRevealWhenInputBarRises && didRise) else { return }
+                self.correctLatestMessageBottomPositionAfterInputBarRise()
+            }
+        }
+    }
+
+    /// 延迟兜底只做实际位置校正，不覆盖测试观察的最近一次主动贴底动画参数。
+    private func correctLatestMessageBottomPositionAfterInputBarRise() {
+        for _ in 0..<3 {
+            collectionView.layoutIfNeeded()
+            updateCollectionViewOverlayInsets()
+            positionLatestMessageAtVisibleBottom(animated: false)
+        }
+        shouldMaintainBottomPosition = !isUserControllingMessageScroll
     }
 
     /// 执行键盘后的贴底校正；只在原本贴底或首屏定位未完成时触发，不抢用户离底阅读位置。
@@ -2140,7 +2226,17 @@ final class ChatViewController: UIViewController {
 /// 聊天输入栏高度变化协调
 extension ChatViewController: ChatInputBarLayoutDelegate {
     func chatInputBarWillChangeHeight(_ inputBar: ChatInputBarView) -> Bool {
-        let transaction = beginMessageLayoutTransaction()
+        let shouldRevealLatestMessage = shouldRevealLatestMessageDuringNextInputBarRise
+        shouldRevealLatestMessageDuringNextInputBarRise = false
+        let transaction = beginMessageLayoutTransaction(
+            shouldRevealLatestMessage: shouldRevealLatestMessage,
+            tracksInputBarRise: true
+        )
+        scheduleInputBarRiseRevealCorrectionIfNeeded(
+            previousInputBarMinY: transaction.previousInputBarMinY,
+            shouldRevealRegardlessOfRise: shouldRevealLatestMessage,
+            shouldRevealWhenInputBarRises: inputBar.isEditingText
+        )
         pendingInputBarLayoutTransaction = transaction
         return transaction.shouldStickToBottom
     }
@@ -2148,10 +2244,22 @@ extension ChatViewController: ChatInputBarLayoutDelegate {
     func chatInputBar(_ inputBar: ChatInputBarView, didChangeHeightKeepingBottom shouldStickToBottom: Bool) {
         let transaction = pendingInputBarLayoutTransaction ?? MessageLayoutTransaction(
             shouldStickToBottom: shouldStickToBottom,
-            previousContentOffset: collectionView.contentOffset
+            shouldRevealLatestMessage: false,
+            previousContentOffset: collectionView.contentOffset,
+            previousInputBarMinY: nil,
+            scrollControlGeneration: bottomPositionCorrectionGeneration
         )
         pendingInputBarLayoutTransaction = nil
-        completeMessageLayoutTransaction(transaction, animated: false)
+        let shouldRevealLatestMessage = transaction.shouldRevealLatestMessage
+            || (inputBar.isEditingText && inputBarDidRise(during: transaction))
+        let resolvedTransaction = MessageLayoutTransaction(
+            shouldStickToBottom: transaction.shouldStickToBottom || shouldRevealLatestMessage,
+            shouldRevealLatestMessage: shouldRevealLatestMessage,
+            previousContentOffset: transaction.previousContentOffset,
+            previousInputBarMinY: transaction.previousInputBarMinY,
+            scrollControlGeneration: transaction.scrollControlGeneration
+        )
+        completeMessageLayoutTransaction(resolvedTransaction, animated: false)
     }
 }
 

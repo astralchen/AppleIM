@@ -901,6 +901,126 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerScrollsToBottomWhenKeyboardRaisesInputBarAfterLeavingBottom() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Keyboard Raise",
+            rowPrefix: "keyboard_raise"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        try moveChatCollectionAwayFromBottom(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: 544, width: 390, height: 300),
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+
+        for constraint in setup.viewController.view.constraints where
+            ((constraint.firstItem as? UIView) === setup.inputBar && constraint.firstAttribute == .bottom)
+                || ((constraint.secondItem as? UIView) === setup.inputBar && constraint.secondAttribute == .bottom) {
+            constraint.isActive = false
+        }
+        setup.inputBar.bottomAnchor.constraint(
+            equalTo: setup.viewController.view.bottomAnchor,
+            constant: -300
+        ).isActive = true
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        try await Task.sleep(nanoseconds: 50_000_000)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(
+            latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: setup.collectionView.numberOfItems(inSection: 0) - 1,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        )
+    }
+
+    @MainActor
+    @Test func chatViewControllerScrollsToBottomWhenEmojiPanelRaisesInputBarAfterLeavingBottom() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Emoji Raise",
+            rowPrefix: "emoji_raise",
+            useEmojiUseCase: true
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        try moveChatCollectionAwayFromBottom(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+
+        setup.inputBar.requestEmojiInput()
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            setup.window.layoutIfNeeded()
+            setup.collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: setup.collectionView.numberOfItems(inSection: 0) - 1,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        }
+    }
+
+    @MainActor
+    @Test func chatViewControllerScrollsToBottomWhenPhotoLibraryPanelRaisesInputBarAfterLeavingBottom() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Photo Raise",
+            rowPrefix: "photo_raise"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        try moveChatCollectionAwayFromBottom(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+
+        setup.inputBar.requestPhotoLibraryInput()
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            setup.window.layoutIfNeeded()
+            setup.collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: setup.collectionView.numberOfItems(inSection: 0) - 1,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        }
+    }
+
+    @MainActor
     @Test func chatViewControllerKeepsBottomAnchoredWhilePhotoLibraryPanelIsDragged() async throws {
         let rows = (1...28).map { index in
             makeChatRow(
@@ -1189,6 +1309,48 @@ extension AppleIMTests {
         let lastCellFrame = lastCell.convert(lastCell.bounds, to: setup.viewController.view)
         let inputFrame = setup.inputBar.convert(setup.inputBar.bounds, to: setup.viewController.view)
         #expect(lastCellFrame.maxY <= inputFrame.minY + 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerScrollsToBottomWhenTextInputHeightRaisesInputBarAfterLeavingBottom() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Input Raise",
+            rowPrefix: "input_raise"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        try moveChatCollectionAwayFromBottom(
+            viewController: setup.viewController,
+            collectionView: setup.collectionView,
+            window: setup.window
+        )
+
+        let textView = try #require(findView(ofType: UITextView.self, in: setup.inputBar))
+        #expect(textView.becomeFirstResponder())
+        textView.text = """
+        输入栏增高后需要露出最新消息
+        第二行
+        第三行
+        第四行
+        第五行
+        """
+        setup.inputBar.textViewDidChange(textView)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            setup.window.layoutIfNeeded()
+            setup.collectionView.layoutIfNeeded()
+            return latestMessageCellIsAboveInputBar(
+                collectionView: setup.collectionView,
+                item: setup.collectionView.numberOfItems(inSection: 0) - 1,
+                inputBar: setup.inputBar,
+                in: setup.viewController.view
+            )
+        }
     }
 
     @MainActor
