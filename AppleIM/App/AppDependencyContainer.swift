@@ -5,6 +5,7 @@
 //  应用依赖容器
 //  管理全局依赖的创建和注入
 
+import Combine
 import UIKit
 
 /// 应用依赖容器
@@ -179,6 +180,13 @@ final class AppDependencyContainer {
         )
     }
 
+    func makeConversationUnreadBadgeController() -> ConversationUnreadBadgeController {
+        ConversationUnreadBadgeController(
+            userID: accountID,
+            storeProvider: storeProvider
+        )
+    }
+
     func makeAccountViewController(
         session: AccountSession,
         onAction: @escaping (AccountAction) -> Void
@@ -203,7 +211,10 @@ final class AppDependencyContainer {
         )
     }
 
-    func makeChatViewController(conversation: ConversationListRowState) -> ChatViewController {
+    func makeChatViewController(
+        conversation: ConversationListRowState,
+        unreadBadgePublisher: AnyPublisher<String?, Never> = Just<String?>(nil).eraseToAnyPublisher()
+    ) -> ChatViewController {
         let useCase = StoreBackedChatUseCase(
             userID: accountID,
             conversationID: conversation.id,
@@ -216,7 +227,10 @@ final class AppDependencyContainer {
             simulatedIncomingPushService: simulatedIncomingPushService
         )
         let viewModel = ChatViewModel(useCase: useCase, title: conversation.title)
-        let viewController = ChatViewController(viewModel: viewModel)
+        let viewController = ChatViewController(
+            viewModel: viewModel,
+            unreadBadgePublisher: unreadBadgePublisher
+        )
         viewController.hidesBottomBarWhenPushed = true
         return viewController
     }

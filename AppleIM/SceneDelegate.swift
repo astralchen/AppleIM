@@ -5,6 +5,7 @@
 //  场景委托
 //  管理 UI 场景的生命周期和依赖注入
 
+import Combine
 import UIKit
 
 /// 场景委托
@@ -16,6 +17,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     /// 依赖容器
     private var dependencies: AppDependencyContainer?
+    /// 消息未读徽标协调器
+    private var unreadBadgeController: ConversationUnreadBadgeController?
+    /// 场景级 Combine 订阅集合
+    private var cancellables = Set<AnyCancellable>()
     /// 登录态缓存
     private let sessionStore: any AccountSessionStore = UserDefaultsAccountSessionStore()
 
@@ -109,6 +114,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// - Parameter window: 主窗口
     private func showLoginInterface(in window: UIWindow) {
         dependencies = nil
+        unreadBadgeController = nil
+        cancellables.removeAll()
         window.rootViewController = makeLoginViewController()
     }
 
@@ -208,11 +215,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
             dependencies.refreshApplicationBadge()
             dependencies.runStartupDataRepair()
+            let unreadBadgeController = dependencies.makeConversationUnreadBadgeController()
+            self.unreadBadgeController = unreadBadgeController
             let rootViewController = makeMainTabController(
                 session: session,
-                dependencies: dependencies
+                dependencies: dependencies,
+                unreadBadgeController: unreadBadgeController
             )
             window.rootViewController = rootViewController
+            unreadBadgeController.start()
         } catch {
             window.rootViewController = makeStartupErrorViewController()
         }
@@ -221,11 +232,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 创建登录后的主 Tab 界面。
     private func makeMainTabController(
         session: AccountSession,
-        dependencies: AppDependencyContainer
+        dependencies: AppDependencyContainer,
+        unreadBadgeController: ConversationUnreadBadgeController
     ) -> UITabBarController {
         let messagesNavigationController = UINavigationController()
+        let unreadBadgePublisher = unreadBadgeController.badgePublisher
         let conversationListViewController = dependencies.makeConversationListViewController { [weak messagesNavigationController, weak dependencies] conversation in
-            guard let chatViewController = dependencies?.makeChatViewController(conversation: conversation) else {
+            guard let chatViewController = dependencies?.makeChatViewController(
+                conversation: conversation,
+                unreadBadgePublisher: unreadBadgePublisher
+            ) else {
                 return
             }
 
@@ -237,6 +253,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             selectedImage: UIImage(systemName: "message.fill")
         )
         messagesTabBarItem.accessibilityIdentifier = "mainTab.messages"
+        unreadBadgePublisher
+            .sink { badgeText in
+                messagesTabBarItem.badgeValue = badgeText
+            }
+            .store(in: &cancellables)
         conversationListViewController.tabBarItem = messagesTabBarItem
         messagesNavigationController.tabBarItem = messagesTabBarItem
         messagesNavigationController.viewControllers = [conversationListViewController]

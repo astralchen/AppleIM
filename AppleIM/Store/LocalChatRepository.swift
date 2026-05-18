@@ -163,6 +163,24 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         return records.map { Self.conversation(from: $0, extra: extras[$0.id]) }
     }
 
+    /// 查询账号下所有可见会话的未读总数。
+    func unreadConversationCount(for userID: UserID) async throws -> Int {
+        let rows = try await database.query(
+            """
+            SELECT COALESCE(SUM(unread_count), 0) AS unread_count
+            FROM conversation
+            WHERE user_id = ?
+            AND is_hidden = 0;
+            """,
+            parameters: [
+                .text(userID.rawValue)
+            ],
+            paths: paths
+        )
+
+        return max(0, rows.first?.int("unread_count") ?? 0)
+    }
+
     /// 插入或更新会话
     ///
     /// 流程：

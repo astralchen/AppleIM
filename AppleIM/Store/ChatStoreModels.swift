@@ -1223,6 +1223,8 @@ protocol ConversationRepository: Sendable {
     func listConversations(for userID: UserID) async throws -> [Conversation]
     /// 分页查询会话列表
     func listConversations(for userID: UserID, limit: Int, after cursor: ConversationPageCursor?) async throws -> [Conversation]
+    /// 查询账号下所有可见会话的未读总数
+    func unreadConversationCount(for userID: UserID) async throws -> Int
     /// 插入或更新会话
     func upsertConversation(_ record: ConversationRecord) async throws
     /// 标记会话已读

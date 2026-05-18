@@ -20,6 +20,167 @@ private final class ChatMessageCollectionView: UICollectionView {
     }
 }
 
+/// 聊天页返回按钮旁的 Apple Messages 风格未读徽标。
+private final class MessagesBackUnreadBadgeLabel: UILabel {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let size = super.intrinsicContentSize
+        return CGSize(width: max(size.width + 10, 26), height: 26)
+    }
+
+    private func configure() {
+        textAlignment = .center
+        textColor = .white
+        backgroundColor = .black
+        font = .systemFont(ofSize: 15, weight: .semibold)
+        adjustsFontForContentSizeCategory = true
+        layer.cornerRadius = 13
+        layer.masksToBounds = true
+        isHidden = true
+    }
+}
+
+/// 聊天页左上角返回按钮，把箭头和未读数放进同一个 bar item，避免系统 item 间距过大。
+private final class MessagesBackButtonView: UIButton {
+    /// 未读徽标视图。
+    let unreadBadgeLabel = MessagesBackUnreadBadgeLabel()
+
+    private let shadowView = UIView()
+    private let backgroundView = UIView()
+    private let arrowImageView = UIImageView(
+        image: UIImage(
+            systemName: "chevron.left",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+        )?.withRenderingMode(.alwaysTemplate)
+    )
+    private let arrowWidth: CGFloat = 22
+    private let arrowHeight: CGFloat = 26
+    private let badgeLeading: CGFloat = 6
+    private let horizontalInset: CGFloat = 13
+    private let trailingInset: CGFloat = 10
+    private let controlHeight: CGFloat = 40
+    private let minimumWidth: CGFloat = 52
+    private var widthConstraint: NSLayoutConstraint?
+    private var heightConstraint: NSLayoutConstraint?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        guard !unreadBadgeLabel.isHidden else {
+            return CGSize(width: minimumWidth, height: controlHeight)
+        }
+        return CGSize(
+            width: horizontalInset + arrowWidth + badgeLeading + unreadBadgeLabel.intrinsicContentSize.width + trailingInset,
+            height: controlHeight
+        )
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        shadowView.frame = bounds
+        shadowView.layer.cornerRadius = bounds.height / 2
+        shadowView.layer.shadowPath = UIBezierPath(roundedRect: bounds, cornerRadius: bounds.height / 2).cgPath
+
+        backgroundView.frame = bounds
+        backgroundView.layer.cornerRadius = bounds.height / 2
+
+        let arrowOriginX = unreadBadgeLabel.isHidden
+            ? (bounds.width - arrowWidth) / 2
+            : horizontalInset
+        arrowImageView.frame = CGRect(
+            x: arrowOriginX,
+            y: (bounds.height - arrowHeight) / 2,
+            width: arrowWidth,
+            height: arrowHeight
+        )
+        guard !unreadBadgeLabel.isHidden else { return }
+
+        let badgeSize = unreadBadgeLabel.intrinsicContentSize
+        unreadBadgeLabel.frame = CGRect(
+            x: arrowImageView.frame.maxX + badgeLeading,
+            y: (bounds.height - badgeSize.height) / 2,
+            width: badgeSize.width,
+            height: badgeSize.height
+        )
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.insetBy(dx: -8, dy: -8).contains(point)
+    }
+
+    /// 更新未读徽标文本。
+    func updateBadgeText(_ badgeText: String?) {
+        unreadBadgeLabel.text = badgeText
+        unreadBadgeLabel.isHidden = badgeText == nil
+        accessibilityLabel = badgeText.map { "返回消息列表，\($0) 条未读" } ?? "返回消息列表"
+        invalidateIntrinsicContentSize()
+        let size = intrinsicContentSize
+        widthConstraint?.constant = size.width
+        heightConstraint?.constant = size.height
+        frame.size = size
+        setNeedsLayout()
+    }
+
+    private func configure() {
+        accessibilityIdentifier = "chat.messagesBackButton"
+        isAccessibilityElement = true
+        accessibilityTraits = .button
+        isUserInteractionEnabled = true
+        backgroundColor = .clear
+        translatesAutoresizingMaskIntoConstraints = false
+
+        let widthConstraint = widthAnchor.constraint(equalToConstant: minimumWidth)
+        let heightConstraint = heightAnchor.constraint(equalToConstant: controlHeight)
+        NSLayoutConstraint.activate([widthConstraint, heightConstraint])
+        self.widthConstraint = widthConstraint
+        self.heightConstraint = heightConstraint
+
+        shadowView.accessibilityIdentifier = "chat.messagesBackButton.shadow"
+        shadowView.isUserInteractionEnabled = false
+        shadowView.backgroundColor = UIColor(white: 0.97, alpha: 0.96)
+        shadowView.layer.shadowColor = UIColor.black.cgColor
+        shadowView.layer.shadowOpacity = 0.16
+        shadowView.layer.shadowRadius = 18
+        shadowView.layer.shadowOffset = CGSize(width: 0, height: 8)
+
+        backgroundView.accessibilityIdentifier = "chat.messagesBackButton.background"
+        backgroundView.isUserInteractionEnabled = false
+        backgroundView.layer.masksToBounds = true
+        backgroundView.backgroundColor = UIColor(white: 1, alpha: 0.88)
+
+        arrowImageView.accessibilityIdentifier = "chat.messagesBackButton.arrow"
+        arrowImageView.tintColor = .black
+        arrowImageView.contentMode = .scaleAspectFit
+        arrowImageView.isUserInteractionEnabled = false
+
+        unreadBadgeLabel.accessibilityIdentifier = "chat.messagesBackButton.unreadBadge"
+        unreadBadgeLabel.isUserInteractionEnabled = false
+
+        addSubview(shadowView)
+        addSubview(backgroundView)
+        addSubview(arrowImageView)
+        addSubview(unreadBadgeLabel)
+        updateBadgeText(nil)
+    }
+}
+
 /// 串行化 diffable data source 快照 apply，避免 UIKit apply 队列重入。
 @MainActor
 final class ChatSnapshotRenderCoordinator<State> {
@@ -75,6 +236,8 @@ final class ChatViewController: UIViewController {
 
     /// 聊天页 ViewModel
     private let viewModel: ChatViewModel
+    /// 账号级消息未读徽标文本发布源。
+    private let unreadBadgePublisher: AnyPublisher<String?, Never>
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
     /// 消息列表 diffable 数据源
@@ -185,10 +348,18 @@ final class ChatViewController: UIViewController {
     private var pendingComposerMediaByID: [String: ChatComposerMedia] = [:]
     /// 待确认发送的本地语音录音
     private var pendingVoiceRecording: VoiceRecordingFile?
+    /// 返回消息列表按钮。
+    private var messagesBackBarButtonItem: UIBarButtonItem?
+    /// 返回消息列表按钮自定义视图。
+    private weak var messagesBackButtonView: MessagesBackButtonView?
 
     /// 初始化聊天页
-    init(viewModel: ChatViewModel) {
+    init(
+        viewModel: ChatViewModel,
+        unreadBadgePublisher: AnyPublisher<String?, Never> = Just<String?>(nil).eraseToAnyPublisher()
+    ) {
         self.viewModel = viewModel
+        self.unreadBadgePublisher = unreadBadgePublisher
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -213,6 +384,18 @@ final class ChatViewController: UIViewController {
         bindConversationStoreNotifications()
         bindViewModel()
         viewModel.load()
+    }
+
+    /// 页面即将显示时恢复系统边缘返回手势；自定义左侧返回项会让系统默认返回项消失，需要提前接回。
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        restoreInteractivePopGestureIfNeeded()
+    }
+
+    /// 页面显示后再校准一次，覆盖导航转场过程中 UIKit 对手势状态的更新。
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        restoreInteractivePopGestureIfNeeded()
     }
 
     /// 窗口、安全区或输入栏完成布局后，继续保持最新消息不被底部输入区遮挡。
@@ -352,6 +535,8 @@ final class ChatViewController: UIViewController {
     /// 配置聊天页导航栏操作。
     private func configureNavigationItem() {
         navigationItem.largeTitleDisplayMode = .never
+        let backButton = makeMessagesBackButton()
+        navigationItem.leftBarButtonItems = [backButton]
 
         let simulateIncomingButton = UIBarButtonItem(
             image: UIImage(systemName: "message.fill"),
@@ -362,6 +547,59 @@ final class ChatViewController: UIViewController {
         simulateIncomingButton.accessibilityIdentifier = "chat.simulateIncomingButton"
         simulateIncomingButton.accessibilityLabel = "后台推送对方消息"
         navigationItem.rightBarButtonItem = simulateIncomingButton
+
+        unreadBadgePublisher
+            .sink { [weak self] badgeText in
+                self?.updateMessagesBackButtonBadge(badgeText)
+            }
+            .store(in: &cancellables)
+    }
+
+    /// 恢复自定义返回按钮下的系统边缘返回手势。
+    private func restoreInteractivePopGestureIfNeeded() {
+        guard let navigationController else { return }
+        let canPop = navigationController.viewControllers.count > 1
+        navigationController.interactivePopGestureRecognizer?.isEnabled = canPop
+        navigationController.interactivePopGestureRecognizer?.delegate = nil
+    }
+
+    /// 创建只显示返回箭头的消息列表按钮。
+    private func makeMessagesBackButton() -> UIBarButtonItem {
+        let buttonView = MessagesBackButtonView()
+        buttonView.addTarget(self, action: #selector(messagesBackButtonTapped), for: .touchUpInside)
+        let button = UIBarButtonItem(customView: buttonView)
+        button.accessibilityIdentifier = "chat.messagesBackButton"
+        button.target = self
+        button.action = #selector(messagesBackButtonTapped)
+        hideSharedBackgroundIfAvailable(button)
+        messagesBackButtonView = buttonView
+        messagesBackBarButtonItem = button
+        updateMessagesBackButtonBadge(nil)
+        return button
+    }
+
+    /// iOS 26 起导航栏会为相邻按钮生成共享玻璃背景，这里显式关闭以贴近 Messages 的轻量返回区。
+    private func hideSharedBackgroundIfAvailable(_ item: UIBarButtonItem) {
+        if #available(iOS 26.0, *) {
+            item.hidesSharedBackground = true
+        }
+    }
+
+    /// 更新返回按钮旁的未读数。
+    private func updateMessagesBackButtonBadge(_ badgeText: String?) {
+        messagesBackButtonView?.updateBadgeText(badgeText)
+        if let badgeText {
+            messagesBackBarButtonItem?.accessibilityLabel = "返回消息列表，\(badgeText) 条未读"
+        } else {
+            messagesBackBarButtonItem?.accessibilityLabel = "返回消息列表"
+        }
+        messagesBackBarButtonItem?.customView?.invalidateIntrinsicContentSize()
+        navigationItem.leftBarButtonItems = messagesBackBarButtonItem.map { [$0] }
+    }
+
+    /// 返回消息列表。
+    @objc private func messagesBackButtonTapped() {
+        navigationController?.popViewController(animated: true)
     }
 
     /// 触发后台推送一条对方消息。

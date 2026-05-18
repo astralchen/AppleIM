@@ -6,6 +6,75 @@ import UIKit
 @testable import AppleIM
 
 extension AppleIMTests {
+    @Test func conversationUnreadBadgeFormatterUsesAppleMessagesCountText() {
+        #expect(ConversationUnreadBadgeFormatter.text(for: 0) == nil)
+        #expect(ConversationUnreadBadgeFormatter.text(for: 2) == "2")
+        #expect(ConversationUnreadBadgeFormatter.text(for: 99) == "99")
+        #expect(ConversationUnreadBadgeFormatter.text(for: 100) == "99+")
+    }
+
+    @MainActor
+    @Test func conversationUnreadBadgeControllerRefreshesAndFiltersCurrentAccountEvents() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "badge_controller_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "badge_controller_a", userID: "badge_controller_user", unreadCount: 2)
+        )
+        let notificationCenter = NotificationCenter()
+        let controller = ConversationUnreadBadgeController(
+            userID: "badge_controller_user",
+            storeProvider: storeProvider,
+            notificationCenter: notificationCenter
+        )
+        var badgeTexts: [String?] = []
+        let cancellable = controller.badgePublisher.sink { badgeTexts.append($0) }
+        defer {
+            cancellable.cancel()
+        }
+
+        controller.start()
+        try await waitForCondition {
+            badgeTexts.last == "2"
+        }
+
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "badge_controller_b", userID: "badge_controller_user", unreadCount: 100)
+        )
+        notificationCenter.post(
+            name: .chatStoreConversationsDidChange,
+            object: nil,
+            userInfo: [
+                ChatStoreConversationChangeNotification.userIDKey: "badge_controller_user",
+                ChatStoreConversationChangeNotification.conversationIDsKey: ["badge_controller_b"]
+            ]
+        )
+        try await waitForCondition {
+            badgeTexts.last == "99+"
+        }
+
+        notificationCenter.post(
+            name: .chatStoreConversationsDidChange,
+            object: nil,
+            userInfo: [
+                ChatStoreConversationChangeNotification.userIDKey: "other_badge_controller_user",
+                ChatStoreConversationChangeNotification.conversationIDsKey: ["ignored"]
+            ]
+        )
+        try await Task.sleep(nanoseconds: 20_000_000)
+
+        #expect(badgeTexts.last == "99+")
+    }
+
     @MainActor
     @Test func conversationListViewModelLoadsRows() async throws {
         let viewModel = ConversationListViewModel(useCase: StubConversationListUseCase())

@@ -1,10 +1,107 @@
 import Testing
+import Combine
 import Foundation
 import UIKit
 
 @testable import AppleIM
 
 extension AppleIMTests {
+    @MainActor
+    @Test func chatViewControllerShowsUnreadBadgeBesideMessagesBackButton() throws {
+        let badgeSubject = CurrentValueSubject<String?, Never>("7")
+        let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Sondra")
+        let viewController = ChatViewController(
+            viewModel: viewModel,
+            unreadBadgePublisher: badgeSubject.eraseToAnyPublisher()
+        )
+
+        viewController.loadViewIfNeeded()
+
+        let leftItems = try #require(viewController.navigationItem.leftBarButtonItems)
+        #expect(leftItems.count == 1)
+
+        let backButton = leftItems[0]
+        #expect(backButton.accessibilityIdentifier == "chat.messagesBackButton")
+        #expect(backButton.accessibilityLabel == "返回消息列表，7 条未读")
+        #expect(backButton.title == nil)
+        if #available(iOS 26.0, *) {
+            #expect(backButton.hidesSharedBackground)
+        }
+
+        let backButtonView = try #require(backButton.customView as? UIButton)
+        #expect(backButtonView.accessibilityIdentifier == "chat.messagesBackButton")
+        #expect(backButtonView.accessibilityLabel == "返回消息列表，7 条未读")
+
+        let backgroundView = try #require(findView(in: backButtonView, identifier: "chat.messagesBackButton.background"))
+        #expect(backgroundView.isHidden == false)
+        let shadowView = try #require(findView(in: backButtonView, identifier: "chat.messagesBackButton.shadow"))
+        #expect(shadowView.isHidden == false)
+
+        let arrowView = try #require(findView(in: backButtonView, identifier: "chat.messagesBackButton.arrow") as? UIImageView)
+        let badgeLabel = try #require(findView(in: backButtonView, identifier: "chat.messagesBackButton.unreadBadge") as? UILabel)
+        #expect(badgeLabel.accessibilityIdentifier == "chat.messagesBackButton.unreadBadge")
+        #expect(badgeLabel.text == "7")
+        #expect(badgeLabel.backgroundColor == .black)
+        #expect(badgeLabel.isHidden == false)
+        #expect(backButtonView.frame.size == backButtonView.intrinsicContentSize)
+        #expect(backButtonView.constraints.contains { $0.firstAttribute == .width && $0.constant == backButtonView.intrinsicContentSize.width })
+        #expect(backButtonView.constraints.contains { $0.firstAttribute == .height && $0.constant == backButtonView.intrinsicContentSize.height })
+
+        backButtonView.frame = CGRect(origin: .zero, size: backButtonView.intrinsicContentSize)
+        backButtonView.layoutIfNeeded()
+        #expect(backButtonView.bounds.height == 40)
+        #expect(shadowView.frame == backButtonView.bounds)
+        #expect(backgroundView.frame == backButtonView.bounds)
+        #expect(arrowView.tintColor == .black)
+        #expect(badgeLabel.bounds.width == badgeLabel.bounds.height)
+        #expect(badgeLabel.bounds.height == 26)
+        #expect(badgeLabel.frame.minY >= 7)
+        #expect(badgeLabel.frame.minX - arrowView.frame.maxX <= 6)
+        #expect(backButtonView.hitTest(CGPoint(x: 12, y: backButtonView.bounds.midY), with: nil) === backButtonView)
+
+        badgeSubject.send(nil)
+        #expect(viewController.navigationItem.leftBarButtonItems?.count == 1)
+        #expect(badgeLabel.isHidden)
+        if #available(iOS 26.0, *) {
+            #expect(viewController.navigationItem.leftBarButtonItems?.first?.hidesSharedBackground == true)
+        }
+    }
+
+    @MainActor
+    @Test func chatViewControllerMessagesBackButtonPopsNavigationController() throws {
+        let rootViewController = UIViewController()
+        let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Sondra")
+        let viewController = ChatViewController(
+            viewModel: viewModel,
+            unreadBadgePublisher: CurrentValueSubject<String?, Never>(nil).eraseToAnyPublisher()
+        )
+        let navigationController = UINavigationController(rootViewController: rootViewController)
+        navigationController.pushViewController(viewController, animated: false)
+
+        viewController.loadViewIfNeeded()
+        let backButton = try #require(viewController.navigationItem.leftBarButtonItems?.first)
+        let backButtonView = try #require(backButton.customView as? UIButton)
+        backButtonView.sendActions(for: .touchUpInside)
+
+        #expect(navigationController.topViewController === rootViewController)
+    }
+
+    @MainActor
+    @Test func chatViewControllerRestoresInteractivePopGestureForCustomBackButton() throws {
+        let rootViewController = UIViewController()
+        let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Sondra")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let navigationController = UINavigationController(rootViewController: rootViewController)
+        navigationController.pushViewController(viewController, animated: false)
+
+        viewController.loadViewIfNeeded()
+        viewController.viewDidAppear(false)
+
+        let popGesture = try #require(navigationController.interactivePopGestureRecognizer)
+        #expect(popGesture.isEnabled)
+        #expect(popGesture.delegate == nil)
+    }
+
     @MainActor
     @Test func chatViewControllerUsesInlineNavigationTitle() throws {
         let viewModel = ChatViewModel(useCase: SimulatedIncomingStubChatUseCase(), title: "Sondra")
