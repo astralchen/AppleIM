@@ -113,6 +113,8 @@ final class ChatViewController: UIViewController {
     private var isResolvingInitialBottomPositioning = false
     /// 历史消息插入锚点校正代次；用户继续滚动后让旧的延迟校正失效。
     private var prependScrollAnchorCorrectionGeneration = 0
+    /// 顶部橡皮筋回弹或已触发过顶部分页后，等用户离开顶部阈值再允许下一次历史分页。
+    private var isTopPaginationSuppressedUntilLeavingThreshold = false
 #if DEBUG
     /// 测试用：记录最近一次贴底滚动是否请求动画。
     private(set) var lastScrollToBottomRequestedAnimationForTesting: Bool?
@@ -260,6 +262,7 @@ final class ChatViewController: UIViewController {
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .interactive
         collectionView.contentInsetAdjustmentBehavior = .never
+        collectionView.automaticallyAdjustsScrollIndicatorInsets = false
         collectionView.delegate = self
         collectionView.accessibilityIdentifier = "chat.collection"
         if #available(iOS 26.0, *) {
@@ -1490,7 +1493,7 @@ final class ChatViewController: UIViewController {
     /// 根据覆盖层刷新全屏消息列表的可滚动可见区域。
     private func updateCollectionViewOverlayInsets() {
         guard view.window != nil else {
-            guard collectionView.contentInset != .zero else { return }
+            guard collectionView.contentInset != .zero || collectionView.verticalScrollIndicatorInsets != .zero else { return }
             collectionView.contentInset = .zero
             collectionView.verticalScrollIndicatorInsets = .zero
             return
@@ -1501,8 +1504,14 @@ final class ChatViewController: UIViewController {
         let bottomInset = max(0, collectionFrame.maxY - messageOverlayBottomVisibleY())
         let topInset = max(0, messageOverlayTopInset(in: collectionFrame))
         let targetInsets = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 0)
+        let targetScrollIndicatorInsets = messageScrollIndicatorInsets(in: collectionFrame)
 
-        guard collectionView.contentInset != targetInsets else { return }
+        // 滚动条范围可能因为输入栏位置变化而单独变化；这时不能触发消息重锚或阅读位置校正。
+        guard collectionView.contentInset != targetInsets else {
+            guard collectionView.verticalScrollIndicatorInsets != targetScrollIndicatorInsets else { return }
+            collectionView.verticalScrollIndicatorInsets = targetScrollIndicatorInsets
+            return
+        }
         let previousContentOffset = collectionView.contentOffset
         // 先按旧 inset 计算“列表自身是否已经贴底”，因为键盘抬起后新的覆盖区域会立刻缩小可见高度；
         // 如果之后再调用 isNearBottom()，原本贴底的列表可能被误判成离底。
@@ -1516,9 +1525,11 @@ final class ChatViewController: UIViewController {
             // 键盘抬起会先改变覆盖区域，导致 isNearBottom 变 false；
             // 只有 scroll view 原本精确贴底时才用旧底部判断兜底，避免用户离底阅读被拉回。
             && (needsInitialBottomPositioning || shouldMaintainBottomPosition || isNearBottom() || wasAtScrollViewBottomBeforeInset)
-        let shouldPreserveContentOffset = !needsInitialBottomPositioning && !shouldMaintainBottomPosition
+        let shouldPreserveContentOffset = !isUserControllingMessageScroll
+            && !needsInitialBottomPositioning
+            && !shouldMaintainBottomPosition
         collectionView.contentInset = targetInsets
-        collectionView.verticalScrollIndicatorInsets = targetInsets
+        collectionView.verticalScrollIndicatorInsets = targetScrollIndicatorInsets
         if shouldReanchorToBottom {
             // 输入栏、@ 选择器、键盘都会改变底部覆盖范围；贴底阅读时要用新的可见底部重新对齐最后一条。
             positionLatestMessageAtVisibleBottom(animated: false)
@@ -1526,6 +1537,17 @@ final class ChatViewController: UIViewController {
             // 用户已经离底查看历史时，只接受 inset 更新，不接受 UIKit 自动调整后留下的 contentOffset 漂移。
             collectionView.setContentOffset(previousContentOffset, animated: false)
         }
+    }
+
+    /// 滚动条只表达安全区到输入栏顶部的可滚动范围，不跟随公告和消息内容留白下压。
+    private func messageScrollIndicatorInsets(in collectionFrame: CGRect) -> UIEdgeInsets {
+        let inputFrame = inputBarView.convert(inputBarView.bounds, to: view)
+        return UIEdgeInsets(
+            top: max(0, view.safeAreaInsets.top - collectionFrame.minY),
+            left: 0,
+            bottom: max(0, collectionFrame.maxY - inputFrame.minY),
+            right: 0
+        )
     }
 
     /// 顶部公告作为覆盖层时，消息内容需要避开公告和安全区。
@@ -1575,6 +1597,8 @@ final class ChatViewController: UIViewController {
     /// 用户手动离底后，输入栏或面板变化只能刷新 inset，不能把列表推回底部。
     private func preserveMessageContentOffsetIfNeeded(_ transaction: MessageLayoutTransaction) {
         guard
+            // 用户正在拖拽、回弹或交互式收起键盘时，旧布局事务里的 offset 已经过期，不能再拉回去。
+            !isUserControllingMessageScroll,
             !needsInitialBottomPositioning,
             !transaction.shouldStickToBottom,
             collectionView.contentOffset != transaction.previousContentOffset
@@ -1963,7 +1987,16 @@ extension ChatViewController: UICollectionViewDelegate {
 
     /// 滚动到顶部附近时加载更早消息
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        let topThreshold = -scrollView.adjustedContentInset.top + 120
+        let topOffsetY = -scrollView.adjustedContentInset.top
+        let topThreshold = topOffsetY + 120
+        let isPastTopRubberBand = scrollView.contentOffset.y < topOffsetY - 1
+        // 顶部橡皮筋回弹会在阈值附近反复回调；进入橡皮筋区后，必须等用户离开顶部阈值再允许分页。
+        if scrollView.contentOffset.y > topThreshold {
+            isTopPaginationSuppressedUntilLeavingThreshold = false
+        } else if isPastTopRubberBand {
+            isTopPaginationSuppressedUntilLeavingThreshold = true
+        }
+
         if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
             shouldMaintainBottomPosition = false
         } else if scrollView.contentOffset.y <= topThreshold, !needsInitialBottomPositioning {
@@ -1974,9 +2007,15 @@ extension ChatViewController: UICollectionViewDelegate {
 
         guard !snapshotRenderCoordinator.isApplying, !needsInitialBottomPositioning else { return }
 
-        if scrollView.contentOffset.y <= topThreshold {
-            viewModel.loadOlderMessagesIfNeeded()
-        }
+        guard
+            scrollView.contentOffset.y <= topThreshold,
+            !isPastTopRubberBand,
+            !isTopPaginationSuppressedUntilLeavingThreshold
+        else { return }
+
+        // 同一次停留在顶部阈值内只允许发起一次历史分页，避免空页或快速返回时反复触发造成抖动。
+        isTopPaginationSuppressedUntilLeavingThreshold = true
+        viewModel.loadOlderMessagesIfNeeded()
     }
 
     /// 用户拖拽结束且不会继续减速时，根据最终位置恢复是否贴底。

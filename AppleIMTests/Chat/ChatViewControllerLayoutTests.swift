@@ -249,7 +249,54 @@ extension AppleIMTests {
         #expect(abs(collectionFrame.minY - viewController.view.bounds.minY) <= 1)
         #expect(abs(collectionFrame.maxY - viewController.view.bounds.maxY) <= 1)
         #expect(collectionView.contentInset.bottom >= viewController.view.bounds.maxY - inputFrame.minY - 1)
-        #expect(collectionView.verticalScrollIndicatorInsets.bottom == collectionView.contentInset.bottom)
+        #expect(collectionView.automaticallyAdjustsScrollIndicatorInsets == false)
+        #expect(abs(collectionView.verticalScrollIndicatorInsets.top - viewController.view.safeAreaInsets.top) <= 1)
+        #expect(abs(collectionView.verticalScrollIndicatorInsets.bottom - (collectionFrame.maxY - inputFrame.minY)) <= 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerKeepsScrollIndicatorTopAtSafeAreaWhenAnnouncementVisible() async throws {
+        let context = GroupChatContext(
+            members: [
+                GroupMember(conversationID: "indicator_group", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1)
+            ],
+            currentUserRole: .admin,
+            announcement: GroupAnnouncement(
+                conversationID: "indicator_group",
+                text: "滚动条顶部应停在安全区",
+                updatedBy: "current_user",
+                updatedAt: 10
+            )
+        )
+        let viewModel = ChatViewModel(useCase: GroupContextStubChatUseCase(context: context), title: "Indicator Group")
+        let viewController = ChatViewController(viewModel: viewModel)
+        viewController.additionalSafeAreaInsets = UIEdgeInsets(top: 24, left: 0, bottom: 0, right: 0)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            guard let button = findView(in: viewController.view, identifier: "chat.groupAnnouncementButton") as? UIButton else {
+                return false
+            }
+            return button.isHidden == false
+        }
+        window.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let announcementButton = try #require(findView(in: viewController.view, identifier: "chat.groupAnnouncementButton") as? UIButton)
+        let collectionFrame = collectionView.convert(collectionView.bounds, to: viewController.view)
+        let announcementFrame = announcementButton.convert(announcementButton.bounds, to: viewController.view)
+        let expectedIndicatorTopInset = viewController.view.safeAreaInsets.top - collectionFrame.minY
+
+        #expect(announcementFrame.maxY > viewController.view.safeAreaInsets.top + 1)
+        #expect(collectionView.contentInset.top > expectedIndicatorTopInset + 1)
+        #expect(abs(collectionView.verticalScrollIndicatorInsets.top - expectedIndicatorTopInset) <= 1)
     }
 
     @MainActor
@@ -1738,6 +1785,110 @@ extension AppleIMTests {
 
         #expect(useCase.loadOlderCallCount == 0)
         #expect(viewModel.currentState.rows.map(\.id.rawValue) == rows.map(\.id.rawValue))
+    }
+
+    @MainActor
+    @Test func chatViewControllerDoesNotRepeatPagingDuringTopRubberBandBounce() async throws {
+        let rows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "top_bounce_\(index)"),
+                text: "Top bounce message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let useCase = PagingStubChatUseCase(
+            initialPage: ChatMessagePage(rows: rows, hasMore: true, nextBeforeSortSequence: 1),
+            olderPage: ChatMessagePage(rows: [], hasMore: true, nextBeforeSortSequence: 1)
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Top Bounce")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == rows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let topOffsetY = -collectionView.adjustedContentInset.top
+        viewController.scrollViewWillBeginDragging(collectionView)
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: topOffsetY - 48),
+            animated: false
+        )
+        viewController.scrollViewDidScroll(collectionView)
+        viewController.scrollViewDidScroll(collectionView)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(useCase.loadOlderCallCount == 0)
+
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: topOffsetY + 180),
+            animated: false
+        )
+        viewController.scrollViewDidScroll(collectionView)
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: topOffsetY + 60),
+            animated: false
+        )
+        viewController.scrollViewDidScroll(collectionView)
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            useCase.loadOlderCallCount == 1
+        }
+
+        viewController.scrollViewDidScroll(collectionView)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(useCase.loadOlderCallCount == 1)
+    }
+
+    @MainActor
+    @Test func chatViewControllerDoesNotRestoreOffsetDuringUserControlledKeyboardFrameChange() async throws {
+        let setup = try await makeScrollableChatViewController(
+            title: "Keyboard Drag Offset",
+            rowPrefix: "keyboard_drag_offset"
+        )
+        defer {
+            setup.window.isHidden = true
+            setup.window.rootViewController = nil
+        }
+
+        let topOffsetY = -setup.collectionView.adjustedContentInset.top
+        let startingOffsetY = topOffsetY + 180
+        setup.collectionView.setContentOffset(
+            CGPoint(x: setup.collectionView.contentOffset.x, y: startingOffsetY),
+            animated: false
+        )
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        setup.viewController.scrollViewWillBeginDragging(setup.collectionView)
+        NotificationCenter.default.post(
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil,
+            userInfo: [
+                UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: 500, width: 390, height: 344),
+                UIResponder.keyboardAnimationDurationUserInfoKey: 0.05,
+                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
+            ]
+        )
+
+        let draggedOffsetY = topOffsetY + 48
+        setup.collectionView.setContentOffset(
+            CGPoint(x: setup.collectionView.contentOffset.x, y: draggedOffsetY),
+            animated: false
+        )
+        try await Task.sleep(nanoseconds: 200_000_000)
+        setup.window.layoutIfNeeded()
+        setup.collectionView.layoutIfNeeded()
+
+        #expect(abs(setup.collectionView.contentOffset.y - draggedOffsetY) <= 1)
     }
 
     @MainActor
