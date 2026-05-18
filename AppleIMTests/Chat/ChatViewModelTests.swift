@@ -989,7 +989,7 @@ extension AppleIMTests {
     @Test func chatViewControllerDisablesSnapshotAnimationForOnlyVoicePlaybackChanges() {
         let idleVoice = makeVoiceRow(id: "voice_animation", sortSequence: 1, isUnplayed: true)
         let playingVoice = idleVoice.withVoicePlaybackProgress(
-            VoicePlaybackProgress(elapsedMilliseconds: 250, durationMilliseconds: 1_000, fraction: 0.25)
+            VoicePlaybackProgress(elapsedMilliseconds: 250, durationMilliseconds: 2_000, fraction: 0.25)
         )
 
         #expect(ChatViewController.containsOnlyVoicePlaybackChanges(previousRows: [idleVoice], newRows: [playingVoice]))

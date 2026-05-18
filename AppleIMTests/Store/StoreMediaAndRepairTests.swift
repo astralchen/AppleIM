@@ -24,6 +24,74 @@ extension AppleIMTests {
         #expect(records.map(\.id.rawValue) == ["pinned_old", "normal_new", "normal_old"])
     }
 
+    @Test func localChatRepositoryUnreadConversationCountSumsVisibleConversations() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "unread_total_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "unread_total_a", userID: "unread_total_user", unreadCount: 2)
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "unread_total_b", userID: "unread_total_user", isMuted: true, unreadCount: 3)
+        )
+        try await repository.upsertConversation(
+            ConversationRecord(
+                id: "unread_total_hidden",
+                userID: "unread_total_user",
+                type: .single,
+                targetID: "hidden_peer",
+                title: "Hidden",
+                avatarURL: nil,
+                lastMessageID: nil,
+                lastMessageTime: nil,
+                lastMessageDigest: "Hidden",
+                unreadCount: 8,
+                draftText: nil,
+                isPinned: false,
+                isMuted: false,
+                isHidden: true,
+                sortTimestamp: 1,
+                updatedAt: 1,
+                createdAt: 1
+            )
+        )
+
+        let unreadCount = try await repository.unreadConversationCount(for: "unread_total_user")
+
+        #expect(unreadCount == 5)
+    }
+
+    @Test func localChatRepositoryUnreadConversationCountReturnsZeroWithoutUnreadRows() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "unread_zero_user",
+            storageService: storageService,
+            database: DatabaseActor()
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "unread_zero_conversation", userID: "unread_zero_user", unreadCount: 0)
+        )
+
+        let unreadCount = try await repository.unreadConversationCount(for: "unread_zero_user")
+
+        #expect(unreadCount == 0)
+    }
+
     @Test func conversationDAOPagesVisibleConversationsAfterCursorWhenNewConversationMovesAhead() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
