@@ -916,6 +916,79 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewControllerStatusBarScrollToTopIsNotPulledBackToBottomByPendingCorrection() async throws {
+        let initialRows = (1...36).map { index in
+            makeChatRow(
+                id: MessageID(rawValue: "status_bar_top_initial_\(index)"),
+                text: "Status bar top message \(index)",
+                sortSequence: Int64(index)
+            )
+        }
+        let sentRow = makeChatRow(
+            id: MessageID(rawValue: "status_bar_top_sent"),
+            text: "触发发送后的延迟贴底校正",
+            sortSequence: 37
+        )
+        let useCase = TextSendingTimeStubChatUseCase(
+            initialRows: initialRows,
+            sentRows: [sentRow]
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Status Bar Top")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "chat.collection") as? UICollectionView)
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        viewModel.sendText("触发发送后的延迟贴底校正")
+        try await waitForCondition(timeoutNanoseconds: 10_000_000_000) {
+            collectionView.numberOfItems(inSection: 0) == initialRows.count + 1
+        }
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        let shouldScrollToTop = collectionView.delegate?.scrollViewShouldScrollToTop?(collectionView) ?? true
+        #expect(shouldScrollToTop)
+        let topOffsetY = -collectionView.adjustedContentInset.top
+        collectionView.setContentOffset(
+            CGPoint(x: collectionView.contentOffset.x, y: topOffsetY),
+            animated: false
+        )
+        viewController.scrollViewDidScroll(collectionView)
+        viewController.scrollViewDidScrollToTop(collectionView)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        #expect(abs(collectionView.contentOffset.y - topOffsetY) <= 1)
+
+        try await Task.sleep(nanoseconds: 500_000_000)
+        window.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        #expect(abs(collectionView.contentOffset.y - topOffsetY) <= 1)
+        #expect(
+            latestMessageCellIsAboveInputBar(
+                collectionView: collectionView,
+                item: initialRows.count,
+                inputBar: inputBar,
+                in: viewController.view
+            ) == false
+        )
+    }
+
+    @MainActor
     @Test func chatViewControllerScrollsToBottomWhenKeyboardRaisesInputBarAfterLeavingBottom() async throws {
         let setup = try await makeScrollableChatViewController(
             title: "Keyboard Raise",

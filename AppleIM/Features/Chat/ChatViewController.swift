@@ -280,6 +280,8 @@ final class ChatViewController: UIViewController {
     private var prependScrollAnchorCorrectionGeneration = 0
     /// 顶部橡皮筋回弹或已触发过顶部分页后，等用户离开顶部阈值再允许下一次历史分页。
     private var isTopPaginationSuppressedUntilLeavingThreshold = false
+    /// 状态栏点按触发的系统滚顶动画进行中；期间不做自动贴底和顶部分页。
+    private var isScrollToTopAnimationInProgress = false
 #if DEBUG
     /// 测试用：记录最近一次贴底滚动是否请求动画。
     private(set) var lastScrollToBottomRequestedAnimationForTesting: Bool?
@@ -717,7 +719,8 @@ final class ChatViewController: UIViewController {
         } else {
             shouldKeepBottomDuringInputSwitch = shouldStickToBottomForLayoutChange()
         }
-        let shouldRevealLatestMessage = isCompletingCustomInputKeyboardSwitch || keyboardVisibleAfterChange == true
+        let shouldRevealLatestMessage = !isUserControllingMessageScroll
+            && (isCompletingCustomInputKeyboardSwitch || keyboardVisibleAfterChange == true)
         let layoutTransaction = MessageLayoutTransaction(
             // 从自定义面板切回键盘时，输入栏会先保留旧面板等待键盘动画接管。
             // 从键盘切自定义面板时也要等键盘收起通知一起展开面板。这里必须沿用切换发起前的贴底判断，
@@ -1271,10 +1274,10 @@ final class ChatViewController: UIViewController {
                         _ = self.resolveInitialBottomPositioningIfPossible()
                     }
                 }
-            } else if shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows)
-                || (self.canUseMessageLayoutTransactionForBottomPosition(layoutTransaction)
-                    && layoutTransaction.shouldStickToBottom
-                    && !self.isLatestRenderedMessageVisibleAboveInputBar()) {
+            } else if self.canUseMessageLayoutTransactionForBottomPosition(layoutTransaction)
+                && (shouldRevealAppendedMessage(didAppendNewMessage: didAppendNewMessage, rows: state.rows)
+                    || (layoutTransaction.shouldStickToBottom
+                        && !self.isLatestRenderedMessageVisibleAboveInputBar())) {
                 // 新消息追加或用户原本接近底部时，维持聊天应用常见的贴底阅读体验。
                 self.scrollToBottom(animated: didAppendNewMessage)
             } else {
@@ -2324,11 +2327,24 @@ extension ChatViewController: UICollectionViewDelegate {
 
     /// 用户开始拖动时取消程序化贴底动画，避免新消息追加后的滚动动画抢回手势。
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        collectionView.layer.removeAllAnimations()
-        bottomPositionCorrectionGeneration += 1
-        prependScrollAnchorCorrectionGeneration += 1
+        beginUserMessageScrollInteraction()
         isUserControllingMessageScroll = true
+    }
+
+    /// 状态栏点按滚到顶部时，也视为用户主动离开底部，不能让旧贴底校正抢回底部。
+    func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        beginUserMessageScrollInteraction()
+        isUserControllingMessageScroll = true
+        isScrollToTopAnimationInProgress = true
+        return true
+    }
+
+    /// 状态栏滚顶动画结束后保持离底阅读状态，并允许按顶部阈值加载历史消息。
+    func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        isScrollToTopAnimationInProgress = false
+        isUserControllingMessageScroll = false
         shouldMaintainBottomPosition = false
+        loadOlderMessagesIfNeededAfterReachingTop(scrollView)
     }
 
     /// 滚动到顶部附近时加载更早消息
@@ -2351,7 +2367,20 @@ extension ChatViewController: UICollectionViewDelegate {
             shouldMaintainBottomPosition = false
         }
 
-        guard !snapshotRenderCoordinator.isApplying, !needsInitialBottomPositioning else { return }
+        guard
+            !snapshotRenderCoordinator.isApplying,
+            !needsInitialBottomPositioning,
+            !isScrollToTopAnimationInProgress
+        else { return }
+
+        loadOlderMessagesIfNeededAfterReachingTop(scrollView)
+    }
+
+    /// 进入顶部阈值时触发历史分页；状态栏滚顶结束后也复用这条路径。
+    private func loadOlderMessagesIfNeededAfterReachingTop(_ scrollView: UIScrollView) {
+        let topOffsetY = -scrollView.adjustedContentInset.top
+        let topThreshold = topOffsetY + 120
+        let isPastTopRubberBand = scrollView.contentOffset.y < topOffsetY - 1
 
         guard
             scrollView.contentOffset.y <= topThreshold,
@@ -2362,6 +2391,14 @@ extension ChatViewController: UICollectionViewDelegate {
         // 同一次停留在顶部阈值内只允许发起一次历史分页，避免空页或快速返回时反复触发造成抖动。
         isTopPaginationSuppressedUntilLeavingThreshold = true
         viewModel.loadOlderMessagesIfNeeded()
+    }
+
+    /// 用户主动控制消息列表时，取消所有可能抢回底部或恢复旧锚点的延迟校正。
+    private func beginUserMessageScrollInteraction() {
+        collectionView.layer.removeAllAnimations()
+        bottomPositionCorrectionGeneration += 1
+        prependScrollAnchorCorrectionGeneration += 1
+        shouldMaintainBottomPosition = false
     }
 
     /// 用户拖拽结束且不会继续减速时，根据最终位置恢复是否贴底。
