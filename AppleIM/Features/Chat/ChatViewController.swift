@@ -68,7 +68,7 @@ private final class MessagesBackButtonView: UIButton {
     private let horizontalInset: CGFloat = 13
     private let trailingInset: CGFloat = 10
     private let controlHeight: CGFloat = 40
-    private let minimumWidth: CGFloat = 52
+    private let collapsedDiameter: CGFloat = 40
     private var widthConstraint: NSLayoutConstraint?
     private var heightConstraint: NSLayoutConstraint?
 
@@ -84,7 +84,7 @@ private final class MessagesBackButtonView: UIButton {
 
     override var intrinsicContentSize: CGSize {
         guard !unreadBadgeLabel.isHidden else {
-            return CGSize(width: minimumWidth, height: controlHeight)
+            return CGSize(width: collapsedDiameter, height: collapsedDiameter)
         }
         return CGSize(
             width: horizontalInset + arrowWidth + badgeLeading + unreadBadgeLabel.intrinsicContentSize.width + trailingInset,
@@ -146,7 +146,7 @@ private final class MessagesBackButtonView: UIButton {
         backgroundColor = .clear
         translatesAutoresizingMaskIntoConstraints = false
 
-        let widthConstraint = widthAnchor.constraint(equalToConstant: minimumWidth)
+        let widthConstraint = widthAnchor.constraint(equalToConstant: collapsedDiameter)
         let heightConstraint = heightAnchor.constraint(equalToConstant: controlHeight)
         NSLayoutConstraint.activate([widthConstraint, heightConstraint])
         self.widthConstraint = widthConstraint

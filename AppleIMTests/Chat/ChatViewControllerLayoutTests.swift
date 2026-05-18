@@ -62,6 +62,21 @@ extension AppleIMTests {
         badgeSubject.send(nil)
         #expect(viewController.navigationItem.leftBarButtonItems?.count == 1)
         #expect(badgeLabel.isHidden)
+        #expect(backButtonView.intrinsicContentSize == CGSize(width: 40, height: 40))
+        #expect(backButtonView.frame.size == backButtonView.intrinsicContentSize)
+        #expect(backButtonView.constraints.contains { $0.firstAttribute == .width && $0.constant == 40 })
+        #expect(backButtonView.constraints.contains { $0.firstAttribute == .height && $0.constant == 40 })
+
+        backButtonView.frame = CGRect(origin: .zero, size: backButtonView.intrinsicContentSize)
+        backButtonView.layoutIfNeeded()
+        #expect(backButtonView.bounds.width == 40)
+        #expect(backButtonView.bounds.height == 40)
+        #expect(shadowView.frame == backButtonView.bounds)
+        #expect(backgroundView.frame == backButtonView.bounds)
+        #expect(shadowView.layer.cornerRadius == 20)
+        #expect(backgroundView.layer.cornerRadius == 20)
+        #expect(abs(arrowView.frame.midX - backButtonView.bounds.midX) < 0.5)
+        #expect(abs(arrowView.frame.midY - backButtonView.bounds.midY) < 0.5)
         if #available(iOS 26.0, *) {
             #expect(viewController.navigationItem.leftBarButtonItems?.first?.hidesSharedBackground == true)
         }
