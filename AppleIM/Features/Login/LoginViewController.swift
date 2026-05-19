@@ -17,6 +17,8 @@ final class LoginViewController: UIViewController {
     private let onLoginSucceeded: (AccountSession) -> Void
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
+    /// 键盘通知监听任务
+    private var keyboardObservationTask: Task<Void, Never>?
 
     /// 应用图标
     private let iconImageView = UIImageView()
@@ -57,9 +59,9 @@ final class LoginViewController: UIViewController {
         fatalError("Storyboard initialization is not supported.")
     }
 
-    /// 移除键盘通知观察者
+    /// 取消键盘通知监听任务。
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        keyboardObservationTask?.cancel()
     }
 
     /// 配置视图并绑定 ViewModel
@@ -257,18 +259,12 @@ final class LoginViewController: UIViewController {
 
     /// 监听键盘位置变化
     private func observeKeyboard() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardWillChangeFrame(_:)),
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardWillHide(_:)),
-            name: UIResponder.keyboardWillHideNotification,
-            object: nil
-        )
+        keyboardObservationTask = Task { @MainActor [weak self] in
+            for await payload in NotificationCenter.default.keyboardNotifications() {
+                guard let self else { continue }
+                self.handleKeyboardNotification(payload)
+            }
+        }
     }
 
     /// 绑定登录状态和登录成功事件
@@ -322,18 +318,24 @@ final class LoginViewController: UIViewController {
         viewModel.login()
     }
 
-    /// 键盘 frame 变化时计算登录内容需要抬升的距离
-    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
-        guard
-            let endFrameValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
-        else {
-            return
+    /// 根据键盘通知类型分发登录页需要处理的布局变化。
+    private func handleKeyboardNotification(_ payload: KeyboardNotificationPayload) {
+        switch payload.kind {
+        case .willShow, .willChangeFrame:
+            keyboardWillChangeFrame(payload)
+        case .willHide:
+            keyboardWillHide(payload)
+        case .didShow, .didHide, .didChangeFrame:
+            break
         }
+    }
 
-        let keyboardFrame = view.convert(endFrameValue.cgRectValue, from: nil)
+    /// 键盘 frame 变化时计算登录内容需要抬升的距离。
+    private func keyboardWillChangeFrame(_ payload: KeyboardNotificationPayload) {
+        guard let keyboardFrame = payload.endFrame(in: view) else { return }
         let keyboardTop = keyboardFrame.minY
         guard keyboardTop < view.bounds.maxY else {
-            applyKeyboardLift(0, notification: notification)
+            applyKeyboardLift(0, payload: payload)
             return
         }
 
@@ -344,29 +346,25 @@ final class LoginViewController: UIViewController {
 
         if !isKeyboardVisible || desiredLift > currentKeyboardLift + 48 {
             isKeyboardVisible = true
-            applyKeyboardLift(desiredLift, notification: notification)
+            applyKeyboardLift(desiredLift, payload: payload)
         }
     }
 
     /// 键盘隐藏时恢复卡片位置
-    @objc private func keyboardWillHide(_ notification: Notification) {
+    private func keyboardWillHide(_ payload: KeyboardNotificationPayload) {
         isKeyboardVisible = false
-        applyKeyboardLift(0, notification: notification)
+        applyKeyboardLift(0, payload: payload)
     }
 
     /// 应用键盘抬升动画
-    private func applyKeyboardLift(_ lift: CGFloat, notification: Notification) {
+    private func applyKeyboardLift(_ lift: CGFloat, payload: KeyboardNotificationPayload) {
         currentKeyboardLift = lift
         contentCenterYConstraint?.constant = -24 - lift
 
-        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
-        let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt ?? 0
-        let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
-
         UIView.animate(
-            withDuration: duration,
+            withDuration: payload.animationDuration,
             delay: 0,
-            options: [options, .beginFromCurrentState, .allowUserInteraction],
+            options: [payload.animationOptions, .beginFromCurrentState, .allowUserInteraction],
             animations: {
                 self.view.layoutIfNeeded()
             }

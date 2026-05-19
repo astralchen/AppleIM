@@ -6,6 +6,31 @@ import UIKit
 @testable import AppleIM
 
 extension AppleIMTests {
+    /// 发布类型化键盘通知，避免布局测试重复手写 UIKit userInfo 字典。
+    @MainActor
+    private func postKeyboardNotification(
+        kind: KeyboardNotificationKind,
+        beginFrame: CGRect? = nil,
+        endFrame: CGRect? = nil,
+        duration: TimeInterval = 0,
+        curve: UIView.AnimationOptions = .curveEaseInOut,
+        isLocal: Bool? = nil
+    ) {
+        let payload = KeyboardNotificationPayload(
+            kind: kind,
+            beginFrame: beginFrame,
+            endFrame: endFrame,
+            animationDuration: duration,
+            animationCurveRawValue: curve.rawValue,
+            isLocal: isLocal
+        )
+        NotificationCenter.default.post(
+            name: kind.notificationName,
+            object: nil,
+            userInfo: payload.userInfo
+        )
+    }
+
     @MainActor
     @Test func chatViewControllerShowsUnreadBadgeBesideMessagesBackButton() throws {
         let badgeSubject = CurrentValueSubject<String?, Never>("7")
@@ -1005,14 +1030,9 @@ extension AppleIMTests {
             window: setup.window
         )
 
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: 544, width: 390, height: 300),
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
+        postKeyboardNotification(
+            kind: .willChangeFrame,
+            endFrame: CGRect(x: 0, y: 544, width: 390, height: 300)
         )
 
         for constraint in setup.viewController.view.constraints where
@@ -1677,14 +1697,7 @@ extension AppleIMTests {
 
         // 复现真实用户路径中的竞态：键盘通知先到，随后 keyboardLayoutGuide 才把输入栏抬高。
         // 旧逻辑会在通知阶段清掉贴底维护，导致后续输入栏真实上移后最后一条消息没有再次避让。
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -2216,14 +2229,10 @@ extension AppleIMTests {
         setup.collectionView.layoutIfNeeded()
 
         setup.viewController.scrollViewWillBeginDragging(setup.collectionView)
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardFrameEndUserInfoKey: CGRect(x: 0, y: 500, width: 390, height: 344),
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0.05,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
+        postKeyboardNotification(
+            kind: .willChangeFrame,
+            endFrame: CGRect(x: 0, y: 500, width: 390, height: 344),
+            duration: 0.05
         )
 
         let draggedOffsetY = topOffsetY + 48
@@ -2388,14 +2397,7 @@ extension AppleIMTests {
         #expect(setup.inputBar.textViewShouldBeginEditing(textView) == false)
         #expect(photoPanel.isHidden == false)
 
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -2448,14 +2450,7 @@ extension AppleIMTests {
         #expect(setup.inputBar.textViewShouldBeginEditing(textView) == false)
         #expect(emojiPanel.isHidden == false)
 
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -2488,14 +2483,7 @@ extension AppleIMTests {
         let frameBeforeKeyboardDismissNotification = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
         #expect(abs(frameBeforeKeyboardDismissNotification.minY - frameBeforePanelRequest.minY) <= 1)
 
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -2530,14 +2518,7 @@ extension AppleIMTests {
         let frameBeforeKeyboardDismissNotification = moreButton.convert(moreButton.bounds, to: setup.viewController.view)
         #expect(abs(frameBeforeKeyboardDismissNotification.minY - frameBeforePanelRequest.minY) <= 1)
 
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -2683,14 +2664,7 @@ extension AppleIMTests {
         setup.window.layoutIfNeeded()
 
         setup.inputBar.keyboardDismissFrameNotificationHookForTesting = {
-            NotificationCenter.default.post(
-                name: UIResponder.keyboardWillChangeFrameNotification,
-                object: nil,
-                userInfo: [
-                    UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                    UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-                ]
-            )
+            self.postKeyboardNotification(kind: .willChangeFrame)
         }
         setup.inputBar.requestPhotoLibraryInput()
         setup.window.layoutIfNeeded()
@@ -2701,14 +2675,7 @@ extension AppleIMTests {
 
         setup.inputBar.keyboardDismissFrameNotificationHookForTesting = nil
         #expect(setup.inputBar.textViewShouldBeginEditing(textView) == false)
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 
@@ -2736,14 +2703,7 @@ extension AppleIMTests {
         #expect(photoPanel.isHidden == true)
 
         #expect(setup.inputBar.textViewShouldBeginEditing(textView) == true)
-        NotificationCenter.default.post(
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil,
-            userInfo: [
-                UIResponder.keyboardAnimationDurationUserInfoKey: 0,
-                UIResponder.keyboardAnimationCurveUserInfoKey: UIView.AnimationOptions.curveEaseInOut.rawValue
-            ]
-        )
+        postKeyboardNotification(kind: .willChangeFrame)
         setup.window.layoutIfNeeded()
         setup.collectionView.layoutIfNeeded()
 

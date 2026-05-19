@@ -240,6 +240,8 @@ final class ChatViewController: UIViewController {
     private let unreadBadgePublisher: AnyPublisher<String?, Never>
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
+    /// 键盘通知监听任务。
+    private var keyboardObservationTask: Task<Void, Never>?
     /// 消息列表 diffable 数据源
     private var dataSource: UICollectionViewDiffableDataSource<Section, MessageID>?
     /// 当前消息行缓存
@@ -379,7 +381,7 @@ final class ChatViewController: UIViewController {
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        keyboardObservationTask?.cancel()
     }
 
     /// 配置聊天页并加载首屏消息
@@ -684,12 +686,12 @@ final class ChatViewController: UIViewController {
 
     /// 监听系统键盘布局变化，保持底部消息不被输入区域遮挡。
     private func observeKeyboard() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keyboardWillChangeFrame(_:)),
-            name: UIResponder.keyboardWillChangeFrameNotification,
-            object: nil
-        )
+        keyboardObservationTask = Task { @MainActor [weak self] in
+            for await payload in NotificationCenter.default.keyboardNotifications() {
+                guard let self else { continue }
+                self.handleKeyboardNotification(payload)
+            }
+        }
     }
 
     /// 监听仓储层会话变更，当前聊天命中时刷新消息列表。
@@ -706,11 +708,23 @@ final class ChatViewController: UIViewController {
             .store(in: &cancellables)
     }
 
+    /// 根据键盘通知类型分发聊天页需要处理的布局变化。
+    private func handleKeyboardNotification(_ payload: KeyboardNotificationPayload) {
+        switch payload.kind {
+        case .willChangeFrame:
+            keyboardWillChangeFrame(payload)
+        case .didHide:
+            keyboardDidHide(payload)
+        case .willShow, .didShow, .willHide, .didChangeFrame:
+            break
+        }
+    }
+
     /// 键盘 frame 变化时同步布局，并在用户原本贴底阅读时维持最新消息可见。
-    @objc private func keyboardWillChangeFrame(_ notification: Notification) {
+    private func keyboardWillChangeFrame(_ payload: KeyboardNotificationPayload) {
         let isCompletingCustomInputKeyboardSwitch = isSwitchingCustomInputPanelToKeyboard
         let isCompletingKeyboardCustomInputSwitch = isSwitchingKeyboardToCustomInputPanel
-        let keyboardVisibleAfterChange = keyboardVisibilityAfterChange(notification)
+        let keyboardVisibleAfterChange = keyboardVisibilityAfterChange(payload)
         let shouldKeepBottomDuringInputSwitch: Bool
         if isCompletingCustomInputKeyboardSwitch {
             shouldKeepBottomDuringInputSwitch = shouldStickToBottomDuringKeyboardInputSwitch
@@ -732,10 +746,6 @@ final class ChatViewController: UIViewController {
             previousInputBarMinY: inputBarMinYInView(),
             scrollControlGeneration: bottomPositionCorrectionGeneration
         )
-        let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? TimeInterval ?? 0.25
-        let rawCurve = notification.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt
-            ?? UIView.AnimationOptions.curveEaseInOut.rawValue
-        let options = UIView.AnimationOptions(rawValue: rawCurve << 16)
 
         let layoutChanges = { [weak self] in
             guard let self else { return }
@@ -771,15 +781,15 @@ final class ChatViewController: UIViewController {
         }
 
         UIView.animate(
-            withDuration: duration,
+            withDuration: payload.animationDuration,
             delay: 0,
-            options: [options, .beginFromCurrentState, .allowUserInteraction],
+            options: [payload.animationOptions, .beginFromCurrentState, .allowUserInteraction],
             animations: layoutChanges,
             completion: completion
         )
         scheduleKeyboardBottomPositionCorrectionIfNeeded(
             shouldStickToBottom: layoutTransaction.shouldStickToBottom,
-            duration: duration
+            duration: payload.animationDuration
         )
     }
 
@@ -913,13 +923,16 @@ final class ChatViewController: UIViewController {
         max(0, view.safeAreaInsets.bottom)
     }
 
+    /// 键盘完全隐藏后校准底部锚点，避免系统键盘收尾后仍残留键盘避让状态。
+    private func keyboardDidHide(_ payload: KeyboardNotificationPayload) {
+        guard payload.kind == .didHide else { return }
+        guard !isSwitchingCustomInputPanelToKeyboard, !isSwitchingKeyboardToCustomInputPanel else { return }
+        activateInputBarScreenBottomAnchor(extensionHeight: currentBottomSafeAreaExtension())
+    }
+
     /// 读取键盘通知后的可见状态；测试通知可能没有 frame，此时保持当前约束状态。
-    private func keyboardVisibilityAfterChange(_ notification: Notification) -> Bool? {
-        guard let endFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
-            return nil
-        }
-        let endFrameInView = view.convert(endFrame, from: nil)
-        return endFrameInView.minY < view.bounds.maxY - 0.5 && endFrameInView.height > 0
+    private func keyboardVisibilityAfterChange(_ payload: KeyboardNotificationPayload) -> Bool? {
+        payload.isVisible(in: view)
     }
 
     /// 激活输入栏贴屏幕底部布局，并同步内部内容的安全区避让。
