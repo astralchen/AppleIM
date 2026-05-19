@@ -171,6 +171,24 @@ nonisolated struct OutgoingMessageEnvelope: Equatable, Sendable {
     }
 }
 
+/// 持有发出消息公共信封的输入模型。
+///
+/// 仅收敛 user/conversation/sender/time 等公共上下文访问，不改变各消息类型的内容建模。
+nonisolated protocol OutgoingMessageEnvelopeProviding: Sendable {
+    /// 公共发送上下文
+    var envelope: OutgoingMessageEnvelope { get }
+}
+
+nonisolated extension OutgoingMessageEnvelopeProviding {
+    var userID: UserID { envelope.userID }
+    var conversationID: ConversationID { envelope.conversationID }
+    var senderID: UserID { envelope.senderID }
+    var localTime: Int64 { envelope.localTime }
+    var messageID: MessageID? { envelope.messageID }
+    var clientMessageID: String? { envelope.clientMessageID }
+    var sortSequence: Int64? { envelope.sortSequence }
+}
+
 /// 初始演示文本消息输入参数。
 ///
 /// 仅用于首次账号 seed，将会话摘要背后的演示消息落到真实消息表。
@@ -230,7 +248,7 @@ nonisolated struct InitialTextMessageInput: Equatable, Sendable {
 }
 
 /// 发出的文本消息输入参数
-nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
+nonisolated struct OutgoingTextMessageInput: Equatable, Sendable, OutgoingMessageEnvelopeProviding {
     /// 公共发送上下文
     let envelope: OutgoingMessageEnvelope
     /// 文本内容
@@ -239,14 +257,6 @@ nonisolated struct OutgoingTextMessageInput: Equatable, Sendable {
     let mentionedUserIDs: [UserID]
     /// 是否 @ 所有人
     let mentionsAll: Bool
-
-    var userID: UserID { envelope.userID }
-    var conversationID: ConversationID { envelope.conversationID }
-    var senderID: UserID { envelope.senderID }
-    var localTime: Int64 { envelope.localTime }
-    var messageID: MessageID? { envelope.messageID }
-    var clientMessageID: String? { envelope.clientMessageID }
-    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -597,19 +607,11 @@ nonisolated enum MediaUploadStatus: Int, Codable, Sendable {
 }
 
 /// 发出的图片消息输入参数
-nonisolated struct OutgoingImageMessageInput: Equatable, Sendable {
+nonisolated struct OutgoingImageMessageInput: Equatable, Sendable, OutgoingMessageEnvelopeProviding {
     /// 公共发送上下文
     let envelope: OutgoingMessageEnvelope
     /// 图片内容
     let image: StoredImageContent
-
-    var userID: UserID { envelope.userID }
-    var conversationID: ConversationID { envelope.conversationID }
-    var senderID: UserID { envelope.senderID }
-    var localTime: Int64 { envelope.localTime }
-    var messageID: MessageID? { envelope.messageID }
-    var clientMessageID: String? { envelope.clientMessageID }
-    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -642,19 +644,11 @@ nonisolated struct OutgoingImageMessageInput: Equatable, Sendable {
 }
 
 /// 发出的语音消息输入参数
-nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable {
+nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable, OutgoingMessageEnvelopeProviding {
     /// 公共发送上下文
     let envelope: OutgoingMessageEnvelope
     /// 语音内容
     let voice: StoredVoiceContent
-
-    var userID: UserID { envelope.userID }
-    var conversationID: ConversationID { envelope.conversationID }
-    var senderID: UserID { envelope.senderID }
-    var localTime: Int64 { envelope.localTime }
-    var messageID: MessageID? { envelope.messageID }
-    var clientMessageID: String? { envelope.clientMessageID }
-    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -687,17 +681,9 @@ nonisolated struct OutgoingVoiceMessageInput: Equatable, Sendable {
 }
 
 /// 发出的视频消息输入参数
-nonisolated struct OutgoingVideoMessageInput: Equatable, Sendable {
+nonisolated struct OutgoingVideoMessageInput: Equatable, Sendable, OutgoingMessageEnvelopeProviding {
     let envelope: OutgoingMessageEnvelope
     let video: StoredVideoContent
-
-    var userID: UserID { envelope.userID }
-    var conversationID: ConversationID { envelope.conversationID }
-    var senderID: UserID { envelope.senderID }
-    var localTime: Int64 { envelope.localTime }
-    var messageID: MessageID? { envelope.messageID }
-    var clientMessageID: String? { envelope.clientMessageID }
-    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,
@@ -730,17 +716,9 @@ nonisolated struct OutgoingVideoMessageInput: Equatable, Sendable {
 }
 
 /// 发出的文件消息输入参数
-nonisolated struct OutgoingFileMessageInput: Equatable, Sendable {
+nonisolated struct OutgoingFileMessageInput: Equatable, Sendable, OutgoingMessageEnvelopeProviding {
     let envelope: OutgoingMessageEnvelope
     let file: StoredFileContent
-
-    var userID: UserID { envelope.userID }
-    var conversationID: ConversationID { envelope.conversationID }
-    var senderID: UserID { envelope.senderID }
-    var localTime: Int64 { envelope.localTime }
-    var messageID: MessageID? { envelope.messageID }
-    var clientMessageID: String? { envelope.clientMessageID }
-    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,

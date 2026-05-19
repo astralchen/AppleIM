@@ -89,17 +89,9 @@ nonisolated struct StoredEmojiContent: Equatable, Hashable, Sendable {
 }
 
 /// 发出的表情消息输入。
-nonisolated struct OutgoingEmojiMessageInput: Equatable, Sendable {
+nonisolated struct OutgoingEmojiMessageInput: Equatable, Sendable, OutgoingMessageEnvelopeProviding {
     let envelope: OutgoingMessageEnvelope
     let emoji: StoredEmojiContent
-
-    var userID: UserID { envelope.userID }
-    var conversationID: ConversationID { envelope.conversationID }
-    var senderID: UserID { envelope.senderID }
-    var localTime: Int64 { envelope.localTime }
-    var messageID: MessageID? { envelope.messageID }
-    var clientMessageID: String? { envelope.clientMessageID }
-    var sortSequence: Int64? { envelope.sortSequence }
 
     init(
         userID: UserID,

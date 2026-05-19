@@ -21,6 +21,14 @@ nonisolated struct MessageDAO: Sendable {
         self.paths = paths
     }
 
+    /// 本地发出消息插入过程的公共上下文。
+    private struct OutgoingMessageInsertContext {
+        let messageID: MessageID
+        let clientMessageID: String
+        let contentID: String
+        let sortSequence: Int64
+    }
+
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
         let query = Self.listMessagesQuery(beforeSortSeq: beforeSortSeq)
         var parameters: [SQLiteValue] = [.text(conversationID.rawValue)]
@@ -293,6 +301,78 @@ nonisolated struct MessageDAO: Sendable {
         return updatedMessage
     }
 
+    private static func outgoingInsertContext<Input: OutgoingMessageEnvelopeProviding>(
+        input: Input,
+        contentPrefix: String
+    ) -> OutgoingMessageInsertContext {
+        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
+        return OutgoingMessageInsertContext(
+            messageID: messageID,
+            clientMessageID: input.clientMessageID ?? messageID.rawValue,
+            contentID: "\(contentPrefix)_\(messageID.rawValue)",
+            sortSequence: input.sortSequence ?? input.localTime
+        )
+    }
+
+    private static func outgoingStoredMessage<Input: OutgoingMessageEnvelopeProviding>(
+        input: Input,
+        context: OutgoingMessageInsertContext,
+        content: StoredMessageContent
+    ) -> StoredMessage {
+        StoredMessage(
+            id: context.messageID,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            clientMessageID: context.clientMessageID,
+            content: content,
+            sortSequence: context.sortSequence,
+            localTime: input.localTime
+        )
+    }
+
+    private static func outgoingMessageInsertStatement<Input: OutgoingMessageEnvelopeProviding>(
+        message: StoredMessage,
+        input: Input,
+        context: OutgoingMessageInsertContext,
+        messageType: MessageType,
+        contentTable: String
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            INSERT INTO message (
+                message_id,
+                conversation_id,
+                sender_id,
+                client_msg_id,
+                msg_type,
+                direction,
+                send_status,
+                delivery_status,
+                read_status,
+                revoke_status,
+                is_deleted,
+                content_table,
+                content_id,
+                sort_seq,
+                local_time
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
+            """,
+            parameters: [
+                .text(message.id.rawValue),
+                .text(input.conversationID.rawValue),
+                .text(input.senderID.rawValue),
+                .text(context.clientMessageID),
+                .integer(Int64(messageType.rawValue)),
+                .integer(Int64(MessageDirection.outgoing.rawValue)),
+                .integer(Int64(MessageSendStatus.sending.rawValue)),
+                .text(contentTable),
+                .text(context.contentID),
+                .integer(context.sortSequence),
+                .integer(input.localTime)
+            ]
+        )
+    }
+
     /// 生成插入发出文本消息的 SQL 语句
     ///
     /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
@@ -300,21 +380,9 @@ nonisolated struct MessageDAO: Sendable {
     /// - Parameter input: 发出的文本消息输入参数
     /// - Returns: 消息对象和 SQL 语句数组
     static func insertOutgoingTextStatements(_ input: OutgoingTextMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
-        let clientMessageID = input.clientMessageID ?? messageID.rawValue
-        let contentID = "text_\(messageID.rawValue)"
-        let sortSequence = input.sortSequence ?? input.localTime
+        let context = outgoingInsertContext(input: input, contentPrefix: "text")
         let mentionsJSON = Self.mentionsJSON(for: input.mentionedUserIDs)
-
-        let message = StoredMessage(
-            id: messageID,
-            conversationID: input.conversationID,
-            senderID: input.senderID,
-            clientMessageID: clientMessageID,
-            content: .text(input.text),
-            sortSequence: sortSequence,
-            localTime: input.localTime
-        )
+        let message = outgoingStoredMessage(input: input, context: context, content: .text(input.text))
 
         return (
             message,
@@ -330,66 +398,24 @@ nonisolated struct MessageDAO: Sendable {
                     ) VALUES (?, ?, ?, ?, NULL);
                     """,
                     parameters: [
-                        .text(contentID),
+                        .text(context.contentID),
                         .text(input.text),
                         .optionalText(mentionsJSON),
                         .integer(input.mentionsAll ? 1 : 0)
                     ]
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message (
-                        message_id,
-                        conversation_id,
-                        sender_id,
-                        client_msg_id,
-                        msg_type,
-                        direction,
-                        send_status,
-                        delivery_status,
-                        read_status,
-                        revoke_status,
-                        is_deleted,
-                        content_table,
-                        content_id,
-                        sort_seq,
-                        local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .text(input.conversationID.rawValue),
-                        .text(input.senderID.rawValue),
-                        .text(clientMessageID),
-                        .integer(Int64(MessageType.text.rawValue)),
-                        .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.sending.rawValue)),
-                        .text("message_text"),
-                        .text(contentID),
-                        .integer(sortSequence),
-                        .integer(input.localTime)
-                    ]
+                outgoingMessageInsertStatement(
+                    message: message,
+                    input: input,
+                    context: context,
+                    messageType: .text,
+                    contentTable: "message_text"
                 ),
-                SQLiteStatement(
-                    """
-                    UPDATE conversation
-                    SET
-                        last_message_id = ?,
-                        last_message_time = ?,
-                        last_message_digest = ?,
-                        sort_ts = ?,
-                        updated_at = ?
-                    WHERE conversation_id = ? AND user_id = ?;
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .integer(input.localTime),
-                        .text(input.text),
-                        .integer(sortSequence),
-                        .integer(input.localTime),
-                        .text(input.conversationID.rawValue),
-                        .text(input.userID.rawValue)
-                    ]
+                conversationUpdateStatement(
+                    messageID: message.id,
+                    input: input,
+                    digest: input.text,
+                    sortSequence: context.sortSequence
                 )
             ]
         )
@@ -537,6 +563,57 @@ nonisolated struct MessageDAO: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private static func mediaResourceUpsertStatement(
+        mediaID: String,
+        userID: UserID,
+        ownerMessageID: MessageID,
+        localPath: String,
+        thumbPath: String?,
+        sizeBytes: Int64,
+        md5: String?,
+        uploadStatus: MediaUploadStatus,
+        timestamp: Int64
+    ) -> SQLiteStatement {
+        SQLiteStatement(
+            """
+            INSERT INTO media_resource (
+                media_id,
+                user_id,
+                owner_message_id,
+                local_path,
+                remote_url,
+                thumb_path,
+                size_bytes,
+                md5,
+                upload_status,
+                download_status,
+                updated_at,
+                created_at
+            ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(media_id) DO UPDATE SET
+                owner_message_id = excluded.owner_message_id,
+                local_path = excluded.local_path,
+                thumb_path = COALESCE(excluded.thumb_path, media_resource.thumb_path),
+                size_bytes = excluded.size_bytes,
+                md5 = COALESCE(excluded.md5, media_resource.md5),
+                upload_status = excluded.upload_status,
+                updated_at = excluded.updated_at;
+            """,
+            parameters: [
+                .text(mediaID),
+                .text(userID.rawValue),
+                .text(ownerMessageID.rawValue),
+                .text(localPath),
+                .optionalText(thumbPath),
+                .integer(sizeBytes),
+                .optionalText(md5),
+                .integer(Int64(uploadStatus.rawValue)),
+                .integer(timestamp),
+                .integer(timestamp)
+            ]
+        )
+    }
+
     /// 生成插入发出图片消息的 SQL 语句
     ///
     /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
@@ -544,20 +621,8 @@ nonisolated struct MessageDAO: Sendable {
     /// - Parameter input: 发出的图片消息输入参数
     /// - Returns: 消息对象和 SQL 语句数组
     static func insertOutgoingImageStatements(_ input: OutgoingImageMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
-        let clientMessageID = input.clientMessageID ?? messageID.rawValue
-        let contentID = "image_\(messageID.rawValue)"
-        let sortSequence = input.sortSequence ?? input.localTime
-
-        let message = StoredMessage(
-            id: messageID,
-            conversationID: input.conversationID,
-            senderID: input.senderID,
-            clientMessageID: clientMessageID,
-            content: .image(input.image),
-            sortSequence: sortSequence,
-            localTime: input.localTime
-        )
+        let context = outgoingInsertContext(input: input, contentPrefix: "image")
+        let message = outgoingStoredMessage(input: input, context: context, content: .image(input.image))
 
         return (
             message,
@@ -580,7 +645,7 @@ nonisolated struct MessageDAO: Sendable {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0);
                     """,
                     parameters: [
-                        .text(contentID),
+                        .text(context.contentID),
                         .text(input.image.mediaID),
                         .integer(Int64(input.image.width)),
                         .integer(Int64(input.image.height)),
@@ -592,98 +657,29 @@ nonisolated struct MessageDAO: Sendable {
                         .integer(Int64(MediaUploadStatus.pending.rawValue))
                     ]
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message (
-                        message_id,
-                        conversation_id,
-                        sender_id,
-                        client_msg_id,
-                        msg_type,
-                        direction,
-                        send_status,
-                        delivery_status,
-                        read_status,
-                        revoke_status,
-                        is_deleted,
-                        content_table,
-                        content_id,
-                        sort_seq,
-                        local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .text(input.conversationID.rawValue),
-                        .text(input.senderID.rawValue),
-                        .text(clientMessageID),
-                        .integer(Int64(MessageType.image.rawValue)),
-                        .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.sending.rawValue)),
-                        .text("message_image"),
-                        .text(contentID),
-                        .integer(sortSequence),
-                        .integer(input.localTime)
-                    ]
+                outgoingMessageInsertStatement(
+                    message: message,
+                    input: input,
+                    context: context,
+                    messageType: .image,
+                    contentTable: "message_image"
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO media_resource (
-                        media_id,
-                        user_id,
-                        owner_message_id,
-                        local_path,
-                        remote_url,
-                        thumb_path,
-                        size_bytes,
-                        md5,
-                        upload_status,
-                        download_status,
-                        updated_at,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)
-                    ON CONFLICT(media_id) DO UPDATE SET
-                        owner_message_id = excluded.owner_message_id,
-                        local_path = excluded.local_path,
-                        thumb_path = excluded.thumb_path,
-                        size_bytes = excluded.size_bytes,
-                        md5 = COALESCE(excluded.md5, media_resource.md5),
-                        upload_status = excluded.upload_status,
-                        updated_at = excluded.updated_at;
-                    """,
-                    parameters: [
-                        .text(input.image.mediaID),
-                        .text(input.userID.rawValue),
-                        .text(message.id.rawValue),
-                        .text(input.image.localPath),
-                        .text(input.image.thumbnailPath),
-                        .integer(input.image.sizeBytes),
-                        .optionalText(input.image.md5),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
-                        .integer(input.localTime),
-                        .integer(input.localTime)
-                    ]
+                mediaResourceUpsertStatement(
+                    mediaID: input.image.mediaID,
+                    userID: input.userID,
+                    ownerMessageID: message.id,
+                    localPath: input.image.localPath,
+                    thumbPath: input.image.thumbnailPath,
+                    sizeBytes: input.image.sizeBytes,
+                    md5: input.image.md5,
+                    uploadStatus: .pending,
+                    timestamp: input.localTime
                 ),
-                SQLiteStatement(
-                    """
-                    UPDATE conversation
-                    SET
-                        last_message_id = ?,
-                        last_message_time = ?,
-                        last_message_digest = ?,
-                        sort_ts = ?,
-                        updated_at = ?
-                    WHERE conversation_id = ? AND user_id = ?;
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .integer(input.localTime),
-                        .text("[图片]"),
-                        .integer(sortSequence),
-                        .integer(input.localTime),
-                        .text(input.conversationID.rawValue),
-                        .text(input.userID.rawValue)
-                    ]
+                conversationUpdateStatement(
+                    messageID: message.id,
+                    input: input,
+                    digest: "[图片]",
+                    sortSequence: context.sortSequence
                 )
             ]
         )
@@ -696,20 +692,8 @@ nonisolated struct MessageDAO: Sendable {
     /// - Parameter input: 发出的语音消息输入参数
     /// - Returns: 消息对象和 SQL 语句数组
     static func insertOutgoingVoiceStatements(_ input: OutgoingVoiceMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
-        let clientMessageID = input.clientMessageID ?? messageID.rawValue
-        let contentID = "voice_\(messageID.rawValue)"
-        let sortSequence = input.sortSequence ?? input.localTime
-
-        let message = StoredMessage(
-            id: messageID,
-            conversationID: input.conversationID,
-            senderID: input.senderID,
-            clientMessageID: clientMessageID,
-            content: .voice(input.voice),
-            sortSequence: sortSequence,
-            localTime: input.localTime
-        )
+        let context = outgoingInsertContext(input: input, contentPrefix: "voice")
+        let message = outgoingStoredMessage(input: input, context: context, content: .voice(input.voice))
 
         return (
             message,
@@ -730,7 +714,7 @@ nonisolated struct MessageDAO: Sendable {
                     ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, 0);
                     """,
                     parameters: [
-                        .text(contentID),
+                        .text(context.contentID),
                         .text(input.voice.mediaID),
                         .integer(Int64(input.voice.durationMilliseconds)),
                         .integer(input.voice.sizeBytes),
@@ -739,114 +723,37 @@ nonisolated struct MessageDAO: Sendable {
                         .integer(Int64(MediaUploadStatus.pending.rawValue))
                     ]
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message (
-                        message_id,
-                        conversation_id,
-                        sender_id,
-                        client_msg_id,
-                        msg_type,
-                        direction,
-                        send_status,
-                        delivery_status,
-                        read_status,
-                        revoke_status,
-                        is_deleted,
-                        content_table,
-                        content_id,
-                        sort_seq,
-                        local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .text(input.conversationID.rawValue),
-                        .text(input.senderID.rawValue),
-                        .text(clientMessageID),
-                        .integer(Int64(MessageType.voice.rawValue)),
-                        .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.sending.rawValue)),
-                        .text("message_voice"),
-                        .text(contentID),
-                        .integer(sortSequence),
-                        .integer(input.localTime)
-                    ]
+                outgoingMessageInsertStatement(
+                    message: message,
+                    input: input,
+                    context: context,
+                    messageType: .voice,
+                    contentTable: "message_voice"
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO media_resource (
-                        media_id,
-                        user_id,
-                        owner_message_id,
-                        local_path,
-                        remote_url,
-                        thumb_path,
-                        size_bytes,
-                        md5,
-                        upload_status,
-                        download_status,
-                        updated_at,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL, ?, 0, ?, ?)
-                    ON CONFLICT(media_id) DO UPDATE SET
-                        owner_message_id = excluded.owner_message_id,
-                        local_path = excluded.local_path,
-                        size_bytes = excluded.size_bytes,
-                        upload_status = excluded.upload_status,
-                        updated_at = excluded.updated_at;
-                    """,
-                    parameters: [
-                        .text(input.voice.mediaID),
-                        .text(input.userID.rawValue),
-                        .text(message.id.rawValue),
-                        .text(input.voice.localPath),
-                        .integer(input.voice.sizeBytes),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
-                        .integer(input.localTime),
-                        .integer(input.localTime)
-                    ]
+                mediaResourceUpsertStatement(
+                    mediaID: input.voice.mediaID,
+                    userID: input.userID,
+                    ownerMessageID: message.id,
+                    localPath: input.voice.localPath,
+                    thumbPath: nil,
+                    sizeBytes: input.voice.sizeBytes,
+                    md5: nil,
+                    uploadStatus: .pending,
+                    timestamp: input.localTime
                 ),
-                SQLiteStatement(
-                    """
-                    UPDATE conversation
-                    SET
-                        last_message_id = ?,
-                        last_message_time = ?,
-                        last_message_digest = ?,
-                        sort_ts = ?,
-                        updated_at = ?
-                    WHERE conversation_id = ? AND user_id = ?;
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .integer(input.localTime),
-                        .text("[语音]"),
-                        .integer(sortSequence),
-                        .integer(input.localTime),
-                        .text(input.conversationID.rawValue),
-                        .text(input.userID.rawValue)
-                    ]
+                conversationUpdateStatement(
+                    messageID: message.id,
+                    input: input,
+                    digest: "[语音]",
+                    sortSequence: context.sortSequence
                 )
             ]
         )
     }
 
     static func insertOutgoingVideoStatements(_ input: OutgoingVideoMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
-        let clientMessageID = input.clientMessageID ?? messageID.rawValue
-        let contentID = "video_\(messageID.rawValue)"
-        let sortSequence = input.sortSequence ?? input.localTime
-
-        let message = StoredMessage(
-            id: messageID,
-            conversationID: input.conversationID,
-            senderID: input.senderID,
-            clientMessageID: clientMessageID,
-            content: .video(input.video),
-            sortSequence: sortSequence,
-            localTime: input.localTime
-        )
+        let context = outgoingInsertContext(input: input, contentPrefix: "video")
+        let message = outgoingStoredMessage(input: input, context: context, content: .video(input.video))
 
         return (
             message,
@@ -869,7 +776,7 @@ nonisolated struct MessageDAO: Sendable {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0);
                     """,
                     parameters: [
-                        .text(contentID),
+                        .text(context.contentID),
                         .text(input.video.mediaID),
                         .integer(Int64(input.video.durationMilliseconds)),
                         .integer(Int64(input.video.width)),
@@ -881,103 +788,37 @@ nonisolated struct MessageDAO: Sendable {
                         .integer(Int64(MediaUploadStatus.pending.rawValue))
                     ]
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message (
-                        message_id,
-                        conversation_id,
-                        sender_id,
-                        client_msg_id,
-                        msg_type,
-                        direction,
-                        send_status,
-                        delivery_status,
-                        read_status,
-                        revoke_status,
-                        is_deleted,
-                        content_table,
-                        content_id,
-                        sort_seq,
-                        local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .text(input.conversationID.rawValue),
-                        .text(input.senderID.rawValue),
-                        .text(clientMessageID),
-                        .integer(Int64(MessageType.video.rawValue)),
-                        .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.sending.rawValue)),
-                        .text("message_video"),
-                        .text(contentID),
-                        .integer(sortSequence),
-                        .integer(input.localTime)
-                    ]
+                outgoingMessageInsertStatement(
+                    message: message,
+                    input: input,
+                    context: context,
+                    messageType: .video,
+                    contentTable: "message_video"
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO media_resource (
-                        media_id,
-                        user_id,
-                        owner_message_id,
-                        local_path,
-                        remote_url,
-                        thumb_path,
-                        size_bytes,
-                        md5,
-                        upload_status,
-                        download_status,
-                        updated_at,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)
-                    ON CONFLICT(media_id) DO UPDATE SET
-                        owner_message_id = excluded.owner_message_id,
-                        local_path = excluded.local_path,
-                        thumb_path = excluded.thumb_path,
-                        size_bytes = excluded.size_bytes,
-                        md5 = COALESCE(excluded.md5, media_resource.md5),
-                        upload_status = excluded.upload_status,
-                        updated_at = excluded.updated_at;
-                    """,
-                    parameters: [
-                        .text(input.video.mediaID),
-                        .text(input.userID.rawValue),
-                        .text(message.id.rawValue),
-                        .text(input.video.localPath),
-                        .text(input.video.thumbnailPath),
-                        .integer(input.video.sizeBytes),
-                        .optionalText(input.video.md5),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
-                        .integer(input.localTime),
-                        .integer(input.localTime)
-                    ]
+                mediaResourceUpsertStatement(
+                    mediaID: input.video.mediaID,
+                    userID: input.userID,
+                    ownerMessageID: message.id,
+                    localPath: input.video.localPath,
+                    thumbPath: input.video.thumbnailPath,
+                    sizeBytes: input.video.sizeBytes,
+                    md5: input.video.md5,
+                    uploadStatus: .pending,
+                    timestamp: input.localTime
                 ),
                 conversationUpdateStatement(
                     messageID: message.id,
                     input: input,
                     digest: "[视频]",
-                    sortSequence: sortSequence
+                    sortSequence: context.sortSequence
                 )
             ]
         )
     }
 
     static func insertOutgoingFileStatements(_ input: OutgoingFileMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
-        let clientMessageID = input.clientMessageID ?? messageID.rawValue
-        let contentID = "file_\(messageID.rawValue)"
-        let sortSequence = input.sortSequence ?? input.localTime
-
-        let message = StoredMessage(
-            id: messageID,
-            conversationID: input.conversationID,
-            senderID: input.senderID,
-            clientMessageID: clientMessageID,
-            content: .file(input.file),
-            sortSequence: sortSequence,
-            localTime: input.localTime
-        )
+        let context = outgoingInsertContext(input: input, contentPrefix: "file")
+        let message = outgoingStoredMessage(input: input, context: context, content: .file(input.file))
 
         return (
             message,
@@ -998,7 +839,7 @@ nonisolated struct MessageDAO: Sendable {
                     ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0);
                     """,
                     parameters: [
-                        .text(contentID),
+                        .text(context.contentID),
                         .text(input.file.mediaID),
                         .text(input.file.fileName),
                         .optionalText(input.file.fileExtension),
@@ -1008,101 +849,37 @@ nonisolated struct MessageDAO: Sendable {
                         .integer(Int64(MediaUploadStatus.pending.rawValue))
                     ]
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message (
-                        message_id,
-                        conversation_id,
-                        sender_id,
-                        client_msg_id,
-                        msg_type,
-                        direction,
-                        send_status,
-                        delivery_status,
-                        read_status,
-                        revoke_status,
-                        is_deleted,
-                        content_table,
-                        content_id,
-                        sort_seq,
-                        local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .text(input.conversationID.rawValue),
-                        .text(input.senderID.rawValue),
-                        .text(clientMessageID),
-                        .integer(Int64(MessageType.file.rawValue)),
-                        .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.sending.rawValue)),
-                        .text("message_file"),
-                        .text(contentID),
-                        .integer(sortSequence),
-                        .integer(input.localTime)
-                    ]
+                outgoingMessageInsertStatement(
+                    message: message,
+                    input: input,
+                    context: context,
+                    messageType: .file,
+                    contentTable: "message_file"
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO media_resource (
-                        media_id,
-                        user_id,
-                        owner_message_id,
-                        local_path,
-                        remote_url,
-                        thumb_path,
-                        size_bytes,
-                        md5,
-                        upload_status,
-                        download_status,
-                        updated_at,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?, 0, ?, ?)
-                    ON CONFLICT(media_id) DO UPDATE SET
-                        owner_message_id = excluded.owner_message_id,
-                        local_path = excluded.local_path,
-                        size_bytes = excluded.size_bytes,
-                        md5 = COALESCE(excluded.md5, media_resource.md5),
-                        upload_status = excluded.upload_status,
-                        updated_at = excluded.updated_at;
-                    """,
-                    parameters: [
-                        .text(input.file.mediaID),
-                        .text(input.userID.rawValue),
-                        .text(message.id.rawValue),
-                        .text(input.file.localPath),
-                        .integer(input.file.sizeBytes),
-                        .optionalText(input.file.md5),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue)),
-                        .integer(input.localTime),
-                        .integer(input.localTime)
-                    ]
+                mediaResourceUpsertStatement(
+                    mediaID: input.file.mediaID,
+                    userID: input.userID,
+                    ownerMessageID: message.id,
+                    localPath: input.file.localPath,
+                    thumbPath: nil,
+                    sizeBytes: input.file.sizeBytes,
+                    md5: input.file.md5,
+                    uploadStatus: .pending,
+                    timestamp: input.localTime
                 ),
                 conversationUpdateStatement(
                     messageID: message.id,
                     input: input,
                     digest: "[文件] \(input.file.fileName)",
-                    sortSequence: sortSequence
+                    sortSequence: context.sortSequence
                 )
             ]
         )
     }
 
     static func insertOutgoingEmojiStatements(_ input: OutgoingEmojiMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let messageID = input.messageID ?? MessageID(rawValue: UUID().uuidString)
-        let clientMessageID = input.clientMessageID ?? messageID.rawValue
-        let contentID = "emoji_\(messageID.rawValue)"
-        let sortSequence = input.sortSequence ?? input.localTime
-
-        let message = StoredMessage(
-            id: messageID,
-            conversationID: input.conversationID,
-            senderID: input.senderID,
-            clientMessageID: clientMessageID,
-            content: .emoji(input.emoji),
-            sortSequence: sortSequence,
-            localTime: input.localTime
-        )
+        let context = outgoingInsertContext(input: input, contentPrefix: "emoji")
+        let message = outgoingStoredMessage(input: input, context: context, content: .emoji(input.emoji))
 
         return (
             message,
@@ -1124,7 +901,7 @@ nonisolated struct MessageDAO: Sendable {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """,
                     parameters: [
-                        .text(contentID),
+                        .text(context.contentID),
                         .text(input.emoji.emojiID),
                         .optionalText(input.emoji.packageID),
                         .integer(Int64(input.emoji.emojiType.rawValue)),
@@ -1137,71 +914,26 @@ nonisolated struct MessageDAO: Sendable {
                         .optionalInteger(input.emoji.sizeBytes)
                     ]
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message (
-                        message_id,
-                        conversation_id,
-                        sender_id,
-                        client_msg_id,
-                        msg_type,
-                        direction,
-                        send_status,
-                        delivery_status,
-                        read_status,
-                        revoke_status,
-                        is_deleted,
-                        content_table,
-                        content_id,
-                        sort_seq,
-                        local_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(message.id.rawValue),
-                        .text(input.conversationID.rawValue),
-                        .text(input.senderID.rawValue),
-                        .text(clientMessageID),
-                        .integer(Int64(MessageType.emoji.rawValue)),
-                        .integer(Int64(MessageDirection.outgoing.rawValue)),
-                        .integer(Int64(MessageSendStatus.sending.rawValue)),
-                        .text("message_emoji"),
-                        .text(contentID),
-                        .integer(sortSequence),
-                        .integer(input.localTime)
-                    ]
+                outgoingMessageInsertStatement(
+                    message: message,
+                    input: input,
+                    context: context,
+                    messageType: .emoji,
+                    contentTable: "message_emoji"
                 ),
                 conversationUpdateStatement(
                     messageID: message.id,
-                    conversationID: input.conversationID,
-                    userID: input.userID,
-                    localTime: input.localTime,
+                    input: input,
                     digest: "[表情]",
-                    sortSequence: sortSequence
+                    sortSequence: context.sortSequence
                 )
             ]
         )
     }
 
-    private static func conversationUpdateStatement(
+    private static func conversationUpdateStatement<Input: OutgoingMessageEnvelopeProviding>(
         messageID: MessageID,
-        input: OutgoingVideoMessageInput,
-        digest: String,
-        sortSequence: Int64
-    ) -> SQLiteStatement {
-        conversationUpdateStatement(
-            messageID: messageID,
-            conversationID: input.conversationID,
-            userID: input.userID,
-            localTime: input.localTime,
-            digest: digest,
-            sortSequence: sortSequence
-        )
-    }
-
-    private static func conversationUpdateStatement(
-        messageID: MessageID,
-        input: OutgoingFileMessageInput,
+        input: Input,
         digest: String,
         sortSequence: Int64
     ) -> SQLiteStatement {

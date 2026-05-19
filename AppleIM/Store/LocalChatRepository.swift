@@ -863,35 +863,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     }
 
     func resendImageMessage(messageID: MessageID) async throws -> StoredMessage {
-        guard let existingMessage = try await messageDAO.message(messageID: messageID) else {
-            throw ChatStoreError.messageNotFound(messageID)
-        }
-
-        guard
-            existingMessage.type == .image,
-            existingMessage.state.sendStatus == .failed,
-            !existingMessage.state.isRevoked,
-            !existingMessage.state.isDeleted
-        else {
-            throw ChatStoreError.messageCannotBeResent(messageID)
-        }
-
-        try await database.performTransaction(
-            [Self.updateMessageSendStatusStatement(messageID: messageID, status: .sending, ack: nil)]
-                + Self.updateImageUploadStatusStatements(
-                    messageID: messageID,
-                    status: .uploading,
-                    uploadAck: nil,
-                    updatedAt: Self.currentTimestamp()
-                ),
-            paths: paths
+        return try await prepareMediaMessageForResend(
+            messageID: messageID,
+            expectedType: .image,
+            uploadStatements: Self.updateImageUploadStatusStatements
         )
-
-        guard let updatedMessage = try await messageDAO.message(messageID: messageID) else {
-            throw ChatStoreError.messageNotFound(messageID)
-        }
-
-        return updatedMessage
     }
 
     func resendVideoMessage(messageID: MessageID) async throws -> StoredMessage {
@@ -949,30 +925,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         sendAck: MessageSendAck?,
         pendingJob: PendingJobInput?
     ) async throws {
-        let now = Self.currentTimestamp()
-        var statements = [
-            Self.updateMessageSendStatusStatement(messageID: messageID, status: sendStatus, ack: sendAck)
-        ]
-        statements += Self.updateImageUploadStatusStatements(
+        try await updateMediaUploadStatus(
             messageID: messageID,
-            status: uploadStatus,
+            uploadStatus: uploadStatus,
             uploadAck: uploadAck,
-            updatedAt: now
+            sendStatus: sendStatus,
+            sendAck: sendAck,
+            pendingJob: pendingJob,
+            uploadStatements: Self.updateImageUploadStatusStatements
         )
-
-        if let pendingJob {
-            statements.append(
-                Self.upsertPendingJobStatement(
-                    pendingJob,
-                    status: .pending,
-                    retryCount: 0,
-                    updatedAt: now,
-                    createdAt: now
-                )
-            )
-        }
-
-        try await database.performTransaction(statements, paths: paths)
     }
 
     func updateVoiceUploadStatus(
@@ -982,17 +943,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         sendStatus: MessageSendStatus,
         sendAck: MessageSendAck?
     ) async throws {
-        let now = Self.currentTimestamp()
-        let statements = [
-            Self.updateMessageSendStatusStatement(messageID: messageID, status: sendStatus, ack: sendAck)
-        ] + Self.updateVoiceUploadStatusStatements(
+        try await updateMediaUploadStatus(
             messageID: messageID,
-            status: uploadStatus,
+            uploadStatus: uploadStatus,
             uploadAck: uploadAck,
-            updatedAt: now
+            sendStatus: sendStatus,
+            sendAck: sendAck,
+            pendingJob: nil,
+            uploadStatements: Self.updateVoiceUploadStatusStatements
         )
-
-        try await database.performTransaction(statements, paths: paths)
     }
 
     func updateVideoUploadStatus(
