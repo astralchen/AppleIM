@@ -36,8 +36,6 @@ final class LoginViewController: UIViewController {
     private let errorLabel = UILabel()
     /// 登录按钮
     private let loginButton = UIButton(type: .system)
-    /// 登录加载指示器
-    private let activityIndicator = UIActivityIndicatorView(style: .medium)
     /// 登录内容容器
     private let contentContainerView = UIView()
     /// 登录内容垂直居中约束，用于键盘抬升
@@ -159,10 +157,6 @@ final class LoginViewController: UIViewController {
             self?.loginButtonTapped()
         }, for: .primaryActionTriggered)
 
-        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
-        activityIndicator.hidesWhenStopped = true
-        activityIndicator.accessibilityIdentifier = "login.activityIndicator"
-
         formContainerView.addSubview(accountTextField)
         formContainerView.addSubview(fieldSeparatorView)
         formContainerView.addSubview(passwordTextField)
@@ -182,8 +176,7 @@ final class LoginViewController: UIViewController {
             headerStackView,
             formContainerView,
             errorLabel,
-            loginButton,
-            activityIndicator
+            loginButton
         ])
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .vertical
@@ -307,10 +300,9 @@ final class LoginViewController: UIViewController {
         errorLabel.isHidden = state.errorMessage == nil
         loginButton.isEnabled = state.canSubmit
 
-        if state.isLoading {
-            activityIndicator.startAnimating()
-        } else {
-            activityIndicator.stopAnimating()
+        if var configuration = loginButton.configuration {
+            configuration.showsActivityIndicator = state.isLoading
+            loginButton.configuration = configuration
         }
     }
 
