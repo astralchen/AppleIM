@@ -351,13 +351,21 @@ final class AppleIMUITests: XCTestCase {
         let input = app.textViews["chat.messageInput"]
         input.tap()
         input.typeText("@")
-        let sondraMentionOption = app.buttons["chat.mentionOption.sondra"].firstMatch
+        let mentionSheet = app.otherElements["chat.mentionPicker.sheet"].firstMatch
+        XCTAssertTrue(
+            mentionSheet.waitForExistence(timeout: 5),
+            "Expected mention picker sheet to appear"
+        )
+        let sondraMentionOption = app.descendants(matching: .any)["chat.mentionOption.sondra"].firstMatch
+        XCTAssertTrue(sondraMentionOption.waitForExistence(timeout: 5), "Expected Sondra mention option")
         tapCenterOfElementWhenFrameIsFinite(
             sondraMentionOption,
             in: app,
-            timeout: 15,
+            timeout: 5,
             failureMessage: "Expected visible Sondra mention option"
         )
+        XCTAssertTrue(waitForDisappearance(of: mentionSheet, timeout: 5), "Expected mention picker sheet to close")
+        input.tap()
         input.typeText("Sondra UI group mention \(UUID().uuidString)")
         app.buttons["chat.sendButton"].tap()
 
@@ -365,7 +373,59 @@ final class AppleIMUITests: XCTestCase {
             messageCell(containing: "Sondra UI group mention", in: app).waitForExistence(timeout: 5),
             "Expected group mention message to appear"
         )
-        XCTAssertFalse(app.buttons["chat.mentionOption.sondra"].firstMatch.exists)
+        XCTAssertFalse(app.otherElements["chat.mentionPicker.sheet"].firstMatch.exists)
+    }
+
+    @MainActor
+    func testGroupMentionPickerMultiSelectMode() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+        openGroupCoreConversation(in: app)
+
+        let input = app.textViews["chat.messageInput"]
+        input.tap()
+        input.typeText("@")
+        let mentionSheet = app.otherElements["chat.mentionPicker.sheet"].firstMatch
+        XCTAssertTrue(
+            mentionSheet.waitForExistence(timeout: 5),
+            "Expected mention picker sheet to appear"
+        )
+
+        app.buttons["chat.mentionPicker.multiButton"].tap()
+        let doneButton = app.descendants(matching: .any)["chat.mentionPicker.doneButton"].firstMatch
+        XCTAssertTrue(doneButton.waitForExistence(timeout: 5))
+        XCTAssertFalse(doneButton.isEnabled)
+        XCTAssertTrue(app.buttons["chat.mentionPicker.cancelButton"].exists)
+        let sondraSelection = app.descendants(matching: .any)["chat.mentionSelection.sondra"].firstMatch
+        let mingSelection = app.descendants(matching: .any)["chat.mentionSelection.qa_ming"].firstMatch
+        XCTAssertTrue(sondraSelection.waitForExistence(timeout: 5))
+        XCTAssertTrue(mingSelection.waitForExistence(timeout: 5))
+
+        tapCenterOfElementWhenFrameIsFinite(
+            sondraSelection,
+            in: app,
+            timeout: 5,
+            failureMessage: "Expected visible Sondra selection row"
+        )
+        tapCenterOfElementWhenFrameIsFinite(
+            mingSelection,
+            in: app,
+            timeout: 5,
+            failureMessage: "Expected visible Ming selection row"
+        )
+        XCTAssertTrue(doneButton.isEnabled)
+        doneButton.tap()
+        XCTAssertTrue(waitForDisappearance(of: mentionSheet, timeout: 5), "Expected mention picker sheet to close")
+        input.tap()
+        input.typeText("UI multi mention \(UUID().uuidString)")
+        app.buttons["chat.sendButton"].tap()
+
+        XCTAssertTrue(
+            messageCell(containing: "UI multi mention", in: app).waitForExistence(timeout: 5),
+            "Expected multi mention message to appear"
+        )
+        XCTAssertFalse(app.otherElements["chat.mentionPicker.sheet"].firstMatch.exists)
     }
 
     @MainActor

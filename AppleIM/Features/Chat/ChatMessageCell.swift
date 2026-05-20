@@ -62,6 +62,37 @@ struct ChatMessageContentStyle {
     let tintColor: UIColor
 }
 
+/// 聊天 @ 文本高亮工具，只处理展示属性，不改变原始发送文本。
+enum ChatMentionTextStyling {
+    static func attributedText(
+        for text: String,
+        baseColor: UIColor,
+        mentionColor: UIColor = .systemBlue,
+        font: UIFont
+    ) -> NSAttributedString {
+        let attributedText = NSMutableAttributedString(
+            string: text,
+            attributes: [
+                .foregroundColor: baseColor,
+                .font: font
+            ]
+        )
+        for range in mentionRanges(in: text) {
+            attributedText.addAttribute(.foregroundColor, value: mentionColor, range: range)
+        }
+        return attributedText
+    }
+
+    static func mentionRanges(in text: String) -> [NSRange] {
+        let pattern = "@[^\\s@，。！？、,.!?;:；：）)\\]】}]+"
+        guard let regularExpression = try? NSRegularExpression(pattern: pattern) else {
+            return []
+        }
+        let fullRange = NSRange(location: 0, length: (text as NSString).length)
+        return regularExpression.matches(in: text, range: fullRange).map(\.range)
+    }
+}
+
 /// 可插拔消息内容视图
 @MainActor
 protocol ChatMessageContentView: AnyObject {
@@ -134,8 +165,13 @@ final class TextMessageContentView: UIView, ChatMessageContentView {
         style: ChatMessageContentStyle,
         actions: ChatMessageCellActions
     ) {
-        messageLabel.text = Self.text(for: row.content)
         messageLabel.textColor = style.textColor
+        messageLabel.attributedText = ChatMentionTextStyling.attributedText(
+            for: Self.text(for: row.content),
+            baseColor: style.textColor,
+            mentionColor: .systemBlue,
+            font: messageLabel.font
+        )
     }
 
     private static func text(for content: ChatMessageRowContent) -> String {

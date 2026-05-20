@@ -115,32 +115,13 @@ final class ContactListViewController: UIViewController {
 
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, ContactID> { [weak self] cell, _, rowID in
-            guard let row = self?.rowsByID[rowID] else { return }
-            var content = UIListContentConfiguration.subtitleCell()
-            content.text = row.title
-            content.secondaryText = row.subtitle
-            content.textProperties.font = .preferredFont(forTextStyle: .headline)
-            content.secondaryTextProperties.color = .secondaryLabel
-            content.image = UIImage(systemName: row.type == .group ? "person.2.fill" : "person.crop.circle.fill")
-            content.imageProperties.tintColor = row.type == .group ? ChatBridgeDesignSystem.ColorToken.sky : ChatBridgeDesignSystem.ColorToken.mint
-            cell.contentConfiguration = content
-            cell.accessories = [.disclosureIndicator()]
-            cell.accessibilityIdentifier = "contacts.cell.\(row.id.rawValue)"
-            cell.accessibilityLabel = [row.title, row.subtitle].filter { !$0.isEmpty }.joined(separator: ", ")
+            self?.cellRegistrationHandler(cell: cell, rowID: rowID)
         }
 
         let headerRegistration = UICollectionView.SupplementaryRegistration<UICollectionViewListCell>(
             elementKind: UICollectionView.elementKindSectionHeader
         ) { [weak self] header, _, indexPath in
-            guard
-                let sectionID = self?.dataSource?.snapshot().sectionIdentifiers[safe: indexPath.section]
-            else {
-                return
-            }
-
-            var content = UIListContentConfiguration.groupedHeader()
-            content.text = sectionID.title
-            header.contentConfiguration = content
+            self?.headerRegistrationHandler(header: header, indexPath: indexPath)
         }
 
         dataSource = UICollectionViewDiffableDataSource<Section, ContactID>(collectionView: collectionView) { collectionView, indexPath, rowID in
@@ -149,6 +130,40 @@ final class ContactListViewController: UIViewController {
         dataSource?.supplementaryViewProvider = { collectionView, kind, indexPath in
             collectionView.dequeueConfiguredReusableSupplementary(using: headerRegistration, for: indexPath)
         }
+    }
+
+    /// 配置联系人 cell。
+    private func cellRegistrationHandler(cell: UICollectionViewListCell, rowID: ContactID) {
+        guard let row = rowsByID[rowID] else { return }
+        cell.contentConfiguration = contactConfiguration(for: cell, row: row)
+        cell.accessories = [.disclosureIndicator()]
+        cell.accessibilityIdentifier = "contacts.cell.\(row.id.rawValue)"
+        cell.accessibilityLabel = [row.title, row.subtitle].filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
+    /// 构造联系人行内容配置。
+    private func contactConfiguration(for cell: UICollectionViewListCell, row: ContactListRowState) -> UIListContentConfiguration {
+        var content = cell.defaultContentConfiguration()
+        content.text = row.title
+        content.secondaryText = row.subtitle
+        content.textProperties.font = .preferredFont(forTextStyle: .headline)
+        content.secondaryTextProperties.color = .secondaryLabel
+        content.image = UIImage(systemName: row.type == .group ? "person.2.fill" : "person.crop.circle.fill")
+        content.imageProperties.tintColor = row.type == .group ? ChatBridgeDesignSystem.ColorToken.sky : ChatBridgeDesignSystem.ColorToken.mint
+        return content
+    }
+
+    /// 配置联系人分组标题。
+    private func headerRegistrationHandler(header: UICollectionViewListCell, indexPath: IndexPath) {
+        guard
+            let sectionID = dataSource?.snapshot().sectionIdentifiers[safe: indexPath.section]
+        else {
+            return
+        }
+
+        var content = UIListContentConfiguration.groupedHeader()
+        content.text = sectionID.title
+        header.contentConfiguration = content
     }
 
     private func bindViewModel() {

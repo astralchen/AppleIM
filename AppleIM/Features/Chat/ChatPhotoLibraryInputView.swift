@@ -409,19 +409,7 @@ final class ChatPhotoLibraryInputView: UIControl {
     /// 配置图片库网格数据源。
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<ChatPhotoLibraryCell, String> { [weak self] cell, indexPath, assetID in
-            guard
-                let self,
-                let asset = self.asset(at: indexPath),
-                asset.localIdentifier == assetID
-            else {
-                return
-            }
-
-            cell.configure(
-                asset: asset,
-                imageManager: self.imageManager,
-                selectionNumber: self.selectionState.selectionNumber(for: assetID)
-            )
+            self?.cellRegistrationHandler(cell: cell, indexPath: indexPath, assetID: assetID)
         }
 
         dataSource = UICollectionViewDiffableDataSource<Int, String>(
@@ -429,6 +417,22 @@ final class ChatPhotoLibraryInputView: UIControl {
         ) { collectionView, indexPath, assetID in
             collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: assetID)
         }
+    }
+
+    /// 配置相册资源 cell。
+    private func cellRegistrationHandler(cell: ChatPhotoLibraryCell, indexPath: IndexPath, assetID: String) {
+        guard
+            let asset = asset(at: indexPath),
+            asset.localIdentifier == assetID
+        else {
+            return
+        }
+
+        cell.configure(
+            asset: asset,
+            imageManager: imageManager,
+            selectionNumber: selectionState.selectionNumber(for: assetID)
+        )
     }
 
     /// 应用当前资源快照。
@@ -816,6 +820,61 @@ extension ChatPhotoLibraryInputView: UIGestureRecognizerDelegate {
 /// 图片库资源单元格
 @MainActor
 private final class ChatPhotoLibraryCell: UICollectionViewCell {
+    /// 复用前取消图片请求并重置 UI
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        resetPhotoContentViews(in: contentView)
+        contentConfiguration = nil
+    }
+
+    /// 根据 Photos 资源和选择序号配置单元格
+    func configure(asset: PHAsset, imageManager: PHCachingImageManager, selectionNumber: Int?) {
+        contentConfiguration = ChatPhotoLibraryContentConfiguration(
+            asset: asset,
+            imageManager: imageManager,
+            selectionNumber: selectionNumber
+        )
+        accessibilityIdentifier = "chat.photoLibraryCell.\(asset.localIdentifier)"
+        accessibilityLabel = asset.mediaType == .video
+            ? "Video \(ChatPhotoLibraryInputView.durationText(for: asset) ?? "")"
+            : "Photo"
+        if let selectionNumber {
+            accessibilityValue = "Selected \(selectionNumber)"
+        } else {
+            accessibilityValue = nil
+        }
+    }
+
+    /// 递归清理内容视图里的图片请求。
+    private func resetPhotoContentViews(in view: UIView) {
+        for subview in view.subviews {
+            if let photoContentView = subview as? ChatPhotoLibraryContentView {
+                photoContentView.reset()
+            }
+            resetPhotoContentViews(in: subview)
+        }
+    }
+}
+
+/// 相册资源 cell 内容配置。
+@MainActor
+struct ChatPhotoLibraryContentConfiguration: UIContentConfiguration {
+    let asset: PHAsset
+    let imageManager: PHCachingImageManager
+    let selectionNumber: Int?
+
+    func makeContentView() -> UIView & UIContentView {
+        ChatPhotoLibraryContentView(configuration: self)
+    }
+
+    func updated(for state: UIConfigurationState) -> ChatPhotoLibraryContentConfiguration {
+        self
+    }
+}
+
+/// 相册资源 cell 内容视图。
+@MainActor
+private final class ChatPhotoLibraryContentView: UIView, UIContentView {
     /// 缩略图视图
     private let imageView = UIImageView()
     /// 视频时长标签
@@ -832,22 +891,30 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
     private var requestID: PHImageRequestID?
     /// 当前单元格代表的资源 ID
     private var representedAssetID: String?
+    private var currentConfiguration: ChatPhotoLibraryContentConfiguration
 
-    /// 初始化资源单元格
-    override init(frame: CGRect) {
-        super.init(frame: frame)
-        configureView()
+    var configuration: UIContentConfiguration {
+        get { currentConfiguration }
+        set {
+            guard let configuration = newValue as? ChatPhotoLibraryContentConfiguration else { return }
+            currentConfiguration = configuration
+            render(configuration)
+        }
     }
 
-    /// 从 storyboard/xib 初始化资源单元格
+    init(configuration: ChatPhotoLibraryContentConfiguration) {
+        currentConfiguration = configuration
+        super.init(frame: .zero)
+        configureView()
+        render(configuration)
+    }
+
     required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        configureView()
+        fatalError("Storyboard initialization is not supported.")
     }
 
-    /// 复用前取消图片请求并重置 UI
-    override func prepareForReuse() {
-        super.prepareForReuse()
+    /// 取消图片请求并清理可复用状态。
+    func reset() {
         imageView.image = nil
         durationLabel.text = nil
         selectionBadgeView.text = nil
@@ -860,27 +927,20 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         requestID = nil
     }
 
-    /// 根据 Photos 资源和选择序号配置单元格
-    func configure(asset: PHAsset, imageManager: PHCachingImageManager, selectionNumber: Int?) {
-        representedAssetID = asset.localIdentifier
-        accessibilityIdentifier = "chat.photoLibraryCell.\(asset.localIdentifier)"
-        accessibilityLabel = asset.mediaType == .video
-            ? "Video \(ChatPhotoLibraryInputView.durationText(for: asset) ?? "")"
-            : "Photo"
-        if let selectionNumber {
-            accessibilityValue = "Selected \(selectionNumber)"
-        } else {
-            accessibilityValue = nil
-        }
+    /// 渲染相册资源内容。
+    private func render(_ configuration: ChatPhotoLibraryContentConfiguration) {
+        reset()
 
+        let asset = configuration.asset
+        representedAssetID = asset.localIdentifier
         let isVideo = asset.mediaType == .video
         gradientView.isHidden = !isVideo
         durationLabel.isHidden = !isVideo
         videoIconView.isHidden = !isVideo
         durationLabel.text = ChatPhotoLibraryInputView.durationText(for: asset)
-        selectionBadgeView.isHidden = selectionNumber == nil
-        selectionBorderView.isHidden = selectionNumber == nil
-        selectionBadgeView.text = selectionNumber.map(String.init)
+        selectionBadgeView.isHidden = configuration.selectionNumber == nil
+        selectionBorderView.isHidden = configuration.selectionNumber == nil
+        selectionBadgeView.text = configuration.selectionNumber.map(String.init)
 
         let scale = UIScreen.main.scale
         let targetSize = CGSize(width: max(bounds.width, 96) * scale, height: max(bounds.height, 96) * scale)
@@ -889,7 +949,7 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         options.resizeMode = .fast
         options.isNetworkAccessAllowed = true
 
-        requestID = imageManager.requestImage(
+        requestID = configuration.imageManager.requestImage(
             for: asset,
             targetSize: targetSize,
             contentMode: .aspectFill,
@@ -904,14 +964,14 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
 
     /// 配置单元格视图层级、样式和约束
     private func configureView() {
-        contentView.backgroundColor = UIColor { traits in
+        backgroundColor = UIColor { traits in
             traits.userInterfaceStyle == .dark
                 ? UIColor.secondarySystemGroupedBackground.withAlphaComponent(0.46)
                 : UIColor.systemFill.withAlphaComponent(0.18)
         }
-        contentView.clipsToBounds = true
-        contentView.layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment
-        contentView.layer.cornerCurve = .continuous
+        clipsToBounds = true
+        layer.cornerRadius = ChatBridgeDesignSystem.RadiusToken.appleComposerAttachment
+        layer.cornerCurve = .continuous
 
         imageView.translatesAutoresizingMaskIntoConstraints = false
         imageView.contentMode = .scaleAspectFill
@@ -949,40 +1009,40 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         durationLabel.minimumScaleFactor = 0.7
         durationLabel.textAlignment = .right
 
-        contentView.addSubview(imageView)
-        contentView.addSubview(gradientView)
-        contentView.addSubview(videoIconView)
-        contentView.addSubview(durationLabel)
-        contentView.addSubview(selectionBorderView)
-        contentView.addSubview(selectionBadgeView)
+        addSubview(imageView)
+        addSubview(gradientView)
+        addSubview(videoIconView)
+        addSubview(durationLabel)
+        addSubview(selectionBorderView)
+        addSubview(selectionBadgeView)
 
         NSLayoutConstraint.activate([
-            imageView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            imageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            imageView.topAnchor.constraint(equalTo: topAnchor),
+            imageView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            imageView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            imageView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            gradientView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            gradientView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            gradientView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            gradientView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            gradientView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            gradientView.bottomAnchor.constraint(equalTo: bottomAnchor),
             gradientView.heightAnchor.constraint(equalToConstant: 30),
 
-            videoIconView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            videoIconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             videoIconView.centerYAnchor.constraint(equalTo: gradientView.centerYAnchor),
             videoIconView.widthAnchor.constraint(equalToConstant: 14),
             videoIconView.heightAnchor.constraint(equalToConstant: 14),
 
-            durationLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8),
+            durationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             durationLabel.centerYAnchor.constraint(equalTo: gradientView.centerYAnchor),
             durationLabel.leadingAnchor.constraint(greaterThanOrEqualTo: videoIconView.trailingAnchor, constant: 6),
 
-            selectionBorderView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            selectionBorderView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            selectionBorderView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            selectionBorderView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            selectionBorderView.topAnchor.constraint(equalTo: topAnchor),
+            selectionBorderView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            selectionBorderView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            selectionBorderView.bottomAnchor.constraint(equalTo: bottomAnchor),
 
-            selectionBadgeView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6),
-            selectionBadgeView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -6),
+            selectionBadgeView.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            selectionBadgeView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             selectionBadgeView.widthAnchor.constraint(equalToConstant: 26),
             selectionBadgeView.heightAnchor.constraint(equalToConstant: 26)
         ])

@@ -86,6 +86,8 @@ final class ChatInputBarView: UIView {
 
     /// 用户动作回调。
     var onAction: ((ChatInputBarAction) -> Void)?
+    /// 文本变更拦截器，用于把已插入的 @ 成员当成一个整体编辑。
+    var textChangeReplacementProvider: ((String, NSRange, String) -> ChatMentionDeletionReplacement?)?
     /// 布局变化协调代理。
     weak var layoutDelegate: ChatInputBarLayoutDelegate?
 
@@ -1148,8 +1150,33 @@ extension ChatInputBarView: UITextViewDelegate {
     /// 文本变化时刷新占位、按钮和高度
     func textViewDidChange(_ textView: UITextView) {
         let currentText = textView.text ?? ""
+        if textView.markedTextRange == nil {
+            // 中文输入法组词期间不能重设 attributedText，否则会打断系统 marked text。
+            composerFieldView.refreshMentionHighlight()
+        }
+        applyTextChange(currentText, selectedRange: nil)
+    }
+
+    /// 系统写入文本前，允许业务层把命中的 @ token 替换为整段删除。
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        let currentText = textView.text ?? ""
+        guard let replacement = textChangeReplacementProvider?(currentText, range, text) else {
+            return true
+        }
+
+        composerFieldView.setText(replacement.text, selectedRange: replacement.selectedRange)
+        applyTextChange(replacement.text, selectedRange: replacement.selectedRange)
+        return false
+    }
+
+    /// 应用文本变更并向控制器发布最新草稿。
+    private func applyTextChange(_ currentText: String, selectedRange: NSRange?) {
         if composerFieldView.text != currentText {
-            composerFieldView.setText(currentText)
+            if let selectedRange {
+                composerFieldView.setText(currentText, selectedRange: selectedRange)
+            } else {
+                composerFieldView.setText(currentText)
+            }
         }
         stateMachine.reduce(.setText(currentText))
         setNeedsLayout()

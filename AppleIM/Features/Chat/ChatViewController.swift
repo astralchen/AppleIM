@@ -330,10 +330,10 @@ final class ChatViewController: UIViewController {
     private let announcementButton = UIButton(type: .system)
     /// 顶部信息栈
     private let topBannerStackView = UIStackView()
-    /// @ 成员选择器
-    private let mentionPickerStackView = UIStackView()
     /// 最近一次渲染的群公告状态
     private var currentGroupAnnouncement: ChatGroupAnnouncementState?
+    /// 当前展示中的 @ 成员选择器。
+    private weak var currentMentionPickerViewController: ChatMentionPickerViewController?
     /// 聊天输入栏
     private let inputBarView = ChatInputBarView()
     /// 图片库输入面板
@@ -485,15 +485,6 @@ final class ChatViewController: UIViewController {
         announcementButton.addTarget(self, action: #selector(groupAnnouncementTapped), for: .touchUpInside)
         topBannerStackView.addArrangedSubview(announcementButton)
 
-        mentionPickerStackView.translatesAutoresizingMaskIntoConstraints = false
-        mentionPickerStackView.axis = .horizontal
-        mentionPickerStackView.alignment = .center
-        mentionPickerStackView.spacing = 8
-        mentionPickerStackView.layoutMargins = UIEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-        mentionPickerStackView.isLayoutMarginsRelativeArrangement = true
-        mentionPickerStackView.isHidden = true
-        mentionPickerStackView.accessibilityIdentifier = "chat.mentionPicker"
-
         inputBarView.translatesAutoresizingMaskIntoConstraints = false
         photoLibraryInputView.translatesAutoresizingMaskIntoConstraints = false
         photoLibraryInputView.accessibilityIdentifier = "chat.photoLibraryInputPanel"
@@ -505,7 +496,6 @@ final class ChatViewController: UIViewController {
         view.addSubview(topBannerStackView)
         view.addSubview(collectionView)
         view.addSubview(emptyLabel)
-        view.addSubview(mentionPickerStackView)
         view.addSubview(inputBarView)
 
         let inputBarKeyboardBottomConstraint = inputBarView.bottomAnchor.constraint(
@@ -535,12 +525,7 @@ final class ChatViewController: UIViewController {
 
             inputBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             inputBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            inputBarCustomPanelBottomConstraint,
-
-            mentionPickerStackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            mentionPickerStackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            mentionPickerStackView.bottomAnchor.constraint(equalTo: inputBarView.topAnchor, constant: -8),
-            mentionPickerStackView.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
+            inputBarCustomPanelBottomConstraint
         ])
     }
 
@@ -622,6 +607,13 @@ final class ChatViewController: UIViewController {
     /// 绑定输入栏按钮和文本变化回调
     private func configureInputBarCallbacks() {
         inputBarView.layoutDelegate = self
+        inputBarView.textChangeReplacementProvider = { [weak self] currentText, range, replacementText in
+            self?.viewModel.mentionDeletionReplacement(
+                in: currentText,
+                changing: range,
+                replacementText: replacementText
+            )
+        }
         inputBarView.onAction = { [weak self] action in
             self?.handleInputBarAction(action)
         }
@@ -1059,29 +1051,8 @@ final class ChatViewController: UIViewController {
 
     /// 配置消息列表数据源
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, MessageID> { [weak self] cell, _, rowID in
-            guard let self, let row = self.rowsByID[rowID] else { return }
-            let actions = ChatMessageCellActions(
-                onRetry: { [weak self] messageID in
-                    self?.viewModel.resend(messageID: messageID)
-                },
-                onDelete: { [weak self] messageID in
-                    self?.confirmDelete(messageID: messageID)
-                },
-                onRevoke: { [weak self] messageID in
-                    self?.confirmRevoke(messageID: messageID)
-                },
-                onReeditRevokedText: { [weak self] _, text in
-                    self?.reeditRevokedText(text)
-                },
-                onPlayVoice: { [weak self] row in
-                    self?.handleVoicePlayback(row)
-                },
-                onPlayVideo: { [weak self] row in
-                    self?.handleVideoPlayback(row)
-                }
-            )
-            cell.configure(row: row, actions: actions)
+        let cellRegistration = UICollectionView.CellRegistration<ChatMessageCell, MessageID> { [weak self] cell, indexPath, rowID in
+            self?.cellRegistrationHandler(cell: cell, indexPath: indexPath, rowID: rowID)
         }
 
         dataSource = UICollectionViewDiffableDataSource<Section, MessageID>(
@@ -1097,6 +1068,36 @@ final class ChatViewController: UIViewController {
         var snapshot = NSDiffableDataSourceSnapshot<Section, MessageID>()
         snapshot.appendSections([.messages])
         dataSource?.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// 配置消息 cell。
+    private func cellRegistrationHandler(cell: ChatMessageCell, indexPath: IndexPath, rowID: MessageID) {
+        guard let row = rowsByID[rowID] else { return }
+        cell.configure(row: row, actions: messageCellActions())
+    }
+
+    /// 构造消息 cell 事件。
+    private func messageCellActions() -> ChatMessageCellActions {
+        ChatMessageCellActions(
+            onRetry: { [weak self] messageID in
+                self?.viewModel.resend(messageID: messageID)
+            },
+            onDelete: { [weak self] messageID in
+                self?.confirmDelete(messageID: messageID)
+            },
+            onRevoke: { [weak self] messageID in
+                self?.confirmRevoke(messageID: messageID)
+            },
+            onReeditRevokedText: { [weak self] _, text in
+                self?.reeditRevokedText(text)
+            },
+            onPlayVoice: { [weak self] row in
+                self?.handleVoicePlayback(row)
+            },
+            onPlayVideo: { [weak self] row in
+                self?.handleVideoPlayback(row)
+            }
+        )
     }
 
     private func reeditRevokedText(_ text: String) {
@@ -1323,44 +1324,56 @@ final class ChatViewController: UIViewController {
 
     /// 渲染 @ 成员选择器
     private func renderMentionPicker(_ picker: ChatMentionPickerState?) {
-        mentionPickerStackView.arrangedSubviews.forEach { view in
-            mentionPickerStackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
         guard let picker, !picker.options.isEmpty else {
-            mentionPickerStackView.isHidden = true
-            updateCollectionViewOverlayInsets()
+            dismissMentionPickerIfNeeded()
             return
         }
 
-        for option in picker.options {
-            let button = UIButton(type: .system)
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.configuration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: option.mentionsAll ? .primary : .secondary)
-            var configuration = button.configuration
-            configuration?.title = "@\(option.displayName)"
-            configuration?.image = UIImage(systemName: option.mentionsAll ? "person.3.fill" : "person.fill")
-            configuration?.imagePadding = 4
-            button.configuration = configuration
-            button.accessibilityIdentifier = "chat.mentionOption.\(option.id)"
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 72).isActive = true
-            button.addAction(UIAction { [weak self] _ in
-                if option.mentionsAll {
-                    self?.viewModel.selectMentionsAll()
-                } else if let userID = option.userID {
-                    self?.viewModel.selectMention(userID: userID)
-                }
-            }, for: .touchUpInside)
-            mentionPickerStackView.addArrangedSubview(button)
+        if let currentMentionPickerViewController {
+            currentMentionPickerViewController.update(options: picker.options)
+            return
         }
-        mentionPickerStackView.isHidden = false
-        updateCollectionViewOverlayInsets()
-        mentionPickerStackView.setNeedsLayout()
-        view.layoutIfNeeded()
-        mentionPickerStackView.layoutIfNeeded()
-        mentionPickerStackView.arrangedSubviews.forEach { $0.layoutIfNeeded() }
+
+        let pickerViewController = ChatMentionPickerViewController(options: picker.options)
+        pickerViewController.delegate = self
+        pickerViewController.modalPresentationStyle = .pageSheet
+        pickerViewController.isModalInPresentation = false
+        if let sheet = pickerViewController.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = false
+            sheet.preferredCornerRadius = 28
+            sheet.prefersScrollingExpandsWhenScrolledToEdge = false
+        }
+        currentMentionPickerViewController = pickerViewController
+        pickerViewController.presentationController?.delegate = self
+        present(pickerViewController, animated: true)
+    }
+
+    /// 关闭当前 @ 选择器。
+    private func dismissMentionPickerIfNeeded() {
+        guard let currentMentionPickerViewController else { return }
+        currentMentionPickerViewController.dismiss(animated: true)
+        self.currentMentionPickerViewController = nil
+    }
+
+    /// 将 @ 选择结果补到输入框，保持发送前用户还可以继续编辑。
+    private func appendMentionText(for options: [ChatMentionOptionState]) {
+        let insertionText = options
+            .map { option in option.mentionsAll ? "@所有人 " : "@\(option.displayName) " }
+            .joined()
+        guard !insertionText.isEmpty else { return }
+
+        let currentText = inputBarView.text
+        let nextText: String
+        if currentText.hasSuffix("@") {
+            nextText = String(currentText.dropLast()) + insertionText
+        } else if currentText.isEmpty || currentText.hasSuffix(" ") {
+            nextText = currentText + insertionText
+        } else {
+            nextText = currentText + " " + insertionText
+        }
+        inputBarView.setText(nextText, animated: true)
+        viewModel.composerTextChanged(nextText)
     }
 
     /// 根据新旧消息 ID 构造消息列表快照。
@@ -1841,10 +1854,9 @@ final class ChatViewController: UIViewController {
         return max(safeTopY, bannerFrame.maxY + 8) - collectionFrame.minY
     }
 
-    /// 输入栏和 @ 选择器作为覆盖层时，消息内容只能显示到覆盖层上方。
+    /// 输入栏作为覆盖层时，消息内容只能显示到输入栏上方。
     private func messageOverlayBottomVisibleY() -> CGFloat {
-        let overlayView = mentionPickerStackView.isHidden ? inputBarView : mentionPickerStackView
-        let overlayFrame = overlayView.convert(overlayView.bounds, to: view)
+        let overlayFrame = inputBarView.convert(inputBarView.bounds, to: view)
         return overlayFrame.minY - 8
     }
 
@@ -2429,6 +2441,42 @@ extension ChatViewController: UICollectionViewDelegate {
     private func finishUserMessageScrollInteraction() {
         isUserControllingMessageScroll = false
         shouldMaintainBottomPosition = isNearBottom()
+    }
+}
+
+extension ChatViewController: ChatMentionPickerViewControllerDelegate {
+    /// 单选成员后补全文案并写入 @ 元数据。
+    func mentionPicker(_ picker: ChatMentionPickerViewController, didSelect option: ChatMentionOptionState) {
+        appendMentionText(for: [option])
+        if option.mentionsAll {
+            viewModel.selectMentionsAll()
+        } else if let userID = option.userID {
+            viewModel.selectMention(userID: userID)
+        }
+        currentMentionPickerViewController = nil
+    }
+
+    /// 多选完成后按选择顺序补全文案并写入 @ 元数据。
+    func mentionPicker(_ picker: ChatMentionPickerViewController, didFinishSelecting options: [ChatMentionOptionState]) {
+        appendMentionText(for: options)
+        viewModel.selectMentions(userIDs: options.compactMap(\.userID))
+        currentMentionPickerViewController = nil
+    }
+
+    /// 下滑或取消时只关闭浮层，不清空用户已输入文本。
+    func mentionPickerDidCancel(_ picker: ChatMentionPickerViewController) {
+        viewModel.dismissMentionPicker()
+        currentMentionPickerViewController = nil
+    }
+}
+
+extension ChatViewController: UIAdaptivePresentationControllerDelegate {
+    /// 系统下滑关闭 Sheet 后同步 ViewModel，避免旧状态在下一次渲染时再次弹出。
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        if presentationController.presentedViewController === currentMentionPickerViewController {
+            viewModel.dismissMentionPicker()
+            currentMentionPickerViewController = nil
+        }
     }
 }
 

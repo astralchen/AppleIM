@@ -308,23 +308,8 @@ final class ConversationListViewController: UIViewController {
 
     /// 配置 diffable data source 与 section header
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<ConversationListCell, Item> { [weak self] cell, _, item in
-            guard let self else { return }
-
-            switch item {
-            case let .conversation(rowID):
-                guard let row = rowsByID[rowID] else { return }
-                cell.configure(row: row)
-                cell.isAccessibilityElement = true
-                cell.accessibilityIdentifier = "conversationList.cell.\(row.id.rawValue)"
-                cell.accessibilityLabel = self.accessibilityLabel(for: row)
-            case let .search(rowID):
-                guard let row = searchRowsByID[rowID] else { return }
-                cell.configure(searchRow: row)
-                cell.isAccessibilityElement = true
-                cell.accessibilityIdentifier = "conversationList.searchCell.\(rowID)"
-                cell.accessibilityLabel = [row.title, row.subtitle].compactMap { $0 }.joined(separator: ", ")
-            }
+        let cellRegistration = UICollectionView.CellRegistration<ConversationListCell, Item> { [weak self] cell, indexPath, item in
+            self?.cellRegistrationHandler(cell: cell, indexPath: indexPath, item: item)
         }
 
         let headerRegistration = UICollectionView.SupplementaryRegistration<ConversationListHeaderView>(
@@ -361,6 +346,24 @@ final class ConversationListViewController: UIViewController {
         var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
         snapshot.appendSections([.conversations])
         dataSource?.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// 配置会话列表 cell。
+    private func cellRegistrationHandler(cell: ConversationListCell, indexPath: IndexPath, item: Item) {
+        switch item {
+        case let .conversation(rowID):
+            guard let row = rowsByID[rowID] else { return }
+            cell.configure(row: row)
+            cell.isAccessibilityElement = true
+            cell.accessibilityIdentifier = "conversationList.cell.\(row.id.rawValue)"
+            cell.accessibilityLabel = accessibilityLabel(for: row)
+        case let .search(rowID):
+            guard let row = searchRowsByID[rowID] else { return }
+            cell.configure(searchRow: row)
+            cell.isAccessibilityElement = true
+            cell.accessibilityIdentifier = "conversationList.searchCell.\(rowID)"
+            cell.accessibilityLabel = [row.title, row.subtitle].compactMap { $0 }.joined(separator: ", ")
+        }
     }
 
     /// 绑定会话列表和搜索状态

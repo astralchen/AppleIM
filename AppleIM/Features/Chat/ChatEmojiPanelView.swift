@@ -141,14 +141,8 @@ final class ChatEmojiPanelView: UIControl {
 
     /// 配置表情网格数据源。
     private func configureDataSource() {
-        let cellRegistration = UICollectionView.CellRegistration<ChatEmojiItemCell, EmojiAssetRecord> { [weak self] cell, _, emoji in
-            cell.configure(emoji: emoji)
-            cell.onSelect = { [weak self] emoji in
-                self?.emit(.selected(emoji))
-            }
-            cell.onFavoriteToggle = { [weak self] emoji, isFavorite in
-                self?.emit(.favoriteToggled(emoji, isFavorite))
-            }
+        let cellRegistration = UICollectionView.CellRegistration<ChatEmojiItemCell, EmojiAssetRecord> { [weak self] cell, indexPath, emoji in
+            self?.cellRegistrationHandler(cell: cell, indexPath: indexPath, emoji: emoji)
         }
 
         dataSource = UICollectionViewDiffableDataSource<Int, EmojiAssetRecord>(
@@ -156,6 +150,19 @@ final class ChatEmojiPanelView: UIControl {
         ) { collectionView, indexPath, emoji in
             collectionView.dequeueConfiguredReusableCell(using: cellRegistration, for: indexPath, item: emoji)
         }
+    }
+
+    /// 配置表情 cell。
+    private func cellRegistrationHandler(cell: ChatEmojiItemCell, indexPath: IndexPath, emoji: EmojiAssetRecord) {
+        cell.configure(
+            emoji: emoji,
+            onSelect: { [weak self] emoji in
+                self?.emit(.selected(emoji))
+            },
+            onFavoriteToggle: { [weak self] emoji, isFavorite in
+                self?.emit(.favoriteToggled(emoji, isFavorite))
+            }
+        )
     }
 
     private func rebuildSections() {
@@ -334,34 +341,99 @@ extension ChatEmojiPanelView: UICollectionViewDelegateFlowLayout {
 /// 表情网格单元格。
 @MainActor
 private final class ChatEmojiItemCell: UICollectionViewCell {
-    var onSelect: ((EmojiAssetRecord) -> Void)?
-    var onFavoriteToggle: ((EmojiAssetRecord, Bool) -> Void)?
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        contentConfiguration = nil
+    }
 
+    func configure(
+        emoji: EmojiAssetRecord,
+        onSelect: @escaping (EmojiAssetRecord) -> Void,
+        onFavoriteToggle: @escaping (EmojiAssetRecord, Bool) -> Void
+    ) {
+        contentConfiguration = ChatEmojiItemContentConfiguration(
+            emoji: emoji,
+            onSelect: onSelect,
+            onFavoriteToggle: onFavoriteToggle
+        )
+    }
+}
+
+/// 表情 cell 内容配置。
+@MainActor
+struct ChatEmojiItemContentConfiguration: UIContentConfiguration {
+    let emoji: EmojiAssetRecord
+    let onSelect: (EmojiAssetRecord) -> Void
+    let onFavoriteToggle: (EmojiAssetRecord, Bool) -> Void
+
+    func makeContentView() -> UIView & UIContentView {
+        ChatEmojiItemContentView(configuration: self)
+    }
+
+    func updated(for state: UIConfigurationState) -> ChatEmojiItemContentConfiguration {
+        self
+    }
+}
+
+/// 表情 cell 内容视图。
+@MainActor
+private final class ChatEmojiItemContentView: UIView, UIContentView {
     private let button = UIButton(type: .system)
     private let favoriteButton = UIButton(type: .system)
-    private var emoji: EmojiAssetRecord?
+    private var currentConfiguration: ChatEmojiItemContentConfiguration
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    var configuration: UIContentConfiguration {
+        get { currentConfiguration }
+        set {
+            guard let configuration = newValue as? ChatEmojiItemContentConfiguration else { return }
+            currentConfiguration = configuration
+            render(configuration)
+        }
+    }
+
+    init(configuration: ChatEmojiItemContentConfiguration) {
+        currentConfiguration = configuration
+        super.init(frame: .zero)
         configureView()
+        render(configuration)
     }
 
     required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        configureView()
+        fatalError("Storyboard initialization is not supported.")
     }
 
-    override func prepareForReuse() {
-        super.prepareForReuse()
-        emoji = nil
-        onSelect = nil
-        onFavoriteToggle = nil
-        button.accessibilityIdentifier = nil
-        favoriteButton.accessibilityIdentifier = nil
+    private func configureView() {
+        button.translatesAutoresizingMaskIntoConstraints = false
+        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
+
+        button.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            self.currentConfiguration.onSelect(self.currentConfiguration.emoji)
+        }, for: .touchUpInside)
+        favoriteButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            let emoji = self.currentConfiguration.emoji
+            self.currentConfiguration.onFavoriteToggle(emoji, !emoji.isFavorite)
+        }, for: .touchUpInside)
+
+        addSubview(button)
+        addSubview(favoriteButton)
+
+        NSLayoutConstraint.activate([
+            button.topAnchor.constraint(equalTo: topAnchor),
+            button.leadingAnchor.constraint(equalTo: leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: trailingAnchor),
+            button.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            favoriteButton.topAnchor.constraint(equalTo: topAnchor),
+            favoriteButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            favoriteButton.widthAnchor.constraint(equalToConstant: 28),
+            favoriteButton.heightAnchor.constraint(equalToConstant: 28)
+        ])
     }
 
-    func configure(emoji: EmojiAssetRecord) {
-        self.emoji = emoji
+    private func render(_ configuration: ChatEmojiItemContentConfiguration) {
+        let emoji = configuration.emoji
 
         var buttonConfiguration = UIButton.Configuration.plain()
         buttonConfiguration.imagePlacement = .top
@@ -382,34 +454,5 @@ private final class ChatEmojiItemCell: UICollectionViewCell {
         favoriteConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
         favoriteButton.configuration = favoriteConfiguration
         favoriteButton.accessibilityIdentifier = "chat.emojiFavorite.\(emoji.emojiID)"
-    }
-
-    private func configureView() {
-        button.translatesAutoresizingMaskIntoConstraints = false
-        favoriteButton.translatesAutoresizingMaskIntoConstraints = false
-
-        button.addAction(UIAction { [weak self] _ in
-            guard let self, let emoji = self.emoji else { return }
-            self.onSelect?(emoji)
-        }, for: .touchUpInside)
-        favoriteButton.addAction(UIAction { [weak self] _ in
-            guard let self, let emoji = self.emoji else { return }
-            self.onFavoriteToggle?(emoji, !emoji.isFavorite)
-        }, for: .touchUpInside)
-
-        contentView.addSubview(button)
-        contentView.addSubview(favoriteButton)
-
-        NSLayoutConstraint.activate([
-            button.topAnchor.constraint(equalTo: contentView.topAnchor),
-            button.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            button.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            button.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-
-            favoriteButton.topAnchor.constraint(equalTo: contentView.topAnchor),
-            favoriteButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            favoriteButton.widthAnchor.constraint(equalToConstant: 28),
-            favoriteButton.heightAnchor.constraint(equalToConstant: 28)
-        ])
     }
 }

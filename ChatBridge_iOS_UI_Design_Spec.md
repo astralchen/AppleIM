@@ -187,6 +187,7 @@ iOS 15-25：
 - 非用户事件但需要外部协调的能力使用 `weak delegate`，例如输入栏高度变化、相册面板拖拽关闭进度和异步选择生命周期。
 - Cell、资料头和纯展示模块使用 `UIContentConfiguration` + `UIContentView` 表达内容，避免在 Cell 复用过程中临时创建和移除子视图。
 - `UICollectionView` Cell 优先使用 `UICollectionView.CellRegistration` 和 diffable data source，减少手写 reuse identifier 与复用状态遗漏。
+- `UICollectionView.CellRegistration` 闭包只负责取数和派发，具体 UI 组装下沉到 `cellRegistrationHandler`、`xxxConfiguration(for:)` 或专用 `UIContentConfiguration`；列表型 Cell 优先使用 `UICollectionViewListCell.defaultContentConfiguration()`，强自定义 Cell 由内容视图负责渲染和复用清理。
 - 按钮外观统一从 `ChatBridgeDesignSystem` 获取 `UIButton.Configuration`，通过 `configurationUpdateHandler` 表达 normal、highlighted、disabled 等状态。
 - `ChatInputBarView` 这类复合 UIKit 控件内部不继续平铺同类 UI 属性；附件预览轨道、文本输入胶囊、录音态、待发送语音预览、输入面板容器等应优先封装成私有子视图，由宿主视图负责输入模式、布局高度和 action 路由。
 - 自定义输入模式使用单一枚举表达系统键盘、相册面板、表情面板等互斥状态，避免多个布尔值或 sibling 面板约束组合导致状态不一致。

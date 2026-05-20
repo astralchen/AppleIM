@@ -84,6 +84,13 @@ final class ChatViewModel {
         var lastPublishedProgressUptime: TimeInterval?
     }
 
+    /// 已插入 @ 文本在输入框中的命中范围。
+    private struct MentionTokenDeletionMatch {
+        let deletionRange: NSRange
+        let userID: UserID?
+        let mentionsAll: Bool
+    }
+
     /// 状态发布器，UI 订阅此 Publisher 以接收状态更新
     var statePublisher: AnyPublisher<ChatViewState, Never> {
         stateSubject.eraseToAnyPublisher()
@@ -137,12 +144,21 @@ final class ChatViewModel {
                 guard !Task.isCancelled else { return }
 
                 self.groupContext = loadedGroupContext
+                let hasLiveComposerInput = latestComposerText != nil
                 let currentDraftText = latestComposerText ?? loadedDraft
                 publish { state in
                     state.phase = .loaded
                     state.rows = Self.rowsWithTimeSeparators(rowsPreservingActiveVoicePlayback(loadedPage.rows))
                     state.draftText = currentDraftText
-                    state.mentionPicker = Self.mentionPickerState(for: currentDraftText, context: loadedGroupContext)
+                    // 恢复草稿只回填文本，不主动弹出 @ 选择器；只有加载期间用户已经输入过内容时才按实时输入处理。
+                    state.mentionPicker = hasLiveComposerInput
+                        ? Self.mentionPickerState(
+                            for: currentDraftText,
+                            context: loadedGroupContext,
+                            selectedMentionUserIDs: selectedMentionUserIDs,
+                            selectedMentionsAll: selectedMentionsAll
+                        )
+                        : nil
                     state.groupAnnouncement = Self.announcementState(from: loadedGroupContext)
                     state.hasMoreOlderMessages = loadedPage.hasMore
                     state.isLoadingOlderMessages = false
@@ -474,8 +490,44 @@ final class ChatViewModel {
         latestComposerText = text
         saveDraft(text)
         publish { state in
-            state.mentionPicker = Self.mentionPickerState(for: text, context: groupContext)
+            state.mentionPicker = Self.mentionPickerState(
+                for: text,
+                context: groupContext,
+                selectedMentionUserIDs: selectedMentionUserIDs,
+                selectedMentionsAll: selectedMentionsAll
+            )
         }
+    }
+
+    /// 输入框删除命中已选择 @ 成员时，把整个 `@昵称 ` 作为一个整体删除。
+    func mentionDeletionReplacement(
+        in text: String,
+        changing range: NSRange,
+        replacementText: String
+    ) -> ChatMentionDeletionReplacement? {
+        guard replacementText.isEmpty,
+              range.length > 0,
+              let groupContext,
+              let match = Self.mentionTokenDeletionMatch(
+                in: text,
+                changedRange: range,
+                context: groupContext,
+                selectedMentionUserIDs: selectedMentionUserIDs,
+                selectedMentionsAll: selectedMentionsAll
+              ) else {
+            return nil
+        }
+
+        let nextText = (text as NSString).replacingCharacters(in: match.deletionRange, with: "")
+        if match.mentionsAll {
+            selectedMentionsAll = false
+        } else if let userID = match.userID {
+            selectedMentionUserIDs.removeAll { $0 == userID }
+        }
+        return ChatMentionDeletionReplacement(
+            text: nextText,
+            selectedRange: NSRange(location: match.deletionRange.location, length: 0)
+        )
     }
 
     /// 选择一个 @ 成员
@@ -488,10 +540,28 @@ final class ChatViewModel {
         }
     }
 
+    /// 选择多个 @ 成员，按 UI 选择顺序写入发送元数据。
+    func selectMentions(userIDs: [UserID]) {
+        selectedMentionUserIDs = userIDs.reduce(into: []) { result, userID in
+            guard !result.contains(userID) else { return }
+            result.append(userID)
+        }
+        publish { state in
+            state.mentionPicker = nil
+        }
+    }
+
     /// 选择 @ 所有人
     func selectMentionsAll() {
         guard groupContext?.currentUserRole.canManageAnnouncement == true else { return }
         selectedMentionsAll = true
+        publish { state in
+            state.mentionPicker = nil
+        }
+    }
+
+    /// 主动隐藏 @ 成员选择器，保留当前草稿内容。
+    func dismissMentionPicker() {
         publish { state in
             state.mentionPicker = nil
         }
@@ -1009,12 +1079,134 @@ final class ChatViewModel {
         return options
     }
 
-    private static func mentionPickerState(for text: String, context: GroupChatContext?) -> ChatMentionPickerState? {
-        guard text.contains("@"), let context else {
+    private static func mentionPickerState(
+        for text: String,
+        context: GroupChatContext?,
+        selectedMentionUserIDs: [UserID],
+        selectedMentionsAll: Bool
+    ) -> ChatMentionPickerState? {
+        guard let context,
+              isEditingMentionToken(
+                in: text,
+                context: context,
+                selectedMentionUserIDs: selectedMentionUserIDs,
+                selectedMentionsAll: selectedMentionsAll
+              ) else {
             return nil
         }
         let options = mentionOptions(from: context)
         return options.isEmpty ? nil : ChatMentionPickerState(options: options)
+    }
+
+    private static func isEditingMentionToken(
+        in text: String,
+        context: GroupChatContext,
+        selectedMentionUserIDs: [UserID],
+        selectedMentionsAll: Bool
+    ) -> Bool {
+        guard let atRange = text.range(of: "@", options: .backwards) else { return false }
+        let mentionText = String(text[atRange.upperBound...])
+        guard !mentionText.contains(where: { character in
+            character.isWhitespace || character.isNewline
+        }) else {
+            return false
+        }
+        guard !mentionText.isEmpty else { return true }
+        return !isDeletingSelectedMention(
+            mentionText,
+            context: context,
+            selectedMentionUserIDs: selectedMentionUserIDs,
+            selectedMentionsAll: selectedMentionsAll
+        )
+    }
+
+    private static func isDeletingSelectedMention(
+        _ mentionText: String,
+        context: GroupChatContext,
+        selectedMentionUserIDs: [UserID],
+        selectedMentionsAll: Bool
+    ) -> Bool {
+        if selectedMentionsAll, "所有人".hasPrefix(mentionText) {
+            return true
+        }
+
+        let selectedDisplayNames = context.members
+            .filter { selectedMentionUserIDs.contains($0.memberID) }
+            .map(\.displayName)
+        return selectedDisplayNames.contains { displayName in
+            displayName.hasPrefix(mentionText)
+        }
+    }
+
+    private static func mentionTokenDeletionMatch(
+        in text: String,
+        changedRange: NSRange,
+        context: GroupChatContext,
+        selectedMentionUserIDs: [UserID],
+        selectedMentionsAll: Bool
+    ) -> MentionTokenDeletionMatch? {
+        let nsText = text as NSString
+        guard changedRange.location != NSNotFound,
+              changedRange.location >= 0,
+              changedRange.length > 0,
+              changedRange.location + changedRange.length <= nsText.length else {
+            return nil
+        }
+
+        let candidates = selectedMentionDeletionCandidates(
+            context: context,
+            selectedMentionUserIDs: selectedMentionUserIDs,
+            selectedMentionsAll: selectedMentionsAll
+        )
+        for candidate in candidates {
+            var searchRange = NSRange(location: 0, length: nsText.length)
+            while searchRange.length > 0 {
+                let foundRange = nsText.range(of: candidate.text, options: [], range: searchRange)
+                guard foundRange.location != NSNotFound else { break }
+
+                let deletionRange = mentionDeletionRange(for: foundRange, in: nsText)
+                if NSIntersectionRange(deletionRange, changedRange).length > 0 {
+                    return MentionTokenDeletionMatch(
+                        deletionRange: deletionRange,
+                        userID: candidate.userID,
+                        mentionsAll: candidate.mentionsAll
+                    )
+                }
+
+                let nextLocation = foundRange.location + max(foundRange.length, 1)
+                guard nextLocation < nsText.length else { break }
+                searchRange = NSRange(location: nextLocation, length: nsText.length - nextLocation)
+            }
+        }
+        return nil
+    }
+
+    private static func selectedMentionDeletionCandidates(
+        context: GroupChatContext,
+        selectedMentionUserIDs: [UserID],
+        selectedMentionsAll: Bool
+    ) -> [(text: String, userID: UserID?, mentionsAll: Bool)] {
+        var candidates: [(text: String, userID: UserID?, mentionsAll: Bool)] = []
+        if selectedMentionsAll {
+            candidates.append((text: "@所有人", userID: nil, mentionsAll: true))
+        }
+
+        for userID in selectedMentionUserIDs {
+            guard let member = context.members.first(where: { $0.memberID == userID }) else { continue }
+            candidates.append((text: "@\(member.displayName)", userID: userID, mentionsAll: false))
+        }
+        return candidates.sorted { lhs, rhs in
+            lhs.text.count > rhs.text.count
+        }
+    }
+
+    private static func mentionDeletionRange(for mentionRange: NSRange, in text: NSString) -> NSRange {
+        let trailingLocation = mentionRange.location + mentionRange.length
+        guard trailingLocation < text.length else { return mentionRange }
+
+        let trailingCharacter = text.substring(with: NSRange(location: trailingLocation, length: 1))
+        guard trailingCharacter == " " else { return mentionRange }
+        return NSRange(location: mentionRange.location, length: mentionRange.length + 1)
     }
 
     /// 发布状态更新

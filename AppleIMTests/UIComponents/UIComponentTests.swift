@@ -199,6 +199,34 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarHighlightsMentionTextInComposer() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        let text = "提醒 @Kevis 和 @所有人 "
+        inputBar.setText(text, animated: false)
+
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        let attributedText = try #require(textView.attributedText)
+        let nsText = textView.text as NSString
+        let firstMentionRange = nsText.range(of: "@Kevis")
+        let allMentionRange = nsText.range(of: "@所有人")
+        let firstMentionColor = try #require(
+            attributedText.attribute(.foregroundColor, at: firstMentionRange.location, effectiveRange: nil) as? UIColor
+        )
+        let allMentionColor = try #require(
+            attributedText.attribute(.foregroundColor, at: allMentionRange.location, effectiveRange: nil) as? UIColor
+        )
+        let normalTextColor = try #require(
+            attributedText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor
+        )
+
+        #expect(inputBar.text == text)
+        #expect(textView.text == text)
+        #expect(firstMentionColor == .systemBlue)
+        #expect(allMentionColor == .systemBlue)
+        #expect(normalTextColor != .systemBlue)
+    }
+
+    @MainActor
     @Test func chatInputBarPreviewSendDoesNotTriggerTextSend() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let recorder = ChatInputBarActionRecorder()
@@ -506,6 +534,35 @@ extension AppleIMTests {
         collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 1, section: 1))
 
         #expect(actions == [.switchAccount, .logOut])
+    }
+
+    @MainActor
+    @Test func chatEmojiItemContentConfigurationRendersButtonsAndActions() throws {
+        let emoji = makeEmojiAsset(emojiID: "wave", name: "Wave", isFavorite: false)
+        var selectedEmoji: EmojiAssetRecord?
+        var favoriteToggle: (EmojiAssetRecord, Bool)?
+        let configuration = ChatEmojiItemContentConfiguration(
+            emoji: emoji,
+            onSelect: { selectedEmoji = $0 },
+            onFavoriteToggle: { favoriteToggle = ($0, $1) }
+        )
+
+        let contentView = configuration.makeContentView()
+        contentView.frame = CGRect(x: 0, y: 0, width: 74, height: 74)
+        contentView.layoutIfNeeded()
+
+        let emojiButton = try #require(button(in: contentView, identifier: "chat.emojiItem.wave"))
+        let favoriteButton = try #require(button(in: contentView, identifier: "chat.emojiFavorite.wave"))
+
+        #expect(emojiButton.configuration?.title == "Wave")
+        #expect(favoriteButton.configuration?.image == UIImage(systemName: "star"))
+
+        emojiButton.sendActions(for: .touchUpInside)
+        favoriteButton.sendActions(for: .touchUpInside)
+
+        #expect(selectedEmoji?.emojiID == "wave")
+        #expect(favoriteToggle?.0.emojiID == "wave")
+        #expect(favoriteToggle?.1 == true)
     }
 
     @MainActor
@@ -985,6 +1042,35 @@ extension AppleIMTests {
         #expect(solidFillColor(of: incomingBubble, traits: traits) == UIColor.white.resolvedColor(with: traits))
         #expect(outgoingLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
         #expect(incomingLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
+    }
+
+    @MainActor
+    @Test func chatMessageCellHighlightsMentionText() throws {
+        let text = "你好 @Kevis 请看下 @所有人 "
+        let cell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+        cell.configure(
+            row: makeChatRow(id: "mention_highlight_text", text: text, sortSequence: 1, isOutgoing: false),
+            actions: .empty
+        )
+
+        let label = try #require(findLabel(withText: text, in: cell))
+        let attributedText = try #require(label.attributedText)
+        let nsText = text as NSString
+        let firstMentionRange = nsText.range(of: "@Kevis")
+        let allMentionRange = nsText.range(of: "@所有人")
+        let firstMentionColor = try #require(
+            attributedText.attribute(.foregroundColor, at: firstMentionRange.location, effectiveRange: nil) as? UIColor
+        )
+        let allMentionColor = try #require(
+            attributedText.attribute(.foregroundColor, at: allMentionRange.location, effectiveRange: nil) as? UIColor
+        )
+        let normalTextColor = try #require(
+            attributedText.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? UIColor
+        )
+
+        #expect(firstMentionColor == .systemBlue)
+        #expect(allMentionColor == .systemBlue)
+        #expect(normalTextColor == UIColor.label)
     }
 
     @MainActor

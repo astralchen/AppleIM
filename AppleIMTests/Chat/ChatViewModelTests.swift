@@ -492,6 +492,194 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewModelKeepsMentionPickerHiddenAfterCompletedMentionToken() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@Sondra ")
+
+        #expect(viewModel.currentState.mentionPicker == nil)
+    }
+
+    @MainActor
+    @Test func chatViewModelDoesNotShowMentionPickerForRestoredDraftContainingAt() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            ),
+            draftText: "Hi @"
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+
+        #expect(viewModel.currentState.draftText == "Hi @")
+        #expect(viewModel.currentState.mentionPicker == nil)
+    }
+
+    @MainActor
+    @Test func chatViewModelKeepsMentionPickerHiddenWhenDeletingSelectedMentionText() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@")
+        viewModel.selectMention(userID: "sondra")
+        viewModel.composerTextChanged("@Sondra")
+        #expect(viewModel.currentState.mentionPicker == nil)
+
+        viewModel.composerTextChanged("@Sond")
+        #expect(viewModel.currentState.mentionPicker == nil)
+
+        viewModel.composerTextChanged("@Sondra @")
+        #expect(viewModel.currentState.mentionPicker != nil)
+    }
+
+    @MainActor
+    @Test func chatViewModelDeletesSelectedMentionAsWholeToken() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@")
+        viewModel.selectMention(userID: "sondra")
+
+        let text = "Hi @Sondra "
+        let result = try #require(viewModel.mentionDeletionReplacement(
+            in: text,
+            changing: NSRange(location: (text as NSString).length - 1, length: 1),
+            replacementText: ""
+        ))
+        #expect(result.text == "Hi ")
+        #expect(result.selectedRange == NSRange(location: 3, length: 0))
+
+        viewModel.composerTextChanged(result.text + "请看这里")
+        viewModel.sendText(result.text + "请看这里")
+        try await waitForCondition {
+            useCase.sentText == "Hi 请看这里"
+        }
+
+        #expect(useCase.sentMentionedUserIDs == [])
+    }
+
+    @MainActor
+    @Test func chatViewModelSendsMultipleSelectedMentionMetadataInSelectionOrder() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2),
+                    GroupMember(conversationID: "group_vm", memberID: "ming", displayName: "明明", role: .member, joinTime: 3)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@")
+        viewModel.selectMentions(userIDs: ["ming", "sondra"])
+        viewModel.sendText("@明明 @Sondra 请看这里")
+        try await waitForCondition {
+            useCase.sentMentionedUserIDs == ["ming", "sondra"]
+        }
+
+        #expect(useCase.sentText == "@明明 @Sondra 请看这里")
+        #expect(useCase.sentMentionsAll == false)
+    }
+
+    @MainActor
+    @Test func chatViewModelIgnoresMentionsAllForNormalGroupMember() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vm", memberID: "current_user", displayName: "Me", role: .member, joinTime: 1),
+                    GroupMember(conversationID: "group_vm", memberID: "sondra", displayName: "Sondra", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .member,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+        viewModel.composerTextChanged("@")
+        viewModel.selectMentionsAll()
+        viewModel.sendText("@所有人 请看这里")
+        try await waitForCondition {
+            useCase.sentText == "@所有人 请看这里"
+        }
+
+        #expect(viewModel.currentState.mentionPicker?.options.map(\.displayName) == ["Sondra"])
+        #expect(useCase.sentMentionedUserIDs == [])
+        #expect(useCase.sentMentionsAll == false)
+    }
+
+    @MainActor
     @Test func chatViewModelRecalculatesTimeSeparatorsWhenAppendingSentMessage() async throws {
         let useCase = TextSendingTimeStubChatUseCase(
             initialRows: [

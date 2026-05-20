@@ -148,19 +148,11 @@ final class AccountViewController: UIViewController {
 
     /// 配置 diffable data source
     private func configureDataSource() {
-        let profileRegistration = UICollectionView.CellRegistration<AccountProfileCell, Item> { [state] cell, _, _ in
-            cell.configure(state: state)
+        let profileRegistration = UICollectionView.CellRegistration<AccountProfileCell, Item> { [weak self] cell, indexPath, item in
+            self?.profileCellRegistrationHandler(cell: cell, indexPath: indexPath, item: item)
         }
-        let actionRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { cell, _, item in
-            guard case .action(let row) = item else { return }
-            var content = cell.defaultContentConfiguration()
-            content.text = row.title
-            content.image = UIImage(systemName: row.imageName)
-            content.imageProperties.tintColor = row.isDestructive ? .systemRed : .systemBlue
-            content.textProperties.color = row.isDestructive ? .systemRed : .label
-            cell.contentConfiguration = content
-            cell.accessories = [.disclosureIndicator()]
-            cell.accessibilityIdentifier = row.accessibilityIdentifier
+        let actionRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { [weak self] cell, indexPath, item in
+            self?.actionCellRegistrationHandler(cell: cell, indexPath: indexPath, item: item)
         }
 
         dataSource = UICollectionViewDiffableDataSource<Section, Item>(collectionView: collectionView) { collectionView, indexPath, item in
@@ -171,6 +163,30 @@ final class AccountViewController: UIViewController {
                 collectionView.dequeueConfiguredReusableCell(using: actionRegistration, for: indexPath, item: item)
             }
         }
+    }
+
+    /// 配置账号资料 cell。
+    private func profileCellRegistrationHandler(cell: AccountProfileCell, indexPath: IndexPath, item: Item) {
+        guard case .profile = item else { return }
+        cell.configure(state: state)
+    }
+
+    /// 配置账号操作 cell。
+    private func actionCellRegistrationHandler(cell: UICollectionViewListCell, indexPath: IndexPath, item: Item) {
+        guard case .action(let row) = item else { return }
+        cell.contentConfiguration = actionConfiguration(for: cell, row: row)
+        cell.accessories = [.disclosureIndicator()]
+        cell.accessibilityIdentifier = row.accessibilityIdentifier
+    }
+
+    /// 构造账号操作行内容配置。
+    private func actionConfiguration(for cell: UICollectionViewListCell, row: ActionRow) -> UIListContentConfiguration {
+        var content = cell.defaultContentConfiguration()
+        content.text = row.title
+        content.image = UIImage(systemName: row.imageName)
+        content.imageProperties.tintColor = row.isDestructive ? .systemRed : .systemBlue
+        content.textProperties.color = row.isDestructive ? .systemRed : .label
+        return content
     }
 
     /// 更新列表快照

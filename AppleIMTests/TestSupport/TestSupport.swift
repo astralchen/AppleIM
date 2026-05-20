@@ -1387,12 +1387,14 @@ final class DeferredOlderPageStubChatUseCase: @unchecked Sendable, ChatUseCase {
 @MainActor
 final class GroupContextStubChatUseCase: @unchecked Sendable, ChatUseCase {
     private let context: GroupChatContext
+    private let draftText: String?
     private(set) var sentText: String?
     private(set) var sentMentionedUserIDs: [UserID] = []
     private(set) var sentMentionsAll = false
 
-    init(context: GroupChatContext) {
+    init(context: GroupChatContext, draftText: String? = nil) {
         self.context = context
+        self.draftText = draftText
     }
 
     func loadInitialMessages() async throws -> ChatMessagePage {
@@ -1404,7 +1406,7 @@ final class GroupContextStubChatUseCase: @unchecked Sendable, ChatUseCase {
     }
 
     func loadDraft() async throws -> String? {
-        nil
+        draftText
     }
 
     func saveDraft(_ text: String) async throws {}

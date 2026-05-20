@@ -323,6 +323,14 @@ nonisolated struct ChatMentionPickerState: Equatable, Sendable {
     let options: [ChatMentionOptionState]
 }
 
+/// @ 文本整体删除后的替换结果。
+nonisolated struct ChatMentionDeletionReplacement: Equatable, Sendable {
+    /// 删除后的输入框文本。
+    let text: String
+    /// 删除后光标应停留的位置。
+    let selectedRange: NSRange
+}
+
 /// 聊天页视图状态
 ///
 /// 包含聊天页的所有 UI 状态，满足 Sendable 协议

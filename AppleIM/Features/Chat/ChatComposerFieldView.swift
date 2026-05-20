@@ -100,12 +100,22 @@ final class ChatComposerFieldView: UIView {
 
     /// 设置文本内容。
     func setText(_ text: String) {
-        textView.text = text
+        applyText(text, selectedRange: nil)
+    }
+
+    /// 设置文本内容并同步光标位置。
+    func setText(_ text: String, selectedRange: NSRange) {
+        applyText(text, selectedRange: selectedRange)
     }
 
     /// 清空文本内容。
     func clearText() {
-        textView.text = ""
+        applyText("", selectedRange: NSRange(location: 0, length: 0))
+    }
+
+    /// 刷新当前文本的展示属性，保留纯文本和光标，避免影响发送时的 @ 提取。
+    func refreshMentionHighlight() {
+        applyText(text, selectedRange: textView.selectedRange)
     }
 
     /// 设置文本输入可编辑状态。
@@ -363,6 +373,30 @@ final class ChatComposerFieldView: UIView {
             context: nil
         )
         return ceil(boundingRect.height + textInsets.top + textInsets.bottom)
+    }
+
+    /// 应用输入文本和 @ 高亮；调用方继续通过 `textView.text` 读取纯文本。
+    private func applyText(_ text: String, selectedRange: NSRange?) {
+        let font = textView.font ?? .preferredFont(forTextStyle: .body)
+        let baseColor = textView.textColor ?? .label
+        textView.attributedText = ChatMentionTextStyling.attributedText(
+            for: text,
+            baseColor: baseColor,
+            mentionColor: .systemBlue,
+            font: font
+        )
+        textView.font = font
+        textView.textColor = baseColor
+        textView.typingAttributes = [
+            .font: font,
+            .foregroundColor: baseColor
+        ]
+
+        guard let selectedRange else { return }
+        let textLength = (text as NSString).length
+        let safeLocation = min(max(selectedRange.location, 0), textLength)
+        let safeLength = min(max(selectedRange.length, 0), textLength - safeLocation)
+        textView.selectedRange = NSRange(location: safeLocation, length: safeLength)
     }
 
     /// 尾部按钮点击事件。
