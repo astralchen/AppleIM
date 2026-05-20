@@ -108,6 +108,78 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatViewModelAppliesContactProfileChangeToCurrentConversation() async throws {
+        let incoming = makeChatRow(
+            id: "profile_incoming",
+            text: "incoming",
+            sortSequence: 1,
+            senderAvatarURL: "https://example.com/old-peer.png",
+            isOutgoing: false
+        )
+        let outgoing = makeChatRow(
+            id: "profile_outgoing",
+            text: "outgoing",
+            sortSequence: 2,
+            senderAvatarURL: "https://example.com/me.png",
+            isOutgoing: true
+        )
+        let useCase = StoreRefreshingChatUseCase()
+        useCase.replaceRows([incoming, outgoing])
+        let viewModel = ChatViewModel(useCase: useCase, title: "Old Title")
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.handleContactProfileChange(
+            ContactProfileChangeEvent(
+                userID: useCase.observedUserID ?? "paging_user",
+                contactID: "contact_profile",
+                conversationID: useCase.observedConversationID,
+                displayName: "新备注",
+                avatarURL: "https://example.com/new-peer.png"
+            )
+        )
+
+        #expect(viewModel.currentState.title == "新备注")
+        #expect(viewModel.currentState.rows.first { $0.id == "profile_incoming" }?.senderAvatarURL == "https://example.com/new-peer.png")
+        #expect(viewModel.currentState.rows.first { $0.id == "profile_outgoing" }?.senderAvatarURL == "https://example.com/me.png")
+    }
+
+    @MainActor
+    @Test func chatViewModelIgnoresContactProfileChangeForOtherConversation() async throws {
+        let incoming = makeChatRow(
+            id: "profile_other_incoming",
+            text: "incoming",
+            sortSequence: 1,
+            senderAvatarURL: "https://example.com/old-peer.png",
+            isOutgoing: false
+        )
+        let useCase = StoreRefreshingChatUseCase()
+        useCase.replaceRows([incoming])
+        let viewModel = ChatViewModel(useCase: useCase, title: "Old Title")
+
+        viewModel.load()
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+
+        viewModel.handleContactProfileChange(
+            ContactProfileChangeEvent(
+                userID: useCase.observedUserID ?? "paging_user",
+                contactID: "contact_profile",
+                conversationID: "other_conversation",
+                displayName: "其他会话",
+                avatarURL: "https://example.com/new-peer.png"
+            )
+        )
+
+        #expect(viewModel.currentState.title == "Old Title")
+        #expect(viewModel.currentState.rows.first?.senderAvatarURL == "https://example.com/old-peer.png")
+    }
+
+    @MainActor
     @Test func chatViewModelQueuesRapidSimulatedIncomingTaps() async throws {
         let useCase = DelayedSimulatedIncomingStubChatUseCase()
         let viewModel = ChatViewModel(useCase: useCase, title: "Rapid Simulated")

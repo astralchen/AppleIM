@@ -10,6 +10,7 @@ import Foundation
 protocol ContactListUseCase: Sendable {
     func loadContacts(query: String) async throws -> ContactListViewState
     func openConversation(for contactID: ContactID) async throws -> ConversationListRowState
+    func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult?
 }
 
 nonisolated struct LocalContactListUseCase: ContactListUseCase {
@@ -51,6 +52,11 @@ nonisolated struct LocalContactListUseCase: ContactListUseCase {
             )
     }
 
+    func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult? {
+        let service = SimulatedContactProfilePushService(userID: userID, storeProvider: storeProvider)
+        return try await service.simulateContactProfileChange()
+    }
+
     private static func viewState(query: String, contacts: [ContactRecord]) -> ContactListViewState {
         let supportedContacts = contacts.filter { $0.type == .friend || $0.type == .group }
         let groupRows = supportedContacts
@@ -83,4 +89,3 @@ nonisolated struct LocalContactListUseCase: ContactListUseCase {
         return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
     }
 }
-

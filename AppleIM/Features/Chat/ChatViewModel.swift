@@ -727,6 +727,20 @@ final class ChatViewModel {
         }
     }
 
+    /// 响应联系人资料变更，只更新当前聊天对应会话的标题和对方头像。
+    func handleContactProfileChange(_ event: ContactProfileChangeEvent) {
+        guard event.userID == useCase.observedUserID else { return }
+        guard let conversationID = event.conversationID, conversationID == useCase.observedConversationID else { return }
+
+        publish { state in
+            state.title = event.displayName
+            state.rows = state.rows.map { row in
+                guard !row.isOutgoing else { return row }
+                return row.copy(senderAvatarURL: event.avatarURL)
+            }
+        }
+    }
+
     /// 仓储层报告当前会话发生变化时，后台刷新可见消息。
     func refreshAfterStoreChange(userID rawUserID: String?, conversationIDs rawConversationIDs: [String]) {
         guard shouldRefreshAfterStoreChange(userID: rawUserID, conversationIDs: rawConversationIDs) else {

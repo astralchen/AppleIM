@@ -14,6 +14,7 @@ final class ContactListViewModel {
     private let stateSubject: CurrentValueSubject<ContactListViewState, Never>
     private var loadTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
+    private var simulatedProfileChangeTask: Task<Void, Never>?
 
     var statePublisher: AnyPublisher<ContactListViewState, Never> {
         stateSubject.eraseToAnyPublisher()
@@ -56,6 +57,27 @@ final class ContactListViewModel {
         }
     }
 
+    func simulateContactProfileChange() {
+        simulatedProfileChangeTask?.cancel()
+        let query = stateSubject.value.query
+        simulatedProfileChangeTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                _ = try await useCase.simulateContactProfileChange()
+                guard !Task.isCancelled else { return }
+                load(query: query, showLoading: false)
+                simulatedProfileChangeTask = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                publish { state in
+                    state.phase = .failed("Unable to simulate contact profile change")
+                }
+                simulatedProfileChangeTask = nil
+            }
+        }
+    }
+
     private func load(query: String, showLoading: Bool) {
         loadTask?.cancel()
         if showLoading {
@@ -91,4 +113,3 @@ final class ContactListViewModel {
         stateSubject.send(state)
     }
 }
-

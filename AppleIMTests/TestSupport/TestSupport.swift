@@ -104,6 +104,7 @@ struct StubConversationListUseCase: ConversationListUseCase {
 
 actor StubContactListUseCase: ContactListUseCase {
     private(set) var queries: [String] = []
+    private(set) var simulateProfileChangeCallCount = 0
 
     func loadContacts(query: String) async throws -> ContactListViewState {
         queries.append(query)
@@ -135,6 +136,52 @@ actor StubContactListUseCase: ContactListUseCase {
             isPinned: false,
             isMuted: false
         )
+    }
+
+    func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult? {
+        simulateProfileChangeCallCount += 1
+        return nil
+    }
+}
+
+actor RefreshingContactListUseCase: ContactListUseCase {
+    private var didSimulateProfileChange = false
+    private(set) var simulateProfileChangeCallCount = 0
+
+    func loadContacts(query: String) async throws -> ContactListViewState {
+        let row = ContactListRowState(
+            contact: makeContactRecord(
+                contactID: "contact_refresh",
+                userID: "contact_refresh_user",
+                wxid: "refresh_friend",
+                nickname: didSimulateProfileChange ? "新昵称" : "旧昵称"
+            )
+        )
+        return ContactListViewState(
+            query: query,
+            phase: .loaded,
+            groupRows: [],
+            starredRows: [],
+            contactRows: [row]
+        )
+    }
+
+    func openConversation(for contactID: ContactID) async throws -> ConversationListRowState {
+        ConversationListRowState(
+            id: "single_refresh_friend",
+            title: "新昵称",
+            subtitle: "",
+            timeText: "",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        )
+    }
+
+    func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult? {
+        simulateProfileChangeCallCount += 1
+        didSimulateProfileChange = true
+        return nil
     }
 }
 

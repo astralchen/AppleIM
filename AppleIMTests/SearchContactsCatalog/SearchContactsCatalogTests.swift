@@ -538,6 +538,166 @@ extension AppleIMTests {
         #expect(filtered.groupRows.isEmpty)
     }
 
+    @Test func simulatedContactProfilePushUpdatesContactAndExistingConversationOnly() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "profile_push_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        let contact = makeContactRecord(
+            contactID: "contact_profile_friend",
+            userID: "profile_push_user",
+            wxid: "profile_friend",
+            nickname: "Profile Friend",
+            remark: "Old Remark",
+            avatarURL: "https://example.com/old.png",
+            isStarred: false,
+            timestamp: 10
+        )
+        try await repository.upsertContact(contact)
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "single_profile_friend",
+                userID: "profile_push_user",
+                title: "Old Remark",
+                targetID: "profile_friend",
+                unreadCount: 7,
+                draftText: "draft",
+                avatarURL: "https://example.com/old.png",
+                sortTimestamp: 100
+            )
+        )
+
+        let service = SimulatedContactProfilePushService(userID: "profile_push_user", storeProvider: storeProvider)
+        let result = try #require(try await service.simulateContactProfileChange())
+        let updatedContact = try #require(try await repository.contact(id: contact.contactID, userID: "profile_push_user"))
+        let updatedConversation = try #require(try await repository.conversationRecord(conversationID: "single_profile_friend", userID: "profile_push_user"))
+
+        #expect(result.contactID == contact.contactID)
+        #expect(result.conversationID == "single_profile_friend")
+        #expect(updatedContact.contactID == contact.contactID)
+        #expect(updatedContact.remark != contact.remark)
+        #expect(updatedContact.nickname != contact.nickname)
+        #expect(updatedContact.avatarURL != contact.avatarURL)
+        #expect(updatedContact.isStarred == true)
+        #expect(updatedContact.updatedAt >= contact.updatedAt)
+        #expect(updatedConversation.title == updatedContact.displayName)
+        #expect(updatedConversation.avatarURL == updatedContact.avatarURL)
+        #expect(updatedConversation.unreadCount == 7)
+        #expect(updatedConversation.draftText == "draft")
+        #expect(updatedConversation.lastMessageDigest == "Digest Old Remark")
+        #expect(updatedConversation.sortTimestamp == 100)
+    }
+
+    @Test func simulatedContactProfilePushDoesNotCreateMissingConversation() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "profile_push_no_conversation_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertContact(
+            makeContactRecord(
+                contactID: "contact_profile_lonely",
+                userID: "profile_push_no_conversation_user",
+                wxid: "profile_lonely",
+                nickname: "Lonely",
+                timestamp: 10
+            )
+        )
+
+        let service = SimulatedContactProfilePushService(userID: "profile_push_no_conversation_user", storeProvider: storeProvider)
+        let result = try #require(try await service.simulateContactProfileChange())
+        let conversations = try await repository.listConversations(for: "profile_push_no_conversation_user")
+
+        #expect(result.conversationID == nil)
+        #expect(conversations.isEmpty)
+    }
+
+    @Test func simulatedContactProfilePushUpdatesExistingGroupConversationByTargetIDAndGroupName() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "profile_push_group_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let repository = try await storeProvider.repository()
+        try await repository.upsertContact(
+            makeContactRecord(
+                contactID: "group_core_contact",
+                userID: "profile_push_group_user",
+                wxid: "chatbridge_core",
+                nickname: "ChatBridge Core",
+                remark: "旧群备注",
+                type: .group,
+                timestamp: 10
+            )
+        )
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "group_core",
+                userID: "profile_push_group_user",
+                title: "ChatBridge Core",
+                type: .group,
+                targetID: "chatbridge_core",
+                avatarURL: "https://example.com/old-group.png",
+                sortTimestamp: 100
+            )
+        )
+
+        let service = SimulatedContactProfilePushService(userID: "profile_push_group_user", storeProvider: storeProvider)
+        let result = try #require(try await service.simulateContactProfileChange())
+        let updatedContact = try #require(try await repository.contact(id: "group_core_contact", userID: "profile_push_group_user"))
+        let updatedConversation = try #require(try await repository.conversationRecord(conversationID: "group_core", userID: "profile_push_group_user"))
+
+        #expect(result.conversationID == "group_core")
+        #expect(updatedContact.nickname.hasPrefix("群聊资料-昵称-"))
+        #expect(updatedContact.remark == nil)
+        #expect(updatedConversation.title == updatedContact.nickname)
+        #expect(updatedConversation.avatarURL == updatedContact.avatarURL)
+        #expect(updatedConversation.sortTimestamp == 100)
+    }
+
+    @Test func simulatedContactProfilePushReturnsNilWhenContactListIsEmpty() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: "profile_push_empty_user",
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+
+        let service = SimulatedContactProfilePushService(userID: "profile_push_empty_user", storeProvider: storeProvider)
+
+        #expect(try await service.simulateContactProfileChange() == nil)
+    }
+
     @MainActor
     @Test func contactListViewModelLoadsFiltersAndOpensContactConversation() async throws {
         let useCase = StubContactListUseCase()
@@ -563,6 +723,84 @@ extension AppleIMTests {
         try await waitForCondition {
             openedConversation?.id == "single_sondra"
         }
+    }
+
+    @MainActor
+    @Test func contactListViewModelSimulatesProfileChangeAndReloadsCurrentQuery() async throws {
+        let useCase = StubContactListUseCase()
+        let viewModel = ContactListViewModel(useCase: useCase)
+
+        viewModel.updateSearchQuery("son")
+        try await waitForCondition {
+            let queries = await useCase.queries
+            return queries.contains("son")
+        }
+
+        viewModel.simulateContactProfileChange()
+        try await waitForCondition {
+            await useCase.simulateProfileChangeCallCount == 1
+        }
+
+        let queries = await useCase.queries
+        #expect(queries.last == "son")
+    }
+
+    @MainActor
+    @Test func contactListViewControllerSimulateProfileChangeButtonTriggersViewModel() async throws {
+        let useCase = StubContactListUseCase()
+        let viewModel = ContactListViewModel(useCase: useCase)
+        let viewController = ContactListViewController(
+            viewModel: viewModel,
+            onSelectConversation: { _ in }
+        )
+
+        viewController.loadViewIfNeeded()
+        let button = try #require(
+            viewController.navigationItem.rightBarButtonItems?
+                .compactMap { $0.customView as? UIButton }
+                .first { $0.accessibilityIdentifier == "contacts.simulateProfileChangeButton" }
+        )
+        #expect(button.accessibilityLabel == "模拟用户信息变更")
+
+        button.sendActions(for: .touchUpInside)
+        try await waitForCondition {
+            await useCase.simulateProfileChangeCallCount == 1
+        }
+    }
+
+    @MainActor
+    @Test func contactListViewControllerRefreshesVisibleCellWhenProfileTitleChanges() async throws {
+        let useCase = RefreshingContactListUseCase()
+        let viewModel = ContactListViewModel(useCase: useCase)
+        let viewController = ContactListViewController(
+            viewModel: viewModel,
+            onSelectConversation: { _ in }
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        viewController.loadViewIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "contacts.collection") as? UICollectionView)
+        try await waitForCondition {
+            viewModel.currentState.contactRows.first?.title == "旧昵称"
+                && collectionView.cellForItem(at: IndexPath(item: 0, section: 0))?.accessibilityLabel?.contains("旧昵称") == true
+        }
+
+        let button = try #require(
+            viewController.navigationItem.rightBarButtonItems?
+                .compactMap { $0.customView as? UIButton }
+                .first { $0.accessibilityIdentifier == "contacts.simulateProfileChangeButton" }
+        )
+        button.sendActions(for: .touchUpInside)
+
+        try await waitForCondition {
+            viewModel.currentState.contactRows.first?.title == "新昵称"
+        }
+        collectionView.layoutIfNeeded()
+
+        let cell = try #require(collectionView.cellForItem(at: IndexPath(item: 0, section: 0)))
+        #expect(cell.accessibilityLabel?.contains("新昵称") == true)
     }
 
     @Test func localContactListUseCaseCreatesSingleConversationForFriendAndReusesExistingConversation() async throws {

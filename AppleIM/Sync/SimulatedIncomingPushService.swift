@@ -309,3 +309,208 @@ private extension SimulatedIncomingPushTarget {
         }
     }
 }
+
+/// 联系人资料模拟推送使用的仓储能力集合。
+protocol SimulatedContactProfilePushRepository: ContactRepository, ConversationRepository {
+    /// 查询指定账号下的完整会话记录，用于保留会话现有摘要、未读数和排序字段。
+    func conversationRecord(conversationID: ConversationID, userID: UserID) async throws -> ConversationRecord?
+    /// 按会话类型和目标 ID 查询完整会话记录，用于兼容本地已有群聊会话 ID。
+    func conversationRecord(userID: UserID, type: ConversationType, targetID: String) async throws -> ConversationRecord?
+}
+
+extension LocalChatRepository: SimulatedContactProfilePushRepository {}
+
+/// 联系人资料模拟推送结果。
+nonisolated struct SimulatedContactProfilePushResult: Equatable, Sendable {
+    /// 被修改的联系人 ID。
+    let contactID: ContactID
+    /// 被同步更新的已有会话 ID；没有已有会话时为空。
+    let conversationID: ConversationID?
+    /// 修改后的联系人记录。
+    let contact: ContactRecord
+}
+
+/// 模拟后台推送联系人资料变更。
+nonisolated struct SimulatedContactProfilePushService: Sendable {
+    private let userID: UserID
+    private let repositoryProvider: @Sendable () async throws -> any SimulatedContactProfilePushRepository
+    private let logger: AppLogger
+
+    init(
+        userID: UserID,
+        storeProvider: ChatStoreProvider,
+        logger: AppLogger = AppLogger(category: .simulatedPush)
+    ) {
+        self.userID = userID
+        self.repositoryProvider = {
+            try await storeProvider.repository()
+        }
+        self.logger = logger
+    }
+
+    init(
+        userID: UserID,
+        repository: any SimulatedContactProfilePushRepository,
+        logger: AppLogger = AppLogger(category: .simulatedPush)
+    ) {
+        self.userID = userID
+        self.repositoryProvider = {
+            repository
+        }
+        self.logger = logger
+    }
+
+    /// 随机修改一个好友或群聊联系人，并同步更新已存在会话的标题和头像。
+    func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult? {
+        let startUptime = ProcessInfo.processInfo.systemUptime
+        logger.info("SimulatedContactProfilePush started")
+
+        let repository = try await repositoryProvider()
+        let contacts = try await repository.listContacts(for: userID)
+            .filter { $0.type == .friend || $0.type == .group }
+        guard let selectedContact = contacts.randomElement() else {
+            logger.info("SimulatedContactProfilePush skipped reason=no-contact")
+            return nil
+        }
+
+        let updatedContact = Self.updatedContact(from: selectedContact)
+        try await repository.upsertContact(updatedContact)
+
+        let conversationID = try await updateExistingConversationIfNeeded(
+            contact: updatedContact,
+            repository: repository
+        )
+        postProfileChange(contact: updatedContact, conversationID: conversationID)
+        logger.info(
+            "SimulatedContactProfilePush completed contactID=\(Self.shortLogID(updatedContact.contactID.rawValue)) conversationID=\(conversationID?.rawValue ?? "nil") elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        )
+
+        return SimulatedContactProfilePushResult(
+            contactID: updatedContact.contactID,
+            conversationID: conversationID,
+            contact: updatedContact
+        )
+    }
+
+    private func updateExistingConversationIfNeeded(
+        contact: ContactRecord,
+        repository: any SimulatedContactProfilePushRepository
+    ) async throws -> ConversationID? {
+        guard
+            let conversationID = Self.conversationID(for: contact),
+            let conversationType = contact.type.conversationType
+        else {
+            return nil
+        }
+        var existingConversation = try await repository.conversationRecord(conversationID: conversationID, userID: userID)
+        if existingConversation == nil {
+            existingConversation = try await repository.conversationRecord(userID: userID, type: conversationType, targetID: contact.wxid)
+        }
+        guard let existing = existingConversation else {
+            return nil
+        }
+
+        let updatedConversation = ConversationRecord(
+            id: existing.id,
+            userID: existing.userID,
+            type: existing.type,
+            targetID: existing.targetID,
+            title: Self.profileDisplayName(for: contact),
+            avatarURL: contact.avatarURL,
+            lastMessageID: existing.lastMessageID,
+            lastMessageTime: existing.lastMessageTime,
+            lastMessageDigest: existing.lastMessageDigest,
+            unreadCount: existing.unreadCount,
+            draftText: existing.draftText,
+            isPinned: existing.isPinned,
+            isMuted: existing.isMuted,
+            isHidden: existing.isHidden,
+            sortTimestamp: existing.sortTimestamp,
+            updatedAt: max(Self.currentTimestamp(), existing.updatedAt + 1),
+            createdAt: existing.createdAt
+        )
+        try await repository.upsertConversation(updatedConversation)
+        return existing.id
+    }
+
+    private func postProfileChange(contact: ContactRecord, conversationID: ConversationID?) {
+        let event = ContactProfileChangeEvent(
+            userID: userID,
+            contactID: contact.contactID,
+            conversationID: conversationID,
+            displayName: Self.profileDisplayName(for: contact),
+            avatarURL: contact.avatarURL
+        )
+        Task { @MainActor in
+            NotificationCenter.default.post(
+                name: .chatStoreContactProfileDidChange,
+                object: nil,
+                userInfo: event.userInfo
+            )
+            if let conversationID {
+                NotificationCenter.default.post(
+                    name: .chatStoreConversationsDidChange,
+                    object: nil,
+                    userInfo: [
+                        ChatStoreConversationChangeNotification.userIDKey: userID.rawValue,
+                        ChatStoreConversationChangeNotification.conversationIDsKey: [conversationID.rawValue]
+                    ]
+                )
+            }
+        }
+    }
+
+    private static func updatedContact(from contact: ContactRecord) -> ContactRecord {
+        let token = String(UUID().uuidString.prefix(6)).lowercased()
+        let timestamp = max(currentTimestamp(), contact.updatedAt + 1)
+        let baseName = contact.type == .group ? "群聊资料" : "联系人资料"
+        let updatedNickname = "\(baseName)-昵称-\(token)"
+        let updatedRemark = contact.type == .group ? nil : "\(baseName)-备注-\(token)"
+        return ContactRecord(
+            contactID: contact.contactID,
+            userID: contact.userID,
+            wxid: contact.wxid,
+            nickname: updatedNickname,
+            remark: updatedRemark,
+            avatarURL: "https://example.com/chatbridge/avatar/\(contact.contactID.rawValue)-\(token).png",
+            type: contact.type,
+            isStarred: !contact.isStarred,
+            isBlocked: contact.isBlocked,
+            isDeleted: contact.isDeleted,
+            source: contact.source,
+            extraJSON: contact.extraJSON,
+            updatedAt: timestamp,
+            createdAt: contact.createdAt
+        )
+    }
+
+    private static func profileDisplayName(for contact: ContactRecord) -> String {
+        switch contact.type {
+        case .group:
+            return contact.nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? contact.wxid
+                : contact.nickname
+        case .friend, .service, .system, .stranger:
+            return contact.displayName
+        }
+    }
+
+    private static func conversationID(for contact: ContactRecord) -> ConversationID? {
+        switch contact.type {
+        case .friend:
+            ConversationID(rawValue: "single_\(contact.wxid)")
+        case .group:
+            ConversationID(rawValue: "group_\(contact.wxid)")
+        case .service, .system, .stranger:
+            nil
+        }
+    }
+
+    private static func currentTimestamp() -> Int64 {
+        Int64(Date().timeIntervalSince1970)
+    }
+
+    private static func shortLogID(_ rawValue: String) -> String {
+        String(rawValue.prefix(8))
+    }
+}

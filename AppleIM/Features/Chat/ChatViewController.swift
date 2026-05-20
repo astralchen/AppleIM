@@ -698,6 +698,14 @@ final class ChatViewController: UIViewController {
                 )
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.contactProfileChangesPublisher()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] event in
+                guard let self, view.window != nil else { return }
+                viewModel.handleContactProfileChange(event)
+            }
+            .store(in: &cancellables)
     }
 
     /// 根据键盘通知类型分发聊天页需要处理的布局变化。

@@ -58,12 +58,30 @@ final class ContactListViewController: UIViewController {
         super.viewDidLoad()
         title = "通讯录"
         view.backgroundColor = .systemGroupedBackground
+        configureNavigationItems()
         configureCollectionView()
         configureSearch()
         configureEmptyLabel()
         configureDataSource()
         bindViewModel()
         viewModel.load()
+    }
+
+    private func configureNavigationItems() {
+        let simulateProfileChangeButton = UIButton(type: .system)
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: "person.crop.circle.badge.exclamationmark")
+        configuration.baseForegroundColor = .systemBlue
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6)
+        simulateProfileChangeButton.configuration = configuration
+        simulateProfileChangeButton.accessibilityIdentifier = "contacts.simulateProfileChangeButton"
+        simulateProfileChangeButton.accessibilityLabel = "模拟用户信息变更"
+        simulateProfileChangeButton.addTarget(self, action: #selector(simulateProfileChangeButtonTapped), for: .touchUpInside)
+        simulateProfileChangeButton.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+
+        navigationItem.rightBarButtonItems = [
+            UIBarButtonItem(customView: simulateProfileChangeButton)
+        ]
     }
 
     private func configureCollectionView() {
@@ -176,14 +194,30 @@ final class ContactListViewController: UIViewController {
     }
 
     private func render(_ state: ContactListViewState) {
-        rowsByID = Dictionary(
+        let previousRowsByID = rowsByID
+        let nextRowsByID = Dictionary(
             uniqueKeysWithValues: (state.groupRows + state.starredRows + state.contactRows).map { ($0.id, $0) }
         )
+        rowsByID = nextRowsByID
 
         var snapshot = NSDiffableDataSourceSnapshot<Section, ContactID>()
         append(state.groupRows, to: .groups, in: &snapshot)
         append(state.starredRows, to: .starred, in: &snapshot)
         append(state.contactRows, to: .friends, in: &snapshot)
+        let currentSnapshot = dataSource?.snapshot()
+        let changedVisibleIDs = nextRowsByID.compactMap { rowID, nextRow -> ContactID? in
+            guard
+                previousRowsByID[rowID] != nextRow,
+                currentSnapshot?.indexOfItem(rowID) != nil,
+                snapshot.indexOfItem(rowID) != nil
+            else {
+                return nil
+            }
+            return rowID
+        }
+        if !changedVisibleIDs.isEmpty {
+            snapshot.reconfigureItems(changedVisibleIDs)
+        }
         dataSource?.apply(snapshot, animatingDifferences: state.phase == .loaded)
 
         emptyLabel.text = state.emptyMessage
@@ -199,6 +233,10 @@ final class ContactListViewController: UIViewController {
 
         snapshot.appendSections([section])
         snapshot.appendItems(rows.map(\.id), toSection: section)
+    }
+
+    @objc private func simulateProfileChangeButtonTapped() {
+        viewModel.simulateContactProfileChange()
     }
 }
 

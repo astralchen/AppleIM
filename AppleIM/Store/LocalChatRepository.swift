@@ -201,6 +201,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         try await conversationDAO.conversation(conversationID: conversationID, userID: userID)
     }
 
+    /// 按会话类型和目标 ID 查询完整会话记录。
+    func conversationRecord(userID: UserID, type: ConversationType, targetID: String) async throws -> ConversationRecord? {
+        try await conversationDAO.conversation(userID: userID, type: type, targetID: targetID)
+    }
+
     /// 批量插入初始会话
     ///
     /// 用于首次同步或数据恢复场景，批量写入会话记录
