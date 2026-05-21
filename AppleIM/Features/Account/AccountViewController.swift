@@ -24,23 +24,28 @@ final class AccountViewController: UIViewController {
 
     /// 操作行
     nonisolated private enum ActionRow: Int, CaseIterable, Hashable, Sendable {
+        case language
         case switchAccount
         case logOut
         case deleteLocalData
 
-        var title: String {
+        var titleKey: String {
             switch self {
+            case .language:
+                return "account.action.language"
             case .switchAccount:
-                return "Switch Account"
+                return "account.action.switchAccount"
             case .logOut:
-                return "Log Out"
+                return "account.action.logOut"
             case .deleteLocalData:
-                return "Delete Local Data"
+                return "account.action.deleteLocalData"
             }
         }
 
         var imageName: String {
             switch self {
+            case .language:
+                return "globe"
             case .switchAccount:
                 return "person.2"
             case .logOut:
@@ -52,6 +57,8 @@ final class AccountViewController: UIViewController {
 
         var accessibilityIdentifier: String {
             switch self {
+            case .language:
+                return "account.action.language"
             case .switchAccount:
                 return "account.action.switchAccount"
             case .logOut:
@@ -61,20 +68,9 @@ final class AccountViewController: UIViewController {
             }
         }
 
-        var action: AccountAction {
-            switch self {
-            case .switchAccount:
-                return .switchAccount
-            case .logOut:
-                return .logOut
-            case .deleteLocalData:
-                return .deleteLocalData
-            }
-        }
-
         var isDestructive: Bool {
             switch self {
-            case .switchAccount:
+            case .language, .switchAccount:
                 return false
             case .logOut, .deleteLocalData:
                 return true
@@ -96,9 +92,9 @@ final class AccountViewController: UIViewController {
         self.state = state
         self.onAction = onAction
         super.init(nibName: nil, bundle: nil)
-        title = "Account"
+        title = L10n.shared.tr("account.title")
         tabBarItem = UITabBarItem(
-            title: "Account",
+            title: L10n.shared.tr("account.title"),
             image: UIImage(systemName: "person.crop.circle"),
             selectedImage: UIImage(systemName: "person.crop.circle.fill")
         )
@@ -122,6 +118,7 @@ final class AccountViewController: UIViewController {
         view.backgroundColor = .systemGroupedBackground
         configureCollectionView()
         configureDataSource()
+        applyLocalizedText()
         updateSnapshot()
     }
 
@@ -151,7 +148,7 @@ final class AccountViewController: UIViewController {
         let profileRegistration = UICollectionView.CellRegistration<AccountProfileCell, Item> { [weak self] cell, indexPath, item in
             self?.profileCellRegistrationHandler(cell: cell, indexPath: indexPath, item: item)
         }
-        let actionRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Item> { [weak self] cell, indexPath, item in
+        let actionRegistration = UICollectionView.CellRegistration<AccountActionCell, Item> { [weak self] cell, indexPath, item in
             self?.actionCellRegistrationHandler(cell: cell, indexPath: indexPath, item: item)
         }
 
@@ -168,52 +165,72 @@ final class AccountViewController: UIViewController {
     /// 配置账号资料 cell。
     private func profileCellRegistrationHandler(cell: AccountProfileCell, indexPath: IndexPath, item: Item) {
         guard case .profile = item else { return }
-        cell.configure(state: state)
+        cell.configure(
+            state: state,
+            layoutDirection: AppLanguageManager.shared.currentContext.semanticContentAttribute
+        )
     }
 
     /// 配置账号操作 cell。
-    private func actionCellRegistrationHandler(cell: UICollectionViewListCell, indexPath: IndexPath, item: Item) {
+    private func actionCellRegistrationHandler(cell: AccountActionCell, indexPath: IndexPath, item: Item) {
         guard case .action(let row) = item else { return }
-        cell.contentConfiguration = actionConfiguration(for: cell, row: row)
-        cell.accessories = [.disclosureIndicator()]
+        cell.configure(
+            title: L10n.shared.tr(row.titleKey),
+            subtitle: row == .language ? languageSubtitle() : nil,
+            imageName: row.imageName,
+            isDestructive: row.isDestructive,
+            layoutDirection: AppLanguageManager.shared.currentContext.semanticContentAttribute
+        )
         cell.accessibilityIdentifier = row.accessibilityIdentifier
     }
 
-    /// 构造账号操作行内容配置。
-    private func actionConfiguration(for cell: UICollectionViewListCell, row: ActionRow) -> UIListContentConfiguration {
-        var content = cell.defaultContentConfiguration()
-        content.text = row.title
-        content.image = UIImage(systemName: row.imageName)
-        content.imageProperties.tintColor = row.isDestructive ? .systemRed : .systemBlue
-        content.textProperties.color = row.isDestructive ? .systemRed : .label
-        return content
-    }
-
     /// 更新列表快照
-    private func updateSnapshot() {
+    private func updateSnapshot(forceReconfigure: Bool = false) {
         var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
         snapshot.appendSections(Section.allCases)
         snapshot.appendItems([Item.profile], toSection: Section.profile)
         snapshot.appendItems(ActionRow.allCases.map(Item.action), toSection: Section.actions)
+        if forceReconfigure {
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        }
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
     /// 构造当前账号本地数据删除确认弹窗。
     func makeDeleteLocalDataConfirmationController() -> UIAlertController {
         let alertController = UIAlertController(
-            title: "Delete Local Data?",
-            message: "This deletes the current account's local database, search index, media files, cache, and database key from this device. Other accounts and mock account records are not affected.",
+            title: L10n.shared.tr("account.delete.confirm.title"),
+            message: L10n.shared.tr("account.delete.confirm.message"),
             preferredStyle: .alert
         )
 
-        let confirmAction = UIAlertAction(title: "Delete Local Data", style: .destructive) { [weak self] _ in
+        let confirmAction = UIAlertAction(title: L10n.shared.tr("account.action.deleteLocalData"), style: .destructive) { [weak self] _ in
             self?.onAction(.deleteLocalData)
         }
         confirmAction.setValue("accountAction.confirmDeleteLocalData", forKey: "accessibilityIdentifier")
 
-        alertController.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alertController.addAction(UIAlertAction(title: L10n.shared.tr("common.cancel"), style: .cancel))
         alertController.addAction(confirmAction)
         return alertController
+    }
+
+    /// 根据当前语言偏好生成语言行副标题。
+    private func languageSubtitle() -> String {
+        let context = AppLanguageManager.shared.currentContext
+        let resolvedName = L10n.shared.tr(context.resolvedLanguage.displayNameKey)
+        switch context.preference {
+        case .system:
+            return L10n.shared.tr("account.language.currentSystemFormat", resolvedName)
+        case .language:
+            return resolvedName
+        }
+    }
+
+    /// 刷新账号页文案。
+    private func applyLocalizedText() {
+        title = L10n.shared.tr("account.title")
+        navigationItem.title = L10n.shared.tr("account.title")
+        tabBarItem.title = L10n.shared.tr("account.title")
     }
 }
 
@@ -235,20 +252,60 @@ extension AccountViewController: UICollectionViewDelegate {
         }
 
         switch row {
+        case .language:
+            let viewController = LanguageSettingsViewController()
+            let navigationController = UINavigationController(rootViewController: viewController)
+            navigationController.modalPresentationStyle = .pageSheet
+            if let sheetPresentationController = navigationController.sheetPresentationController {
+                sheetPresentationController.detents = [.large()]
+                sheetPresentationController.prefersGrabberVisible = false
+                sheetPresentationController.preferredCornerRadius = 32
+            }
+            present(navigationController, animated: true)
         case .deleteLocalData:
             present(makeDeleteLocalDataConfirmationController(), animated: true)
-        case .switchAccount, .logOut:
-            onAction(row.action)
+        case .switchAccount:
+            onAction(.switchAccount)
+        case .logOut:
+            onAction(.logOut)
         }
+    }
+}
+
+extension AccountViewController: AppLanguageUpdatable {
+    /// 语言变化时保留页面状态，只刷新标题、方向和可见行。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        applyLocalizedText()
+        collectionView.semanticContentAttribute = context.semanticContentAttribute
+        collectionView.collectionViewLayout.invalidateLayout()
+        updateSnapshot(forceReconfigure: true)
+        collectionView.reloadData()
+        collectionView.layoutIfNeeded()
     }
 }
 
 /// 账号资料列表单元
 @MainActor
 private final class AccountProfileCell: UICollectionViewListCell {
+    private let profileView = AccountProfileHeaderView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureHierarchy()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     /// 配置资料内容
-    func configure(state: AccountViewState) {
-        contentConfiguration = AccountProfileContentConfiguration(state: state)
+    func configure(state: AccountViewState, layoutDirection: UISemanticContentAttribute) {
+        semanticContentAttribute = layoutDirection
+        contentView.semanticContentAttribute = layoutDirection
+        profileView.semanticContentAttribute = layoutDirection
+        profileView.configure(state: state)
         accessibilityIdentifier = "account.profileHeader"
         isAccessibilityElement = false
     }
@@ -256,64 +313,189 @@ private final class AccountProfileCell: UICollectionViewListCell {
     /// 清理复用状态
     override func prepareForReuse() {
         super.prepareForReuse()
-        contentConfiguration = nil
-    }
-}
-
-/// 账号资料内容配置。
-@MainActor
-struct AccountProfileContentConfiguration: UIContentConfiguration {
-    let state: AccountViewState
-
-    func makeContentView() -> UIView & UIContentView {
-        AccountProfileContentView(configuration: self)
     }
 
-    func updated(for state: UIConfigurationState) -> AccountProfileContentConfiguration {
-        self
-    }
-}
-
-/// 账号资料内容视图。
-@MainActor
-private final class AccountProfileContentView: UIView, UIContentView {
-    private let profileView = AccountProfileHeaderView()
-    private var currentConfiguration: AccountProfileContentConfiguration
-
-    var configuration: UIContentConfiguration {
-        get { currentConfiguration }
-        set {
-            guard let configuration = newValue as? AccountProfileContentConfiguration else { return }
-            currentConfiguration = configuration
-            profileView.configure(state: configuration.state)
-        }
-    }
-
-    init(configuration: AccountProfileContentConfiguration) {
-        currentConfiguration = configuration
-        super.init(frame: .zero)
-        configureView()
-        profileView.configure(state: configuration.state)
-    }
-
-    required init?(coder: NSCoder) {
-        currentConfiguration = AccountProfileContentConfiguration(
-            state: AccountViewState(displayName: "", userID: "", avatarURL: nil)
-        )
-        super.init(coder: coder)
-        configureView()
-    }
-
-    private func configureView() {
+    private func configureHierarchy() {
         profileView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(profileView)
+        contentView.addSubview(profileView)
 
         NSLayoutConstraint.activate([
-            profileView.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-            profileView.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
-            profileView.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
-            profileView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16)
+            profileView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            profileView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            profileView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            profileView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16)
         ])
+    }
+}
+
+/// 账号操作列表单元。使用自有内容视图，避免系统 list content 在 RTL/LTR 反复切换后残留镜像状态。
+@MainActor
+private final class AccountActionCell: UICollectionViewListCell {
+    private enum Layout {
+        static let horizontalInset: CGFloat = 20
+        static let verticalInset: CGFloat = 14
+        static let iconSize: CGFloat = 28
+        static let iconToTextSpacing: CGFloat = 14
+        static let textToChevronSpacing: CGFloat = 12
+        static let chevronSize: CGFloat = 16
+    }
+
+    private let iconImageView = UIImageView()
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
+    private let textStackView = UIStackView()
+    private let chevronImageView = UIImageView(image: UIImage(systemName: "chevron.forward"))
+    private var iconLeadingConstraint: NSLayoutConstraint?
+    private var iconTrailingConstraint: NSLayoutConstraint?
+    private var textLeadingToIconConstraint: NSLayoutConstraint?
+    private var textTrailingToChevronConstraint: NSLayoutConstraint?
+    private var textLeadingToChevronConstraint: NSLayoutConstraint?
+    private var textTrailingToIconConstraint: NSLayoutConstraint?
+    private var chevronLeadingConstraint: NSLayoutConstraint?
+    private var chevronTrailingConstraint: NSLayoutConstraint?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureHierarchy()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        iconImageView.image = nil
+        titleLabel.attributedText = nil
+        subtitleLabel.attributedText = nil
+        subtitleLabel.isHidden = true
+    }
+
+    func configure(
+        title: String,
+        subtitle: String?,
+        imageName: String,
+        isDestructive: Bool,
+        layoutDirection: UISemanticContentAttribute
+    ) {
+        semanticContentAttribute = layoutDirection
+        contentView.semanticContentAttribute = layoutDirection
+        iconImageView.semanticContentAttribute = layoutDirection
+        textStackView.semanticContentAttribute = layoutDirection
+        chevronImageView.semanticContentAttribute = layoutDirection
+
+        let tintColor: UIColor = isDestructive ? .systemRed : .systemBlue
+        let titleColor: UIColor = isDestructive ? .systemRed : .label
+        iconImageView.image = UIImage(systemName: imageName)
+        iconImageView.tintColor = tintColor
+        titleLabel.attributedText = attributedText(title, color: titleColor, direction: layoutDirection, font: .preferredFont(forTextStyle: .body))
+        if let subtitle {
+            subtitleLabel.attributedText = attributedText(subtitle, color: .secondaryLabel, direction: layoutDirection, font: .preferredFont(forTextStyle: .subheadline))
+            subtitleLabel.isHidden = false
+        } else {
+            subtitleLabel.attributedText = nil
+            subtitleLabel.isHidden = true
+        }
+        applyLayoutDirection(layoutDirection)
+    }
+
+    private func configureHierarchy() {
+        iconImageView.translatesAutoresizingMaskIntoConstraints = false
+        iconImageView.contentMode = .scaleAspectFit
+
+        titleLabel.adjustsFontForContentSizeCategory = true
+        titleLabel.numberOfLines = 1
+        subtitleLabel.adjustsFontForContentSizeCategory = true
+        subtitleLabel.numberOfLines = 1
+        subtitleLabel.isHidden = true
+
+        textStackView.translatesAutoresizingMaskIntoConstraints = false
+        textStackView.axis = .vertical
+        textStackView.spacing = 2
+        textStackView.addArrangedSubview(titleLabel)
+        textStackView.addArrangedSubview(subtitleLabel)
+
+        chevronImageView.translatesAutoresizingMaskIntoConstraints = false
+        chevronImageView.tintColor = .tertiaryLabel
+        chevronImageView.contentMode = .scaleAspectFit
+
+        contentView.addSubview(iconImageView)
+        contentView.addSubview(textStackView)
+        contentView.addSubview(chevronImageView)
+
+        iconLeadingConstraint = iconImageView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
+        iconTrailingConstraint = iconImageView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+        textLeadingToIconConstraint = textStackView.leadingAnchor.constraint(
+            equalTo: iconImageView.trailingAnchor,
+            constant: Layout.iconToTextSpacing
+        )
+        textTrailingToChevronConstraint = textStackView.trailingAnchor.constraint(
+            equalTo: chevronImageView.leadingAnchor,
+            constant: -Layout.textToChevronSpacing
+        )
+        textLeadingToChevronConstraint = textStackView.leadingAnchor.constraint(
+            equalTo: chevronImageView.trailingAnchor,
+            constant: Layout.textToChevronSpacing
+        )
+        textTrailingToIconConstraint = textStackView.trailingAnchor.constraint(
+            equalTo: iconImageView.leadingAnchor,
+            constant: -Layout.iconToTextSpacing
+        )
+        chevronLeadingConstraint = chevronImageView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
+        chevronTrailingConstraint = chevronImageView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+
+        NSLayoutConstraint.activate([
+            iconImageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            iconImageView.widthAnchor.constraint(equalToConstant: Layout.iconSize),
+            iconImageView.heightAnchor.constraint(equalToConstant: Layout.iconSize),
+            textStackView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Layout.verticalInset),
+            textStackView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Layout.verticalInset),
+            chevronImageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            chevronImageView.widthAnchor.constraint(equalToConstant: Layout.chevronSize),
+            chevronImageView.heightAnchor.constraint(equalToConstant: Layout.chevronSize)
+        ])
+        applyLayoutDirection(.forceLeftToRight)
+    }
+
+    private func applyLayoutDirection(_ direction: UISemanticContentAttribute) {
+        let isRTL = direction == .forceRightToLeft
+        let textAlignment: NSTextAlignment = isRTL ? .right : .left
+        textStackView.alignment = isRTL ? .trailing : .leading
+        titleLabel.textAlignment = textAlignment
+        subtitleLabel.textAlignment = textAlignment
+        iconLeadingConstraint?.isActive = !isRTL
+        textLeadingToIconConstraint?.isActive = !isRTL
+        textTrailingToChevronConstraint?.isActive = !isRTL
+        chevronTrailingConstraint?.isActive = !isRTL
+        iconTrailingConstraint?.isActive = isRTL
+        textLeadingToChevronConstraint?.isActive = isRTL
+        textTrailingToIconConstraint?.isActive = isRTL
+        chevronLeadingConstraint?.isActive = isRTL
+        setNeedsLayout()
+    }
+
+    private func attributedText(
+        _ text: String,
+        color: UIColor,
+        direction: UISemanticContentAttribute,
+        font: UIFont
+    ) -> NSAttributedString {
+        let isRTL = direction == .forceRightToLeft
+        let writingDirection: NSWritingDirection = isRTL ? .rightToLeft : .leftToRight
+        let writingDirectionValue = writingDirection.rawValue | NSWritingDirectionFormatType.embedding.rawValue
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.baseWritingDirection = isRTL ? .rightToLeft : .leftToRight
+        paragraphStyle.alignment = isRTL ? .right : .left
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraphStyle,
+                .writingDirection: [NSNumber(value: writingDirectionValue)]
+            ]
+        )
     }
 }
 

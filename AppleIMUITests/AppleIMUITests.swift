@@ -27,8 +27,7 @@ final class AppleIMUITests: XCTestCase {
 
         waitForConversationList(in: app)
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
-        XCTAssertTrue(app.navigationBars["Messages"].exists)
-        XCTAssertTrue(app.tabBars.buttons["Account"].exists)
+        XCTAssertTrue(app.buttons["mainTab.account"].exists)
     }
 
     @MainActor
@@ -99,7 +98,28 @@ final class AppleIMUITests: XCTestCase {
 
         XCTAssertTrue(app.collectionViews["conversationList.collection"].exists)
         XCTAssertTrue(app.navigationBars["Messages"].exists)
-        XCTAssertTrue(app.tabBars.buttons["Account"].exists)
+        XCTAssertTrue(app.buttons["mainTab.account"].exists)
+    }
+
+    @MainActor
+    func testAccountLanguageSwitchRefreshesVisibleInterface() throws {
+        let app = makeUITestApplication()
+        app.launch()
+        loginAsUITestUser(in: app)
+
+        openAccountActions(in: app)
+        tapAccountAction(identifier: "account.action.language", fallbackTitle: "Language", in: app)
+        XCTAssertTrue(app.collectionViews["language.collectionView"].waitForExistence(timeout: 5))
+        let arabicCell = app.cells["account.language.ar"].firstMatch
+        XCTAssertTrue(arabicCell.waitForExistence(timeout: 5))
+        arabicCell.tap()
+
+        XCTAssertTrue(app.staticTexts["اختر اللغة"].waitForExistence(timeout: 5))
+
+        let englishCell = app.cells["account.language.en"].firstMatch
+        XCTAssertTrue(englishCell.waitForExistence(timeout: 5))
+        englishCell.tap()
+        XCTAssertTrue(app.staticTexts["Select Language"].waitForExistence(timeout: 5))
     }
 
     @MainActor

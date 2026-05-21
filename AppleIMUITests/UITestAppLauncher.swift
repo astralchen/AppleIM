@@ -69,8 +69,9 @@ func login(
 @MainActor
 func openAccountActions(in app: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) {
     let candidates = [
-        app.tabBars.buttons["Account"].firstMatch,
         app.buttons["mainTab.account"].firstMatch,
+        app.tabBars.buttons["mainTab.account"].firstMatch,
+        app.tabBars.buttons["Account"].firstMatch,
         app.buttons["Account"].firstMatch
     ]
 

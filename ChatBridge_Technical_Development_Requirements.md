@@ -565,6 +565,19 @@ CREATE INDEX idx_contact_user_wxid ON contact(user_id, wxid);
 - 日志不得打印 token、手机号、消息明文、数据库密钥、完整 SQL 参数。
 - 媒体文件目录按账号隔离，重要媒体启用文件保护。
 
+### 7.9 国际化模块
+
+- App 自有 UI 使用 `AppLanguageManager + L10n` 管理语言偏好和文案读取，不使用 `Bundle` swizzling。
+- 语言偏好支持“跟随系统”、简体中文、繁体中文、英文、阿拉伯文，默认值为“跟随系统”。
+- 未保存偏好时读取 `Locale.preferredLanguages`；匹配 `zh-Hans`、`zh-Hant`、`en`、`ar`，`zh` 无脚本按地区推断繁简，不支持语言回退简体中文。
+- 手动选择语言优先于系统语言；切回“跟随系统”后重新按系统语言解析。
+- App 进入前台时，如果偏好为“跟随系统”，必须检测系统语言变化并刷新 App 自有界面。
+- 本地化资源使用 Xcode String Catalog；key 使用 `login.title`、`chat.action.delete`、`account.language.system` 这类稳定命名。
+- `L10n` 缺失 key 时回退基础语言并记录日志，不能因为缺失翻译导致 UI 崩溃。
+- `InfoPlist` 本地化必须覆盖应用名称、相册权限和麦克风权限文案。
+- 阿拉伯文必须设置 RTL 语义方向并触发布局刷新，UI 约束优先使用 leading / trailing。
+- UI 测试必须使用 accessibility identifier，不依赖英文标题。
+
 ---
 
 ## 8. 本地任务队列要求
@@ -688,6 +701,12 @@ cancelled
 - pending job 重试策略。
 - sync checkpoint 更新。
 - 数据库迁移版本记录。
+- 系统语言到支持语言的解析规则。
+- 语言偏好持久化和手动选择优先级。
+- 本地化 key 完整性、空值、重复 key 和格式化占位符一致性。
+- `InfoPlist` 应用名称、相册权限、麦克风权限四语言本地化。
+- 缺失 key 回退和日志记录。
+- 阿拉伯文 RTL 标识。
 
 ### 11.3 UI 测试
 
@@ -700,6 +719,9 @@ cancelled
 - 会话置顶和取消置顶。
 - 会话免打扰。
 - 搜索聊天记录。
+- 账号页语言切换即时刷新。
+- 聊天页语言切换后保留页面栈和输入草稿。
+- 阿拉伯文 RTL 下主 Tab、会话列表、聊天输入栏和消息气泡基础布局。
 
 ### 11.4 性能测试
 

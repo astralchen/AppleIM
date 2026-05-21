@@ -332,6 +332,8 @@ final class ChatViewController: UIViewController {
     private let topBannerStackView = UIStackView()
     /// 最近一次渲染的群公告状态
     private var currentGroupAnnouncement: ChatGroupAnnouncementState?
+    /// 当前返回按钮展示的未读数文本。
+    private var currentBackBadgeText: String?
     /// 当前展示中的 @ 成员选择器。
     private weak var currentMentionPickerViewController: ChatMentionPickerViewController?
     /// 聊天输入栏
@@ -465,7 +467,7 @@ final class ChatViewController: UIViewController {
         }
 
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-        emptyLabel.text = "No messages yet"
+        emptyLabel.text = L10n.shared.tr("chat.empty")
         emptyLabel.textColor = .secondaryLabel
         emptyLabel.font = .preferredFont(forTextStyle: .body)
         emptyLabel.textAlignment = .center
@@ -542,7 +544,7 @@ final class ChatViewController: UIViewController {
             action: #selector(simulateIncomingTapped)
         )
         simulateIncomingButton.accessibilityIdentifier = "chat.simulateIncomingButton"
-        simulateIncomingButton.accessibilityLabel = "后台推送对方消息"
+        simulateIncomingButton.accessibilityLabel = L10n.shared.tr("chat.simulateIncoming.accessibility")
         navigationItem.rightBarButtonItem = simulateIncomingButton
 
         unreadBadgePublisher
@@ -584,11 +586,12 @@ final class ChatViewController: UIViewController {
 
     /// 更新返回按钮旁的未读数。
     private func updateMessagesBackButtonBadge(_ badgeText: String?) {
+        currentBackBadgeText = badgeText
         messagesBackButtonView?.updateBadgeText(badgeText)
         if let badgeText {
-            messagesBackBarButtonItem?.accessibilityLabel = "返回消息列表，\(badgeText) 条未读"
+            messagesBackBarButtonItem?.accessibilityLabel = L10n.shared.tr("chat.back.unread.accessibility", badgeText)
         } else {
-            messagesBackBarButtonItem?.accessibilityLabel = "返回消息列表"
+            messagesBackBarButtonItem?.accessibilityLabel = L10n.shared.tr("chat.back.accessibility")
         }
         messagesBackBarButtonItem?.customView?.invalidateIntrinsicContentSize()
         navigationItem.leftBarButtonItems = messagesBackBarButtonItem.map { [$0] }
@@ -653,20 +656,20 @@ final class ChatViewController: UIViewController {
         guard let currentGroupAnnouncement else { return }
 
         let alertController = UIAlertController(
-            title: "群公告",
+            title: L10n.shared.tr("chat.groupAnnouncement.title"),
             message: currentGroupAnnouncement.text,
             preferredStyle: .alert
         )
-        alertController.addAction(UIAlertAction(title: "关闭", style: .cancel))
+        alertController.addAction(UIAlertAction(title: L10n.shared.tr("common.close"), style: .cancel))
 
         if currentGroupAnnouncement.canEdit {
             alertController.addTextField { textField in
                 textField.text = currentGroupAnnouncement.text
-                textField.placeholder = "输入群公告"
+                textField.placeholder = L10n.shared.tr("chat.groupAnnouncement.placeholder")
                 textField.accessibilityIdentifier = "chat.groupAnnouncementEditor"
             }
             alertController.addAction(
-                UIAlertAction(title: "保存", style: .default) { [weak self, weak alertController] _ in
+                UIAlertAction(title: L10n.shared.tr("common.save"), style: .default) { [weak self, weak alertController] _ in
                     let text = alertController?.textFields?.first?.text ?? ""
                     self?.viewModel.updateGroupAnnouncement(text)
                 }
@@ -1116,13 +1119,13 @@ final class ChatViewController: UIViewController {
 
     private func confirmDelete(messageID: MessageID) {
         let alertController = UIAlertController(
-            title: "Delete Message?",
-            message: "This message will be removed from this device.",
+            title: L10n.shared.tr("chat.delete.confirm.title"),
+            message: L10n.shared.tr("chat.delete.confirm.message"),
             preferredStyle: .alert
         )
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        let cancelAction = UIAlertAction(title: L10n.shared.tr("common.cancel"), style: .cancel)
         cancelAction.setValue("chat.cancelMessageAction", forKey: "accessibilityIdentifier")
-        let deleteAction = UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+        let deleteAction = UIAlertAction(title: L10n.shared.tr("chat.action.delete"), style: .destructive) { [weak self] _ in
             self?.viewModel.delete(messageID: messageID)
         }
         deleteAction.setValue("chat.confirmDeleteMessage", forKey: "accessibilityIdentifier")
@@ -1134,13 +1137,13 @@ final class ChatViewController: UIViewController {
 
     private func confirmRevoke(messageID: MessageID) {
         let alertController = UIAlertController(
-            title: "Revoke Message?",
-            message: "Everyone in this local conversation will see a revoke notice.",
+            title: L10n.shared.tr("chat.revoke.confirm.title"),
+            message: L10n.shared.tr("chat.revoke.confirm.message"),
             preferredStyle: .alert
         )
-        let cancelAction = UIAlertAction(title: "Cancel", style: .cancel)
+        let cancelAction = UIAlertAction(title: L10n.shared.tr("common.cancel"), style: .cancel)
         cancelAction.setValue("chat.cancelMessageAction", forKey: "accessibilityIdentifier")
-        let revokeAction = UIAlertAction(title: "Revoke", style: .destructive) { [weak self] _ in
+        let revokeAction = UIAlertAction(title: L10n.shared.tr("chat.action.revoke"), style: .destructive) { [weak self] _ in
             self?.viewModel.revoke(messageID: messageID)
         }
         revokeAction.setValue("chat.confirmRevokeMessage", forKey: "accessibilityIdentifier")
@@ -1169,7 +1172,7 @@ final class ChatViewController: UIViewController {
 
         // 同步不依赖 collection view diff 的轻量 UI 状态。
         title = state.title
-        emptyLabel.text = state.emptyMessage
+        emptyLabel.text = localizedEmptyMessage(state.emptyMessage)
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
         renderGroupAnnouncement(state.groupAnnouncement)
         renderMentionPicker(state.mentionPicker)
@@ -2449,6 +2452,28 @@ extension ChatViewController: UICollectionViewDelegate {
     private func finishUserMessageScrollInteraction() {
         isUserControllingMessageScroll = false
         shouldMaintainBottomPosition = isNearBottom()
+    }
+
+    /// ViewState 中的业务错误保持原文，空态随语言刷新。
+    private func localizedEmptyMessage(_ message: String) -> String {
+        message == "No messages yet" ? L10n.shared.tr("chat.empty") : message
+    }
+}
+
+extension ChatViewController: AppLanguageUpdatable {
+    /// 语言变化后刷新聊天页外壳、输入栏、菜单和可见消息布局，保留草稿与页面栈。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        inputBarView.applyLanguageChange(context)
+        photoLibraryInputView.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        emojiPanelView.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        navigationItem.rightBarButtonItem?.accessibilityLabel = L10n.shared.tr("chat.simulateIncoming.accessibility")
+        updateMessagesBackButtonBadge(currentBackBadgeText)
+        emptyLabel.text = localizedEmptyMessage(emptyLabel.text ?? "")
+        collectionView.collectionViewLayout.invalidateLayout()
+        collectionView.visibleCells.forEach { cell in
+            cell.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        }
     }
 }
 

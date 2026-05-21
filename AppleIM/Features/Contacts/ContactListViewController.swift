@@ -20,14 +20,14 @@ final class ContactListViewController: UIViewController {
         case friends
 
         /// 分区展示标题。
-        var title: String {
+        var titleKey: String {
             switch self {
             case .groups:
-                return "群聊"
+                return "contacts.section.groups"
             case .starred:
-                return "星标联系人"
+                return "contacts.section.starred"
             case .friends:
-                return "联系人"
+                return "contacts.section.friends"
             }
         }
     }
@@ -56,8 +56,8 @@ final class ContactListViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "通讯录"
         view.backgroundColor = .systemGroupedBackground
+        applyLocalizedText()
         configureNavigationItems()
         configureCollectionView()
         configureSearch()
@@ -108,7 +108,6 @@ final class ContactListViewController: UIViewController {
     private func configureSearch() {
         searchController.searchResultsUpdater = self
         searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "搜索联系人"
         searchController.searchBar.accessibilityIdentifier = "contacts.searchField"
         navigationItem.searchController = searchController
         navigationItem.hidesSearchBarWhenScrolling = false
@@ -163,7 +162,7 @@ final class ContactListViewController: UIViewController {
     private func contactConfiguration(for cell: UICollectionViewListCell, row: ContactListRowState) -> UIListContentConfiguration {
         var content = cell.defaultContentConfiguration()
         content.text = row.title
-        content.secondaryText = row.subtitle
+        content.secondaryText = row.type == .group ? L10n.shared.tr("contacts.section.groups") : row.subtitle
         content.textProperties.font = .preferredFont(forTextStyle: .headline)
         content.secondaryTextProperties.color = .secondaryLabel
         content.image = UIImage(systemName: row.type == .group ? "person.2.fill" : "person.crop.circle.fill")
@@ -180,7 +179,7 @@ final class ContactListViewController: UIViewController {
         }
 
         var content = UIListContentConfiguration.groupedHeader()
-        content.text = sectionID.title
+        content.text = L10n.shared.tr(sectionID.titleKey)
         header.contentConfiguration = content
     }
 
@@ -193,7 +192,7 @@ final class ContactListViewController: UIViewController {
             .store(in: &cancellables)
     }
 
-    private func render(_ state: ContactListViewState) {
+    private func render(_ state: ContactListViewState, forceReconfigure: Bool = false) {
         let previousRowsByID = rowsByID
         let nextRowsByID = Dictionary(
             uniqueKeysWithValues: (state.groupRows + state.starredRows + state.contactRows).map { ($0.id, $0) }
@@ -215,13 +214,28 @@ final class ContactListViewController: UIViewController {
             }
             return rowID
         }
-        if !changedVisibleIDs.isEmpty {
+        if forceReconfigure {
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        } else if !changedVisibleIDs.isEmpty {
             snapshot.reconfigureItems(changedVisibleIDs)
         }
         dataSource?.apply(snapshot, animatingDifferences: state.phase == .loaded)
 
-        emptyLabel.text = state.emptyMessage
+        emptyLabel.text = localizedEmptyMessage(state.emptyMessage)
         emptyLabel.isHidden = state.phase != .loaded || !state.isEmpty
+    }
+
+    /// 刷新通讯录页面文案。
+    private func applyLocalizedText() {
+        title = L10n.shared.tr("contacts.title")
+        navigationItem.title = L10n.shared.tr("contacts.title")
+        tabBarItem.title = L10n.shared.tr("contacts.title")
+        searchController.searchBar.placeholder = L10n.shared.tr("contacts.search.placeholder")
+    }
+
+    /// ViewState 中的错误保留业务原文，空态随语言刷新。
+    private func localizedEmptyMessage(_ message: String) -> String {
+        message == "No contacts yet" ? L10n.shared.tr("contacts.empty") : message
     }
 
     private func append(
@@ -258,6 +272,18 @@ extension ContactListViewController: UICollectionViewDelegate {
 extension ContactListViewController: UISearchResultsUpdating {
     func updateSearchResults(for searchController: UISearchController) {
         viewModel.updateSearchQuery(searchController.searchBar.text ?? "")
+    }
+}
+
+extension ContactListViewController: AppLanguageUpdatable {
+    /// 语言变化后刷新导航、搜索框、分组标题和布局方向。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        applyLocalizedText()
+        collectionView.collectionViewLayout.invalidateLayout()
+        render(viewModel.currentState, forceReconfigure: true)
+        collectionView.reloadData()
+        collectionView.layoutIfNeeded()
     }
 }
 

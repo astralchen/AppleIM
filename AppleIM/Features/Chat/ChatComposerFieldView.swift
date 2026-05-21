@@ -159,7 +159,9 @@ final class ChatComposerFieldView: UIView {
         trailingActionButton.isAccessibilityElement = !hidesTrailingAction
         trailingActionButton.accessibilityElementsHidden = hidesTrailingAction
         trailingActionButton.isEnabled = isEnabled
-        trailingActionButton.accessibilityLabel = showsSend ? "Send" : "Record Voice"
+        trailingActionButton.accessibilityLabel = showsSend
+            ? L10n.shared.tr("chat.action.send")
+            : L10n.shared.tr("chat.action.recordVoice")
         trailingActionButton.accessibilityIdentifier = hidesTrailingAction
             ? nil
             : (showsSend ? "chat.sendButton" : "chat.voiceButton")
@@ -258,7 +260,7 @@ final class ChatComposerFieldView: UIView {
         textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
-        placeholderLabel.text = "Message"
+        applyLocalizedText()
         placeholderLabel.textColor = .placeholderText
         placeholderLabel.font = .preferredFont(forTextStyle: .body)
         placeholderLabel.adjustsFontForContentSizeCategory = true
@@ -313,6 +315,16 @@ final class ChatComposerFieldView: UIView {
         trailingActionButton.setContentHuggingPriority(.required, for: .horizontal)
         trailingActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         trailingActionButton.addTarget(self, action: #selector(trailingActionButtonTapped), for: .touchUpInside)
+    }
+
+    /// 刷新文本输入胶囊内的本地化文案。
+    func applyLocalizedText() {
+        placeholderLabel.text = L10n.shared.tr("chat.input.placeholder")
+        renderTrailingAction(
+            showsSend: trailingActionShowsSend,
+            hidesTrailingAction: trailingActionButton.alpha == 0,
+            isEnabled: trailingActionButton.isEnabled
+        )
     }
 
     /// 配置录音胶囊视图。

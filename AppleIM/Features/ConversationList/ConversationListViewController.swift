@@ -8,9 +8,6 @@
 import Combine
 import UIKit
 
-/// 会话列表导航标题
-private let conversationListNavigationTitle = "Messages"
-
 /// 会话列表 diffable snapshot 操作计划。
 nonisolated struct ConversationListSnapshotPlan: Equatable, Sendable {
     /// 需要执行的 snapshot 操作。
@@ -100,16 +97,16 @@ final class ConversationListViewController: UIViewController {
         }
 
         /// section 展示标题。
-        var title: String {
+        var titleKey: String {
             switch self {
             case .conversations:
                 return ""
             case .searchContacts:
-                return "Contacts"
+                return "search.section.contacts"
             case .searchConversations:
-                return "Conversations"
+                return "search.section.conversations"
             case .searchMessages:
-                return "Messages"
+                return "search.section.messages"
             }
         }
     }
@@ -243,7 +240,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 创建会话列表视图层级和约束
     private func configureView() {
-        title = conversationListNavigationTitle
+        applyLocalizedText()
         navigationItem.largeTitleDisplayMode = .always
         view.backgroundColor = .systemBackground
 
@@ -251,7 +248,6 @@ final class ConversationListViewController: UIViewController {
         navigationItem.hidesSearchBarWhenScrolling = false
         searchController.searchResultsUpdater = self
         searchController.obscuresBackgroundDuringPresentation = false
-        searchController.searchBar.placeholder = "Search"
         searchController.searchBar.accessibilityIdentifier = "conversationList.searchBar"
         searchController.searchBar.searchTextField.accessibilityIdentifier = "conversationList.searchField"
         searchController.searchBar.searchTextField.backgroundColor = .secondarySystemBackground
@@ -306,6 +302,19 @@ final class ConversationListViewController: UIViewController {
         ])
     }
 
+    /// 刷新会话列表导航和搜索框文案。
+    private func applyLocalizedText() {
+        title = L10n.shared.tr("conversation.title")
+        navigationItem.title = L10n.shared.tr("conversation.title")
+        tabBarItem.title = L10n.shared.tr("conversation.title")
+        searchController.searchBar.placeholder = L10n.shared.tr("conversation.search.placeholder")
+    }
+
+    /// ViewState 中的业务错误保持原文，空态用本地化资源刷新。
+    private func localizedEmptyMessage(_ message: String) -> String {
+        message == "No conversations yet" ? L10n.shared.tr("conversation.empty") : message
+    }
+
     /// 配置 diffable data source 与 section header
     private func configureDataSource() {
         let cellRegistration = UICollectionView.CellRegistration<ConversationListCell, Item> { [weak self] cell, indexPath, item in
@@ -323,7 +332,7 @@ final class ConversationListViewController: UIViewController {
                 return
             }
 
-            supplementaryView.configure(title: sectionID.title)
+            supplementaryView.configure(title: sectionID.showsHeader ? L10n.shared.tr(sectionID.titleKey) : "")
         }
 
         dataSource = UICollectionViewDiffableDataSource<Section, Item>(
@@ -411,10 +420,10 @@ final class ConversationListViewController: UIViewController {
     }
 
     /// 渲染普通会话列表状态
-    private func renderConversations(_ state: ConversationListViewState) {
+    private func renderConversations(_ state: ConversationListViewState, forceReconfigure: Bool = false) {
         let renderStartUptime = ProcessInfo.processInfo.systemUptime
-        title = conversationListNavigationTitle
-        emptyLabel.text = state.emptyMessage
+        title = L10n.shared.tr("conversation.title")
+        emptyLabel.text = localizedEmptyMessage(state.emptyMessage)
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
 
         if state.phase == .loading {
@@ -428,7 +437,7 @@ final class ConversationListViewController: UIViewController {
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id, $0) })
         searchRowsByID = [:]
         let rowIDs = state.rows.map(\.id)
-        let changedRowIDs = rowIDs.filter { previousRowsByID[$0] != rowsByID[$0] }
+        let changedRowIDs = forceReconfigure ? rowIDs : rowIDs.filter { previousRowsByID[$0] != rowsByID[$0] }
         logger.info(
             "ConversationListViewController render cache prepared rows=\(rowIDs.count) changed=\(changedRowIDs.count) phase=\(state.phase.logDescription) elapsed=\(AppLogger.elapsedMilliseconds(since: cacheStartUptime))"
         )
@@ -514,8 +523,8 @@ final class ConversationListViewController: UIViewController {
     }
 
     /// 渲染搜索结果状态
-    private func renderSearch(_ state: SearchViewState) {
-        title = conversationListNavigationTitle
+    private func renderSearch(_ state: SearchViewState, forceReconfigure: Bool = false) {
+        title = L10n.shared.tr("conversation.title")
 
         if state.phase == .loading {
             loadingIndicator.startAnimating()
@@ -554,6 +563,9 @@ final class ConversationListViewController: UIViewController {
             snapshot.appendItems(state.messages.map { .search($0.id) }, toSection: .searchMessages)
         }
 
+        if forceReconfigure {
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        }
         dataSource?.apply(snapshot, animatingDifferences: true)
     }
 
@@ -652,7 +664,7 @@ final class ConversationListViewController: UIViewController {
 
         return ConversationListRowState(
             id: conversationID,
-            title: searchRow.kind == .message ? "Search Result" : searchRow.title,
+            title: searchRow.kind == .message ? L10n.shared.tr("search.result.title") : searchRow.title,
             avatarURL: nil,
             subtitle: searchRow.kind == .message ? searchRow.title : searchRow.subtitle,
             timeText: "",
@@ -665,6 +677,22 @@ final class ConversationListViewController: UIViewController {
     /// 触发会话列表模拟收消息。
     @objc private func simulateIncomingButtonTapped() {
         viewModel.simulateIncomingMessages()
+    }
+}
+
+extension ConversationListViewController: AppLanguageUpdatable {
+    /// 语言变化后刷新导航、搜索框、分区头和可见列表布局。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        applyLocalizedText()
+        collectionView.collectionViewLayout.invalidateLayout()
+        if lastSearchState.isSearching {
+            renderSearch(lastSearchState, forceReconfigure: true)
+        } else {
+            renderConversations(lastConversationState, forceReconfigure: true)
+        }
+        collectionView.reloadData()
+        collectionView.layoutIfNeeded()
     }
 }
 

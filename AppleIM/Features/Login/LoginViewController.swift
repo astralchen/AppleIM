@@ -80,7 +80,6 @@ final class LoginViewController: UIViewController {
 
     /// 创建登录页视图层级和约束
     private func configureView() {
-        title = "Login"
         view.backgroundColor = .systemBackground
 
         iconImageView.translatesAutoresizingMaskIntoConstraints = false
@@ -91,7 +90,6 @@ final class LoginViewController: UIViewController {
         iconImageView.setContentHuggingPriority(.required, for: .vertical)
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "AppleIM"
         titleLabel.font = .preferredFont(forTextStyle: .title1)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textAlignment = .center
@@ -99,7 +97,6 @@ final class LoginViewController: UIViewController {
         titleLabel.numberOfLines = 0
 
         subtitleLabel.translatesAutoresizingMaskIntoConstraints = false
-        subtitleLabel.text = "Sign in to continue to Messages."
         subtitleLabel.font = .preferredFont(forTextStyle: .subheadline)
         subtitleLabel.adjustsFontForContentSizeCategory = true
         subtitleLabel.textAlignment = .center
@@ -118,7 +115,6 @@ final class LoginViewController: UIViewController {
 
         accountTextField.translatesAutoresizingMaskIntoConstraints = false
         configureAuthTextField(accountTextField)
-        accountTextField.placeholder = "Apple ID or account"
         accountTextField.textContentType = AppUITestConfiguration.current == nil ? .username : .oneTimeCode
         accountTextField.autocapitalizationType = .none
         accountTextField.autocorrectionType = .no
@@ -128,7 +124,6 @@ final class LoginViewController: UIViewController {
 
         passwordTextField.translatesAutoresizingMaskIntoConstraints = false
         configureAuthTextField(passwordTextField)
-        passwordTextField.placeholder = "Password"
         passwordTextField.textContentType = AppUITestConfiguration.current == nil ? .password : .oneTimeCode
         passwordTextField.isSecureTextEntry = true
         passwordTextField.returnKeyType = .go
@@ -146,7 +141,6 @@ final class LoginViewController: UIViewController {
 
         loginButton.translatesAutoresizingMaskIntoConstraints = false
         var loginConfiguration = ChatBridgeDesignSystem.makeGlassButtonConfiguration(role: .primary)
-        loginConfiguration.title = "Log In"
         loginConfiguration.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 18, bottom: 12, trailing: 18)
         loginConfiguration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
             var attributes = attributes
@@ -158,6 +152,7 @@ final class LoginViewController: UIViewController {
         loginButton.addAction(UIAction { [weak self] _ in
             self?.loginButtonTapped()
         }, for: .primaryActionTriggered)
+        applyLocalizedText()
 
         formContainerView.addSubview(accountTextField)
         formContainerView.addSubview(fieldSeparatorView)
@@ -298,6 +293,20 @@ final class LoginViewController: UIViewController {
 
         if var configuration = loginButton.configuration {
             configuration.showsActivityIndicator = state.isLoading
+            configuration.title = L10n.shared.tr("login.submit")
+            loginButton.configuration = configuration
+        }
+    }
+
+    /// 刷新登录页所有用户可见文案。
+    private func applyLocalizedText() {
+        title = L10n.shared.tr("login.title")
+        titleLabel.text = L10n.shared.tr("app.name")
+        subtitleLabel.text = L10n.shared.tr("login.subtitle")
+        accountTextField.placeholder = L10n.shared.tr("login.account.placeholder")
+        passwordTextField.placeholder = L10n.shared.tr("login.password.placeholder")
+        if var configuration = loginButton.configuration {
+            configuration.title = L10n.shared.tr("login.submit")
             loginButton.configuration = configuration
         }
     }
@@ -369,5 +378,13 @@ final class LoginViewController: UIViewController {
                 self.view.layoutIfNeeded()
             }
         )
+    }
+}
+
+extension LoginViewController: AppLanguageUpdatable {
+    /// 语言变化后仅刷新文案和布局方向，保留当前输入内容。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        applyLocalizedText()
     }
 }

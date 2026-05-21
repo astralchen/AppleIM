@@ -185,6 +185,42 @@ actor RefreshingContactListUseCase: ContactListUseCase {
     }
 }
 
+actor GroupOnlyContactListUseCase: ContactListUseCase {
+    func loadContacts(query: String) async throws -> ContactListViewState {
+        let row = ContactListRowState(
+            id: "group_language",
+            title: "Group Language",
+            subtitle: "群聊",
+            avatarURL: nil,
+            type: .group,
+            isStarred: false
+        )
+        return ContactListViewState(
+            query: query,
+            phase: .loaded,
+            groupRows: [row],
+            starredRows: [],
+            contactRows: []
+        )
+    }
+
+    func openConversation(for contactID: ContactID) async throws -> ConversationListRowState {
+        ConversationListRowState(
+            id: "group_language",
+            title: "Group Language",
+            subtitle: "",
+            timeText: "",
+            unreadText: nil,
+            isPinned: false,
+            isMuted: false
+        )
+    }
+
+    func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult? {
+        nil
+    }
+}
+
 struct PagedConversationListUseCase: ConversationListUseCase {
     private let rows: [ConversationListRowState] = (0..<3).map { index in
         ConversationListRowState(

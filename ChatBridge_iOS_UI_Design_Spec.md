@@ -237,6 +237,28 @@ iPhone 15/16 Pro portrait
 - iPhone SE、标准宽度、Pro Max 都需要检查。
 - 浅色 / 深色模式均需保证文字和气泡可读。
 
+### 7.1 多语言与 RTL 适配
+
+- App 自有 UI 支持“跟随系统”、简体中文、繁体中文、英文、阿拉伯文，默认使用“跟随系统”。
+- 账号 / 设置页提供“语言”入口，副标题展示当前偏好；点击后以 `present` 方式弹出 iOS 设置风格的语言选择页，页面内包含“跟随系统”和四种手动语言，当前项使用系统勾选附件标识。
+- 语言选择页视觉参照 iOS 语言添加页：隐藏默认导航栏，使用左上角圆形关闭按钮、居中标题“选择语言 / Select Language”、分组标题“iPhone 语言 / iPhone Languages”、白色圆角语言列表和底部悬浮搜索条。
+- 语言选择页视觉标注按 `@3x` 附件换算为 UIKit point，禁止直接把截图像素值当作约束常量。
+- 语言选项行使用双行文案：主标题展示该语言原生名称，例如 `English`、`简体中文`、`繁體中文`、`العربية`；副标题展示当前界面语言下的说明，例如中文界面下 `英语`、英文界面下 `Chinese, Traditional`。
+- 应用内语言切换必须即时刷新当前页面、Tab、导航标题、搜索占位、按钮、菜单、空状态、错误提示、section header 和可见 cell，不重置登录态、页面栈、聊天草稿或业务数据。
+- 文案 key 使用 `login.title`、`chat.action.delete`、`account.language.system` 这类稳定命名，不直接用中英文句子作为 key。
+- 用户消息内容、服务端字段、SQL、日志、资源名和 accessibility identifier 不参与翻译。
+- 阿拉伯文使用 RTL 布局方向，页面根视图、列表、输入栏、导航返回按钮和 swipe actions 必须使用 leading / trailing 约束或等价布局语义，并在切换后触发布局失效。
+- 从阿拉伯文切回简体中文、繁体中文或英文时，窗口、page sheet / presentation container、页面树、导航栏、工具栏、TabBar 和自定义 bar button view 必须同步恢复 LTR，禁止残留 RTL 布局方向。
+- 运行时切换 RTL / LTR 时禁止通过 `CGAffineTransform` 或 `CALayer.transform` 镜像 / 反镜像修正列表；账号页、语言页等自定义列表必须使用 `semanticContentAttribute`、`effectiveUserInterfaceLayoutDirection`、leading / trailing 约束和明确的 writing direction 刷新布局。
+- 聊天气泡和头像按语义方向翻转：对方消息在阅读起始侧，自己消息在结束侧；输入栏、更多菜单、录音预览和媒体预览不得遮挡。
+- UI 测试优先使用稳定 accessibility identifier，不依赖英文 Tab 标题或按钮标题。
+
+### 7.2 应用名称与系统弹窗本地化
+
+- 产品展示名默认保持 `ChatBridge`，通过 `InfoPlist` 本地化为简体中文、繁体中文、英文、阿拉伯文提供独立入口。
+- `CFBundleDisplayName`、`CFBundleName`、`NSMicrophoneUsageDescription`、`NSPhotoLibraryUsageDescription` 必须有四种语言文本。
+- 桌面图标名称、系统设置页名称和权限弹窗由 iOS 按系统语言读取 `InfoPlist` 本地化；应用内语言切换不承诺即时改变这些系统读取的名称和弹窗语言，通常需要系统重新读取或重启 / 重装后体现。
+
 ---
 
 ## 8. 验收计划
@@ -256,6 +278,10 @@ iPhone 15/16 Pro portrait
 
 - iOS 26 验证 glass configuration 正常。
 - iOS 15-25 验证 fallback 不崩溃、不透明度过低、不影响文字可读性。
+- 系统语言为简体中文、繁体中文、英文、阿拉伯文时，首次启动默认展示对应 App 自有 UI 语言。
+- 手动切换语言后，当前页面即时刷新并保留登录态、页面栈和聊天草稿。
+- 阿拉伯文下主 Tab、会话列表、聊天输入栏、消息气泡方向正确且无遮挡。
+- 应用名称和相册 / 麦克风权限弹窗文本按系统语言读取 `InfoPlist` 本地化资源。
 
 ### 8.3 回归路径
 
@@ -270,6 +296,8 @@ iPhone 15/16 Pro portrait
 - 搜索
 - 切换账号
 - 退出登录
+- 账号页切换简体中文 / 繁体中文 / 英文 / 阿拉伯文 / 跟随系统
+- 聊天页切换语言后返回当前聊天并保留输入草稿
 
 ### 8.4 构建与测试
 
@@ -285,6 +313,8 @@ xcodebuild -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/plat
 - 失败消息重试
 - 搜索会话
 - 登录 / 退出 / 切换账号
+- 账号页语言切换即时刷新
+- 阿拉伯文 RTL 布局基础路径
 
 ---
 

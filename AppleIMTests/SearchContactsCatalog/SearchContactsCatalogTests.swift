@@ -803,6 +803,41 @@ extension AppleIMTests {
         #expect(cell.accessibilityLabel?.contains("新昵称") == true)
     }
 
+    @MainActor
+    @Test func contactListViewControllerRefreshesVisibleCellsWhenLanguageChanges() async throws {
+        AppLanguageManager.shared.setPreference(.language(.english))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+
+        let useCase = GroupOnlyContactListUseCase()
+        let viewModel = ContactListViewModel(useCase: useCase)
+        let viewController = ContactListViewController(
+            viewModel: viewModel,
+            onSelectConversation: { _ in }
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "contacts.collection") as? UICollectionView)
+        try await waitForCondition {
+            collectionView.cellForItem(at: IndexPath(item: 0, section: 0)) != nil
+                && findLabel(withText: "Groups", in: viewController.view) != nil
+        }
+
+        AppLanguageManager.shared.setPreference(.language(.arabic))
+        viewController.applyLanguageChange(AppLanguageManager.shared.currentContext)
+        collectionView.layoutIfNeeded()
+
+        #expect(findLabel(withText: "المجموعات", in: viewController.view) != nil)
+    }
+
     @Test func localContactListUseCaseCreatesSingleConversationForFriendAndReusesExistingConversation() async throws {
         let rootDirectory = temporaryDirectory()
         defer {

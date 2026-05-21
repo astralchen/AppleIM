@@ -33,6 +33,8 @@ nonisolated struct AppLogger: Sendable {
         case database = "Database"
         /// 存储层
         case store = "Store"
+        /// 应用级能力
+        case app = "App"
     }
 
     /// 默认子系统标识

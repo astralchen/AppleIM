@@ -769,7 +769,7 @@ final class ChatInputBarView: UIView {
         moreButton.layer.shadowOpacity = 0.025
         moreButton.layer.shadowRadius = 6
         moreButton.layer.shadowOffset = CGSize(width: 0, height: 2)
-        moreButton.accessibilityLabel = "More"
+        moreButton.accessibilityLabel = L10n.shared.tr("chat.more")
         moreButton.accessibilityIdentifier = "chat.moreButton"
         moreButton.setContentHuggingPriority(.required, for: .horizontal)
         moreButton.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -1062,7 +1062,7 @@ final class ChatInputBarView: UIView {
     /// 创建更多操作菜单
     private func makeMoreMenu() -> UIMenu {
         let emojiAction = UIAction(
-            title: "表情",
+            title: L10n.shared.tr("chat.more.emoji"),
             image: UIImage(systemName: "face.smiling")
         ) { [weak self] _ in
             Task { @MainActor in
@@ -1070,7 +1070,7 @@ final class ChatInputBarView: UIView {
             }
         }
         let photoAction = UIAction(
-            title: "相册",
+            title: L10n.shared.tr("chat.more.photoLibrary"),
             image: UIImage(systemName: "photo.on.rectangle")
         ) { [weak self] _ in
             Task { @MainActor in
@@ -1102,10 +1102,10 @@ final class ChatInputBarView: UIView {
             guard let self else { return }
             if self.hasPendingVoicePreview {
                 self.moreButton.transform = CGAffineTransform(rotationAngle: .pi / 4)
-                self.moreButton.accessibilityLabel = "Delete Voice Preview"
+                self.moreButton.accessibilityLabel = L10n.shared.tr("chat.voicePreview.delete")
             } else {
                 self.moreButton.transform = .identity
-                self.moreButton.accessibilityLabel = "More"
+                self.moreButton.accessibilityLabel = L10n.shared.tr("chat.more")
             }
         }
 
@@ -1122,6 +1122,18 @@ final class ChatInputBarView: UIView {
         } else {
             changes()
         }
+    }
+}
+
+extension ChatInputBarView: AppLanguageUpdatable {
+    /// 语言切换时刷新输入栏按钮、菜单和输入占位，保留草稿文本。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        composerFieldView.applyLocalizedText()
+        moreButton.menu = hasPendingVoicePreview ? nil : makeMoreMenu()
+        renderMoreButtonState(animated: false)
+        renderTrailingActionState()
+        setNeedsLayout()
     }
 }
 

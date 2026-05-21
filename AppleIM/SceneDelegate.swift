@@ -21,6 +21,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var unreadBadgeController: ConversationUnreadBadgeController?
     /// 场景级 Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
+    /// 应用内语言变化监听
+    private var languageObservation: NSObjectProtocol?
     /// 登录态缓存
     private let sessionStore: any AccountSessionStore = UserDefaultsAccountSessionStore()
 
@@ -44,7 +46,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         if AppUITestConfiguration.current?.resetSession == true {
             sessionStore.clearSession()
+            AppLanguageManager.shared.resetPreferenceForUITesting()
         }
+
+        observeLanguageChanges()
+        applyLanguageContext(AppLanguageManager.shared.currentContext)
 
         if let accountSession = sessionStore.loadSession() {
             showMainInterface(for: accountSession, in: window)
@@ -91,6 +97,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// - Parameter scene: UI 场景
     func sceneWillEnterForeground(_ scene: UIScene) {
+        AppLanguageManager.shared.refreshSystemLanguageIfNeeded()
+
         guard dependencies?.isUITesting != true else {
             return
         }
@@ -117,6 +125,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         unreadBadgeController = nil
         cancellables.removeAll()
         window.rootViewController = makeLoginViewController()
+        applyLanguageContext(AppLanguageManager.shared.currentContext)
     }
 
     /// 结束当前会话
@@ -159,11 +168,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 显示当前账号本地数据删除失败提示。
     private func showLocalDataDeletionError() {
         let alertController = UIAlertController(
-            title: "Unable to Delete Local Data",
-            message: "Please try again.",
+            title: L10n.shared.tr("account.delete.error.title"),
+            message: L10n.shared.tr("account.delete.error.message"),
             preferredStyle: .alert
         )
-        alertController.addAction(UIAlertAction(title: "OK", style: .default))
+        alertController.addAction(UIAlertAction(title: L10n.shared.tr("common.ok"), style: .default))
 
         window?.rootViewController?.topVisibleViewController.present(alertController, animated: true)
     }
@@ -223,9 +232,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 unreadBadgeController: unreadBadgeController
             )
             window.rootViewController = rootViewController
+            applyLanguageContext(AppLanguageManager.shared.currentContext)
             unreadBadgeController.start()
         } catch {
             window.rootViewController = makeStartupErrorViewController()
+            applyLanguageContext(AppLanguageManager.shared.currentContext)
         }
     }
 
@@ -248,7 +259,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             messagesNavigationController?.pushViewController(chatViewController, animated: true)
         }
         let messagesTabBarItem = UITabBarItem(
-            title: "Messages",
+            title: L10n.shared.tr("conversation.title"),
             image: UIImage(systemName: "message"),
             selectedImage: UIImage(systemName: "message.fill")
         )
@@ -270,10 +281,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let contactListViewController = dependencies.makeContactListViewController(router: contactRouter)
         contactNavigationController.viewControllers = [contactListViewController]
         contactNavigationController.tabBarItem = UITabBarItem(
-            title: "通讯录",
+            title: L10n.shared.tr("contacts.title"),
             image: UIImage(systemName: "person.2"),
             selectedImage: UIImage(systemName: "person.2.fill")
         )
+        contactNavigationController.tabBarItem.accessibilityIdentifier = "mainTab.contacts"
 
         let accountViewController = dependencies.makeAccountViewController(session: session) { [weak self] action in
             switch action {
@@ -294,6 +306,25 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         ]
         tabBarController.selectedIndex = 0
         return tabBarController
+    }
+
+    /// 监听应用内语言变化，递归刷新当前 UI 树。
+    private func observeLanguageChanges() {
+        guard languageObservation == nil else { return }
+        languageObservation = NotificationCenter.default.addObserver(
+            forName: AppLanguageManager.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyLanguageContext(AppLanguageManager.shared.currentContext)
+            }
+        }
+    }
+
+    /// 把语言方向和文案刷新应用到窗口与当前控制器树。
+    private func applyLanguageContext(_ context: AppLanguageContext) {
+        window?.applyAppLanguageContext(context)
     }
 
     private func makeServerMessageSendConfiguration(for session: AccountSession) -> ServerMessageSendService.Configuration? {
@@ -341,7 +372,7 @@ private func makeStartupErrorViewController() -> UIViewController {
 
     let label = UILabel()
     label.translatesAutoresizingMaskIntoConstraints = false
-    label.text = "Unable to start ChatBridge"
+    label.text = L10n.shared.tr("startup.error.title")
     label.textColor = .secondaryLabel
     label.font = .preferredFont(forTextStyle: .body)
 

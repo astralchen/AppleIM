@@ -519,7 +519,7 @@ extension AppleIMTests {
         viewController.loadViewIfNeeded()
         viewController.view.layoutIfNeeded()
 
-        #expect(viewController.title == "Account")
+        #expect(viewController.title == L10n.shared.tr("account.title"))
         #expect(viewController.tabBarItem.accessibilityIdentifier == "mainTab.account")
         #expect(findView(in: viewController.view, identifier: "account.profileHeader") != nil)
         #expect(findLabel(withText: "Session User", in: viewController.view) != nil)
@@ -529,11 +529,263 @@ extension AppleIMTests {
 
         let collectionView = try #require(findView(in: viewController.view, identifier: "account.collectionView") as? UICollectionView)
         let profileCell = try #require(collectionView.cellForItem(at: IndexPath(row: 0, section: 0)))
-        #expect(profileCell.contentConfiguration is AccountProfileContentConfiguration)
-        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 0, section: 1))
+        #expect(findView(in: profileCell, identifier: "account.profileHeader") != nil)
         collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 1, section: 1))
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 2, section: 1))
 
         #expect(actions == [.switchAccount, .logOut])
+    }
+
+    @MainActor
+    @Test func accountViewControllerRefreshesVisibleRowsWhenLanguageChanges() async throws {
+        AppLanguageManager.shared.setPreference(.language(.english))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+
+        let viewController = AccountViewController(
+            state: AccountViewState(
+                displayName: "Session User",
+                userID: "session_user",
+                avatarURL: nil
+            ),
+            onAction: { _ in }
+        )
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        let navigationController = UINavigationController(rootViewController: viewController)
+        window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutIfNeeded()
+        try await waitForCondition {
+            findLabel(withText: "Language", in: viewController.view) != nil
+                && findLabel(withText: "English", in: viewController.view) != nil
+        }
+
+        AppLanguageManager.shared.setPreference(.language(.arabic))
+        window.applyAppLanguageContext(AppLanguageManager.shared.currentContext)
+
+        #expect(viewController.title == "الحساب")
+        try await waitForCondition {
+            findLabel(withText: "اللغة", in: viewController.view) != nil
+                && findLabel(withText: "العربية", in: viewController.view) != nil
+        }
+
+        AppLanguageManager.shared.setPreference(.language(.simplifiedChinese))
+        window.applyAppLanguageContext(AppLanguageManager.shared.currentContext)
+
+        #expect(viewController.title == "账号")
+        try await waitForCondition {
+            findLabel(withText: "语言", in: viewController.view) != nil
+                && findLabel(withText: "简体中文", in: viewController.view) != nil
+        }
+        let displayNameLabel = try #require(findLabel(withText: "Session User", in: viewController.view))
+        let languageLabel = try #require(findLabel(withText: "语言", in: viewController.view))
+        #expect(displayNameLabel.convert(displayNameLabel.bounds, to: viewController.view).minX < viewController.view.bounds.midX)
+        #expect(languageLabel.convert(languageLabel.bounds, to: viewController.view).minX < viewController.view.bounds.midX)
+    }
+
+    @MainActor
+    @Test func accountViewControllerPresentsLanguageSettingsModally() async throws {
+        let viewController = AccountViewController(
+            state: AccountViewState(
+                displayName: "Session User",
+                userID: "session_user",
+                avatarURL: nil
+            ),
+            onAction: { _ in }
+        )
+        let navigationController = UINavigationController(rootViewController: viewController)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutIfNeeded()
+
+        let collectionView = try #require(findView(in: viewController.view, identifier: "account.collectionView") as? UICollectionView)
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 0, section: 1))
+
+        try await waitForCondition {
+            navigationController.presentedViewController is UINavigationController
+        }
+        let presentedNavigationController = try #require(navigationController.presentedViewController as? UINavigationController)
+        #expect(presentedNavigationController.viewControllers.first is LanguageSettingsViewController)
+        #expect(presentedNavigationController.modalPresentationStyle == .pageSheet)
+    }
+
+    @MainActor
+    @Test func languageSettingsViewControllerImmediatelyRestoresLTRWhenSwitchingFromArabicToChinese() throws {
+        AppLanguageManager.shared.setPreference(.language(.arabic))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+
+        let viewController = LanguageSettingsViewController()
+        let navigationController = UINavigationController(rootViewController: viewController)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = navigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        viewController.applyLanguageChange(AppLanguageManager.shared.currentContext)
+        let collectionView = try #require(findView(in: viewController.view, identifier: "language.collectionView") as? UICollectionView)
+        #expect(viewController.view.semanticContentAttribute == .forceRightToLeft)
+        #expect(collectionView.semanticContentAttribute == .forceRightToLeft)
+        #expect(navigationController.navigationBar.semanticContentAttribute == .forceRightToLeft)
+        #expect(viewController.view.effectiveUserInterfaceLayoutDirection == .rightToLeft)
+        #expect(collectionView.effectiveUserInterfaceLayoutDirection == .rightToLeft)
+
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(item: 2, section: 0))
+
+        #expect(AppLanguageManager.shared.currentContext.resolvedLanguage == .simplifiedChinese)
+        #expect(viewController.view.semanticContentAttribute == .forceLeftToRight)
+        #expect(collectionView.semanticContentAttribute == .forceLeftToRight)
+        #expect(navigationController.navigationBar.semanticContentAttribute == .forceLeftToRight)
+        #expect(viewController.view.effectiveUserInterfaceLayoutDirection == .leftToRight)
+        #expect(collectionView.effectiveUserInterfaceLayoutDirection == .leftToRight)
+    }
+
+    @MainActor
+    @Test func presentedLanguageSettingsKeepsDirectionConsistentWhenSwitchingLanguages() async throws {
+        AppLanguageManager.shared.setPreference(.language(.simplifiedChinese))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+
+        let accountViewController = AccountViewController(
+            state: AccountViewState(
+                displayName: "Session User",
+                userID: "session_user",
+                avatarURL: nil
+            ),
+            onAction: { _ in }
+        )
+        let rootNavigationController = UINavigationController(rootViewController: accountViewController)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = rootNavigationController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        accountViewController.loadViewIfNeeded()
+        accountViewController.view.layoutIfNeeded()
+        let accountCollectionView = try #require(findView(in: accountViewController.view, identifier: "account.collectionView") as? UICollectionView)
+        accountCollectionView.delegate?.collectionView?(accountCollectionView, didSelectItemAt: IndexPath(row: 0, section: 1))
+
+        try await waitForCondition {
+            rootNavigationController.presentedViewController is UINavigationController
+        }
+        let presentedNavigationController = try #require(rootNavigationController.presentedViewController as? UINavigationController)
+        let languageViewController = try #require(presentedNavigationController.viewControllers.first as? LanguageSettingsViewController)
+        languageViewController.loadViewIfNeeded()
+        languageViewController.view.layoutIfNeeded()
+        let languageCollectionView = try #require(findView(in: languageViewController.view, identifier: "language.collectionView") as? UICollectionView)
+
+        languageCollectionView.delegate?.collectionView?(languageCollectionView, didSelectItemAt: IndexPath(item: 4, section: 0))
+        #expect(AppLanguageManager.shared.currentContext.resolvedLanguage == .arabic)
+        #expect(window.semanticContentAttribute == .forceRightToLeft)
+        #expect(rootNavigationController.view.semanticContentAttribute == .forceRightToLeft)
+        #expect(accountViewController.view.semanticContentAttribute == .forceRightToLeft)
+        #expect(presentedNavigationController.view.semanticContentAttribute == .forceRightToLeft)
+        #expect(languageViewController.view.semanticContentAttribute == .forceRightToLeft)
+        #expect(languageCollectionView.semanticContentAttribute == .forceRightToLeft)
+
+        languageCollectionView.delegate?.collectionView?(languageCollectionView, didSelectItemAt: IndexPath(item: 2, section: 0))
+        #expect(AppLanguageManager.shared.currentContext.resolvedLanguage == .simplifiedChinese)
+        #expect(window.semanticContentAttribute == .forceLeftToRight)
+        #expect(rootNavigationController.view.semanticContentAttribute == .forceLeftToRight)
+        #expect(accountViewController.view.semanticContentAttribute == .forceLeftToRight)
+        #expect(presentedNavigationController.view.semanticContentAttribute == .forceLeftToRight)
+        #expect(languageViewController.view.semanticContentAttribute == .forceLeftToRight)
+        #expect(languageCollectionView.semanticContentAttribute == .forceLeftToRight)
+        languageViewController.view.layoutIfNeeded()
+        languageCollectionView.layoutIfNeeded()
+        #expect(languageCollectionView.visibleCells.allSatisfy { $0.effectiveUserInterfaceLayoutDirection == .leftToRight })
+    }
+
+    @MainActor
+    @Test func languageSettingsViewControllerUsesReferenceStyleText() throws {
+        AppLanguageManager.shared.setPreference(.language(.english))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+
+        let viewController = LanguageSettingsViewController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "language.collectionView") as? UICollectionView)
+        collectionView.layoutIfNeeded()
+
+        #expect(findView(in: viewController.view, identifier: "language.closeButton") != nil)
+        #expect(findLabel(withText: "Select Language", in: viewController.view) != nil)
+        #expect(findLabel(withText: "iPhone Languages", in: viewController.view) != nil)
+        let searchTextField = try #require(findView(in: viewController.view, identifier: "language.searchTextField") as? UITextField)
+        #expect(searchTextField.placeholder == "Search")
+        #expect(findLabel(withText: "简体中文", in: viewController.view) != nil)
+        #expect(findLabel(withText: "Chinese, Simplified", in: viewController.view) != nil)
+        #expect(findLabel(withText: "العربية", in: viewController.view) != nil)
+        #expect(findLabel(withText: "Arabic", in: viewController.view) != nil)
+    }
+
+    @MainActor
+    @Test func languageSettingsRowsPreserveWritingDirectionAfterSwitchingFromArabicToChinese() throws {
+        AppLanguageManager.shared.setPreference(.language(.arabic))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+
+        let viewController = LanguageSettingsViewController()
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        viewController.view.layoutIfNeeded()
+        let collectionView = try #require(findView(in: viewController.view, identifier: "language.collectionView") as? UICollectionView)
+        collectionView.layoutIfNeeded()
+        #expect(viewController.view.effectiveUserInterfaceLayoutDirection == .rightToLeft)
+
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(item: 2, section: 0))
+        viewController.view.layoutIfNeeded()
+        collectionView.layoutIfNeeded()
+
+        #expect(viewController.view.effectiveUserInterfaceLayoutDirection == .leftToRight)
+        let englishLabel = try #require(findLabel(withText: "English", in: viewController.view))
+        let simplifiedChineseLabel = try #require(findLabel(withText: "简体中文", in: viewController.view))
+        let arabicLabel = try #require(findLabel(withText: "العربية", in: viewController.view))
+        #expect(label(englishLabel, hasWritingDirection: .leftToRight))
+        #expect(label(simplifiedChineseLabel, hasWritingDirection: .leftToRight))
+        #expect(label(arabicLabel, hasWritingDirection: .rightToLeft))
+        #expect(englishLabel.convert(englishLabel.bounds, to: viewController.view).minX < viewController.view.bounds.midX)
+        #expect(simplifiedChineseLabel.convert(simplifiedChineseLabel.bounds, to: viewController.view).minX < viewController.view.bounds.midX)
     }
 
     @MainActor
@@ -589,13 +841,12 @@ extension AppleIMTests {
         #expect(findView(ofType: UITableView.self, in: viewController.view) == nil)
 
         let collectionView = try #require(findView(in: viewController.view, identifier: "account.collectionView") as? UICollectionView)
-        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 2, section: 1))
+        collectionView.delegate?.collectionView?(collectionView, didSelectItemAt: IndexPath(row: 3, section: 1))
 
         let confirmAlert = try #require(navigationController.presentedViewController as? UIAlertController)
-        #expect(confirmAlert.title == "Delete Local Data?")
-        #expect(confirmAlert.message?.contains("database") == true)
-        #expect(confirmAlert.message?.contains("media") == true)
-        let confirmAction = try #require(confirmAlert.actions.first { $0.title == "Delete Local Data" })
+        #expect(confirmAlert.title == L10n.shared.tr("account.delete.confirm.title"))
+        #expect(confirmAlert.message == L10n.shared.tr("account.delete.confirm.message"))
+        let confirmAction = try #require(confirmAlert.actions.first { $0.title == L10n.shared.tr("account.action.deleteLocalData") })
         #expect(confirmAction.value(forKey: "accessibilityIdentifier") as? String == "accountAction.confirmDeleteLocalData")
         #expect(actions.isEmpty)
 
@@ -629,7 +880,7 @@ extension AppleIMTests {
 
         let menuChildren = button(in: inputBar, identifier: "chat.moreButton")?.menu?.children ?? []
 
-        #expect(menuChildren.contains { $0.title == "相册" })
+        #expect(menuChildren.contains { $0.title == L10n.shared.tr("chat.more.photoLibrary") })
     }
 
     @MainActor
@@ -2031,6 +2282,29 @@ private func solidFillColor(
 
     let firstColor = firstObject as! CGColor
     return UIColor(cgColor: firstColor).resolvedColor(with: traits)
+}
+
+@MainActor
+private func label(
+    _ label: UILabel,
+    hasWritingDirection direction: NSWritingDirection
+) -> Bool {
+    guard
+        let attributedText = label.attributedText,
+        attributedText.length > 0,
+        let rawValue = attributedText.attribute(.writingDirection, at: 0, effectiveRange: nil)
+    else {
+        return false
+    }
+
+    let expectedValue = direction.rawValue | NSWritingDirectionFormatType.embedding.rawValue
+    if let values = rawValue as? [NSNumber] {
+        return values.contains { $0.intValue == expectedValue }
+    }
+    if let value = rawValue as? NSNumber {
+        return value.intValue == expectedValue
+    }
+    return false
 }
 
 @MainActor
