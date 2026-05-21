@@ -170,6 +170,7 @@ final class LanguageSettingsViewController: UIViewController {
         configureSearchBar()
         configureDataSource()
         applyLocalizedText()
+        applyLanguageChange(AppLanguageManager.shared.currentContext)
         updateSnapshot()
     }
 
@@ -389,6 +390,20 @@ final class LanguageSettingsViewController: UIViewController {
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
+    /// 同步重配可见语言行，保证 LTR/RTL 约束和各语言自身书写方向马上生效。
+    private func refreshVisibleCellsForCurrentLanguage() {
+        for cell in collectionView.visibleCells {
+            guard
+                let languageCell = cell as? LanguageOptionCell,
+                let indexPath = collectionView.indexPath(for: cell),
+                let item = dataSource?.itemIdentifier(for: indexPath)
+            else {
+                continue
+            }
+            configure(cell: languageCell, item: item)
+        }
+    }
+
     /// 刷新导航文案。
     private func applyLocalizedText() {
         let title = L10n.shared.tr("language.title.select")
@@ -429,7 +444,12 @@ extension LanguageSettingsViewController: UICollectionViewDelegate {
 
     /// 点选语言后先同步刷新当前窗口，避免从 RTL 切回 LTR 时等待 SceneDelegate 异步通知造成短暂方向残留。
     private func applyLanguageChangeImmediately(_ context: AppLanguageContext) {
-        if let window = view.window {
+        let hostingWindow = view.window
+            ?? navigationController?.view.window
+            ?? presentingViewController?.view.window
+            ?? navigationController?.presentingViewController?.view.window
+
+        if let window = hostingWindow {
             window.applyAppLanguageContext(context)
         } else if let navigationController {
             navigationController.notifyLanguageChangeRecursively(context)
@@ -443,6 +463,8 @@ extension LanguageSettingsViewController: AppLanguageUpdatable {
     /// 语言变化后刷新页面标题、选中状态和 RTL 布局。
     func applyLanguageChange(_ context: AppLanguageContext) {
         view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        navigationController?.view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        navigationController?.navigationBar.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
         applyLocalizedText()
         searchIconView.image = UIImage(systemName: "magnifyingglass")
         microphoneIconView.image = UIImage(systemName: "mic.fill")
@@ -451,6 +473,9 @@ extension LanguageSettingsViewController: AppLanguageUpdatable {
         updateSnapshot(forceReconfigure: true)
         collectionView.reloadData()
         collectionView.layoutIfNeeded()
+        refreshVisibleCellsForCurrentLanguage()
+        collectionView.layoutIfNeeded()
+        view.layoutIfNeeded()
     }
 }
 
@@ -507,6 +532,8 @@ private final class LanguageOptionCell: UICollectionViewCell {
     ) {
         semanticContentAttribute = layoutDirection
         contentView.semanticContentAttribute = layoutDirection
+        textStackView.semanticContentAttribute = layoutDirection
+        checkmarkImageView.semanticContentAttribute = layoutDirection
         titleLabel.semanticContentAttribute = titleDirection
         subtitleLabel.semanticContentAttribute = subtitleDirection
         titleLabel.attributedText = attributedText(title, direction: titleDirection, font: titleFont, color: .label)
@@ -546,28 +573,28 @@ private final class LanguageOptionCell: UICollectionViewCell {
         contentView.addSubview(checkmarkImageView)
         contentView.addSubview(separatorView)
 
-        textLeadingToContentConstraint = textStackView.leadingAnchor.constraint(
-            equalTo: contentView.leadingAnchor,
+        textLeadingToContentConstraint = textStackView.leftAnchor.constraint(
+            equalTo: contentView.leftAnchor,
             constant: Layout.horizontalInset
         )
-        textTrailingToCheckmarkConstraint = textStackView.trailingAnchor.constraint(
-            equalTo: checkmarkImageView.leadingAnchor,
+        textTrailingToCheckmarkConstraint = textStackView.rightAnchor.constraint(
+            equalTo: checkmarkImageView.leftAnchor,
             constant: -Layout.checkmarkSpacing
         )
-        textLeadingToCheckmarkConstraint = textStackView.leadingAnchor.constraint(
-            equalTo: checkmarkImageView.trailingAnchor,
+        textLeadingToCheckmarkConstraint = textStackView.leftAnchor.constraint(
+            equalTo: checkmarkImageView.rightAnchor,
             constant: Layout.checkmarkSpacing
         )
-        textTrailingToContentConstraint = textStackView.trailingAnchor.constraint(
-            equalTo: contentView.trailingAnchor,
+        textTrailingToContentConstraint = textStackView.rightAnchor.constraint(
+            equalTo: contentView.rightAnchor,
             constant: -Layout.horizontalInset
         )
-        checkmarkLeadingConstraint = checkmarkImageView.leadingAnchor.constraint(
-            equalTo: contentView.leadingAnchor,
+        checkmarkLeadingConstraint = checkmarkImageView.leftAnchor.constraint(
+            equalTo: contentView.leftAnchor,
             constant: Layout.horizontalInset
         )
-        checkmarkTrailingConstraint = checkmarkImageView.trailingAnchor.constraint(
-            equalTo: contentView.trailingAnchor,
+        checkmarkTrailingConstraint = checkmarkImageView.rightAnchor.constraint(
+            equalTo: contentView.rightAnchor,
             constant: -Layout.horizontalInset
         )
 
@@ -588,7 +615,7 @@ private final class LanguageOptionCell: UICollectionViewCell {
     private func applyLayoutDirection(_ direction: UISemanticContentAttribute) {
         let isRTL = direction == .forceRightToLeft
         let textAlignment: NSTextAlignment = isRTL ? .right : .left
-        textStackView.alignment = isRTL ? .trailing : .leading
+        textStackView.alignment = .fill
         titleLabel.textAlignment = textAlignment
         subtitleLabel.textAlignment = textAlignment
         textLeadingToContentConstraint?.isActive = !isRTL
@@ -598,6 +625,7 @@ private final class LanguageOptionCell: UICollectionViewCell {
         textTrailingToContentConstraint?.isActive = isRTL
         checkmarkLeadingConstraint?.isActive = isRTL
         setNeedsLayout()
+        layoutIfNeeded()
     }
 
     /// 每个语言名称按自身方向写入，避免 LTR/CJK 文本在 RTL 页面状态下被倒序渲染。

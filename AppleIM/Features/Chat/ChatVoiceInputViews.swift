@@ -116,6 +116,11 @@ final class ChatRecordingCapsuleView: UIView {
         hintLabel.isHidden = !state.isCanceling
     }
 
+    /// 刷新录音胶囊内的本地化辅助文案。
+    func applyLocalizedText() {
+        stopButton.accessibilityLabel = L10n.shared.tr("chat.voiceRecording.stop.accessibility")
+    }
+
     /// 配置视图层级。
     private func configure() {
         backgroundColor = .clear
@@ -153,7 +158,7 @@ final class ChatRecordingCapsuleView: UIView {
             imageName: "stop.fill",
             foregroundColor: .systemRed,
             backgroundColor: UIColor.systemRed.withAlphaComponent(0.16),
-            accessibilityLabel: "Stop Voice Recording",
+            accessibilityLabel: L10n.shared.tr("chat.voiceRecording.stop.accessibility"),
             accessibilityIdentifier: "chat.voiceStopButton"
         )
         var stopConfiguration = stopButton.configuration
@@ -205,6 +210,8 @@ final class ChatVoicePreviewCapsuleView: UIView {
     private let durationLabel = UILabel()
     /// 待发送语音发送按钮。
     private let sendButton = UIButton(type: .system)
+    /// 最近一次预览是否正在播放，用于语言切换时刷新辅助文案。
+    private var isPlaying = false
 
     /// 初始化语音预览胶囊。
     override init(frame: CGRect) {
@@ -225,6 +232,7 @@ final class ChatVoicePreviewCapsuleView: UIView {
         playbackProgress: Double,
         elapsedMilliseconds: Int
     ) {
+        self.isPlaying = isPlaying
         durationLabel.text = ChatInputBarVoiceFormatting.playbackDurationText(
             elapsedMilliseconds: elapsedMilliseconds,
             durationMilliseconds: durationMilliseconds,
@@ -236,9 +244,15 @@ final class ChatVoicePreviewCapsuleView: UIView {
             imageName: isPlaying ? "pause.fill" : "play.fill",
             foregroundColor: .label,
             backgroundColor: UIColor.systemGray5,
-            accessibilityLabel: isPlaying ? "Pause Voice Preview" : "Play Voice Preview",
+            accessibilityLabel: playButtonAccessibilityLabel(isPlaying: isPlaying),
             accessibilityIdentifier: isHidden ? nil : "chat.voicePreviewPlayButton"
         )
+    }
+
+    /// 刷新预览胶囊内的本地化辅助文案。
+    func applyLocalizedText() {
+        playButton.accessibilityLabel = playButtonAccessibilityLabel(isPlaying: isPlaying)
+        sendButton.accessibilityLabel = L10n.shared.tr("chat.voicePreview.send.accessibility")
     }
 
     /// 隐藏或恢复内容层辅助标识。
@@ -266,7 +280,7 @@ final class ChatVoicePreviewCapsuleView: UIView {
             imageName: "play.fill",
             foregroundColor: .label,
             backgroundColor: UIColor.systemGray5,
-            accessibilityLabel: "Play Voice Preview",
+            accessibilityLabel: L10n.shared.tr("chat.voicePreview.play.accessibility"),
             accessibilityIdentifier: "chat.voicePreviewPlayButton"
         )
         playButton.addTarget(self, action: #selector(playButtonTapped), for: .touchUpInside)
@@ -288,7 +302,7 @@ final class ChatVoicePreviewCapsuleView: UIView {
             imageName: "arrow.up",
             foregroundColor: .white,
             backgroundColor: .systemGreen,
-            accessibilityLabel: "Send Voice Preview",
+            accessibilityLabel: L10n.shared.tr("chat.voicePreview.send.accessibility"),
             accessibilityIdentifier: "chat.voicePreviewSendButton"
         )
         sendButton.addTarget(self, action: #selector(sendButtonTapped), for: .touchUpInside)
@@ -320,6 +334,14 @@ final class ChatVoicePreviewCapsuleView: UIView {
     /// 点击发送预览。
     @objc private func sendButtonTapped() {
         onSendTapped?()
+    }
+
+    private func playButtonAccessibilityLabel(isPlaying: Bool) -> String {
+        L10n.shared.tr(
+            isPlaying
+                ? "chat.voicePreview.pause.accessibility"
+                : "chat.voicePreview.play.accessibility"
+        )
     }
 }
 

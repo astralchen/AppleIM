@@ -1326,7 +1326,7 @@ final class ChatViewController: UIViewController {
         guard let announcement else { return }
 
         var configuration = announcementButton.configuration
-        configuration?.title = "公告：\(announcement.text)"
+        configuration?.title = L10n.shared.tr("chat.groupAnnouncement.inlineFormat", announcement.text)
         configuration?.image = UIImage(systemName: announcement.canEdit ? "megaphone.fill" : "megaphone")
         configuration?.imagePadding = 6
         announcementButton.configuration = configuration
@@ -2467,12 +2467,19 @@ extension ChatViewController: AppLanguageUpdatable {
         inputBarView.applyLanguageChange(context)
         photoLibraryInputView.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
         emojiPanelView.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        emojiPanelView.render(viewModel.currentState.emojiPanel)
         navigationItem.rightBarButtonItem?.accessibilityLabel = L10n.shared.tr("chat.simulateIncoming.accessibility")
         updateMessagesBackButtonBadge(currentBackBadgeText)
         emptyLabel.text = localizedEmptyMessage(emptyLabel.text ?? "")
+        renderGroupAnnouncement(viewModel.currentState.groupAnnouncement)
+        renderMentionPicker(viewModel.currentState.mentionPicker)
         collectionView.collectionViewLayout.invalidateLayout()
         collectionView.visibleCells.forEach { cell in
-            cell.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+            if let messageCell = cell as? ChatMessageCell {
+                messageCell.applyLanguageChange(context)
+            } else {
+                cell.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+            }
         }
     }
 }

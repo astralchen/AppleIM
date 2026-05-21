@@ -183,6 +183,39 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarRefreshesLocalizedAccessibilityWhenLanguageChanges() throws {
+        AppLanguageManager.shared.setPreference(.language(.english))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 150))
+
+        inputBar.setPendingVoicePreview(durationMilliseconds: 4_200, isPlaying: false, animated: false)
+        inputBar.setPendingAttachmentPreviews([
+            ChatPendingAttachmentPreviewItem(
+                id: "photo-1",
+                image: nil,
+                title: "Image ready",
+                durationText: nil,
+                isVideo: false,
+                isLoading: false
+            )
+        ], animated: false)
+        inputBar.layoutIfNeeded()
+        #expect(button(in: inputBar, accessibilityLabel: "Play Voice Preview") != nil)
+        #expect(button(in: inputBar, accessibilityLabel: "Send Voice Preview") != nil)
+        #expect(button(in: inputBar, accessibilityLabel: "Remove Attachment") != nil)
+
+        AppLanguageManager.shared.setPreference(.language(.arabic))
+        inputBar.applyLanguageChange(AppLanguageManager.shared.currentContext)
+        inputBar.layoutIfNeeded()
+
+        #expect(button(in: inputBar, accessibilityLabel: L10n.shared.tr("chat.voicePreview.play.accessibility")) != nil)
+        #expect(button(in: inputBar, accessibilityLabel: L10n.shared.tr("chat.voicePreview.send.accessibility")) != nil)
+        #expect(button(in: inputBar, accessibilityLabel: L10n.shared.tr("chat.attachment.remove.accessibility")) != nil)
+    }
+
+    @MainActor
     @Test func chatInputBarShowsVoicePreviewPlaybackElapsedAndTotalDuration() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
 
@@ -1359,7 +1392,7 @@ extension AppleIMTests {
 
         let outgoingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: outgoingCell))
         let incomingBubble = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: incomingCell))
-        let outgoingButton = try #require(button(in: outgoingCell, accessibilityLabel: "Play Voice"))
+        let outgoingButton = try #require(button(in: outgoingCell, accessibilityLabel: L10n.shared.tr("chat.voice.play.accessibility")))
         let outgoingDuration = try #require(findLabel(withText: "0:02", in: outgoingCell))
 
         #expect(outgoingBubble.style == .weChatOutgoing)
@@ -1427,11 +1460,48 @@ extension AppleIMTests {
             actions: .empty
         )
 
-        let fallbackLabel = try #require(findLabel(withText: "Image unavailable", in: cell))
+        let fallbackLabel = try #require(findLabel(withText: L10n.shared.tr("chat.media.imageUnavailable"), in: cell))
         let bubbleView = try #require(findView(ofType: ChatBubbleBackgroundView.self, in: cell))
 
         #expect(bubbleView.style == .media)
         #expect(fallbackLabel.textColor.resolvedColor(with: traits) == UIColor.label.resolvedColor(with: traits))
+    }
+
+    @MainActor
+    @Test func chatMessageCellLocalizesMediaAndVoiceAccessibilityWhenLanguageChanges() throws {
+        AppLanguageManager.shared.setPreference(.language(.english))
+        defer {
+            AppLanguageManager.shared.setPreference(.system)
+        }
+        let mediaRow = ChatMessageRowState(
+            id: "localized_media_fallback",
+            content: .image(.init(thumbnailPath: "/tmp/missing-localized-media.jpg")),
+            sortSequence: 1,
+            timeText: "Now",
+            statusText: nil,
+            uploadProgress: 0.42,
+            isOutgoing: true,
+            canRetry: false,
+            canDelete: true,
+            canRevoke: false
+        )
+        let voiceRow = makeVoiceRow(id: "localized_voice", sortSequence: 2, isUnplayed: false)
+        let mediaCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 260))
+        let voiceCell = ChatMessageCell(frame: CGRect(x: 0, y: 0, width: 390, height: 120))
+
+        mediaCell.configure(row: mediaRow, actions: .empty)
+        voiceCell.configure(row: voiceRow, actions: .empty)
+        #expect(findLabel(withText: "Image unavailable", in: mediaCell) != nil)
+        #expect(mediaCell.accessibilityLabel?.contains("Uploading 42%") == true)
+        #expect(button(in: voiceCell, accessibilityLabel: "Play Voice") != nil)
+
+        AppLanguageManager.shared.setPreference(.language(.simplifiedChinese))
+        mediaCell.applyLanguageChange(AppLanguageManager.shared.currentContext)
+        voiceCell.applyLanguageChange(AppLanguageManager.shared.currentContext)
+
+        #expect(findLabel(withText: L10n.shared.tr("chat.media.imageUnavailable"), in: mediaCell) != nil)
+        #expect(mediaCell.accessibilityLabel?.contains(L10n.shared.tr("chat.upload.progress.accessibility", 42)) == true)
+        #expect(button(in: voiceCell, accessibilityLabel: L10n.shared.tr("chat.voice.play.accessibility")) != nil)
     }
 
     @MainActor
@@ -1670,7 +1740,7 @@ extension AppleIMTests {
         )
 
         #expect(voiceView.gestureRecognizers?.contains { $0 is UITapGestureRecognizer } == true)
-        #expect(button(in: voiceView, accessibilityLabel: "Play Voice") != nil)
+        #expect(button(in: voiceView, accessibilityLabel: L10n.shared.tr("chat.voice.play.accessibility")) != nil)
         #expect(voiceView.accessibilityActivate())
         #expect(playedRow?.id == "voice_bubble_tap")
     }
@@ -1709,7 +1779,7 @@ extension AppleIMTests {
         #expect(findLabel(withText: "Now · Failed", in: cell) != nil)
         #expect(findLabel(withText: "0:01/0:02", in: cell) != nil)
 
-        let voiceButton = try #require(button(in: cell, accessibilityLabel: "Stop Voice"))
+        let voiceButton = try #require(button(in: cell, accessibilityLabel: L10n.shared.tr("chat.voice.stop.accessibility")))
         #expect(voiceButton.image(for: .normal) == UIImage(systemName: "pause.fill"))
     }
 
@@ -2131,7 +2201,7 @@ extension AppleIMTests {
 
         #expect(findLabel(withText: "First text", in: cell) == nil)
         #expect(findLabel(withText: "0:03", in: cell) != nil)
-        #expect(button(in: cell, accessibilityLabel: "Play Voice") != nil)
+        #expect(button(in: cell, accessibilityLabel: L10n.shared.tr("chat.voice.play.accessibility")) != nil)
     }
 
     @Test func photoLibraryVideoDataHandlerWritesChunksFromDetachedExecutor() async throws {

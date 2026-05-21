@@ -111,10 +111,10 @@ final class ChatMentionPickerViewController: UIViewController {
         grabberView.layer.cornerRadius = 2.5
         grabberView.isAccessibilityElement = true
         grabberView.accessibilityIdentifier = "chat.mentionPicker.grabber"
-        grabberView.accessibilityLabel = "下滑关闭"
+        grabberView.accessibilityLabel = L10n.shared.tr("chat.mention.dismiss.accessibility")
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.text = "选择提醒的人"
+        titleLabel.text = L10n.shared.tr("chat.mention.title")
         titleLabel.font = .preferredFont(forTextStyle: .headline)
         titleLabel.textAlignment = .center
         titleLabel.adjustsFontForContentSizeCategory = true
@@ -143,7 +143,7 @@ final class ChatMentionPickerViewController: UIViewController {
         doneButton.addTarget(self, action: #selector(doneButtonTapped), for: .touchUpInside)
 
         searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.placeholder = "搜索"
+        searchField.placeholder = L10n.shared.tr("chat.mention.search.placeholder")
         searchField.clearButtonMode = .whileEditing
         searchField.backgroundColor = .secondarySystemBackground
         searchField.accessibilityIdentifier = "chat.mentionPicker.searchField"
@@ -257,8 +257,10 @@ final class ChatMentionPickerViewController: UIViewController {
         cell.backgroundConfiguration = .listPlainCell()
         cell.accessibilityIdentifier = accessibilityIdentifier(for: option, showsSelectionControl: showsSelectionControl)
         cell.isAccessibilityElement = true
-        cell.accessibilityLabel = option.mentionsAll ? "@所有人" : option.displayName
-        cell.accessibilityValue = showsSelectionControl ? (isSelected ? "已选择" : "未选择") : nil
+        cell.accessibilityLabel = option.mentionsAll ? L10n.shared.tr("chat.mention.all") : option.displayName
+        cell.accessibilityValue = showsSelectionControl
+            ? L10n.shared.tr(isSelected ? "chat.mention.selected" : "chat.mention.notSelected")
+            : nil
     }
 
     /// 构造成员行内容配置。
@@ -267,8 +269,10 @@ final class ChatMentionPickerViewController: UIViewController {
         option: ChatMentionOptionState
     ) -> UIListContentConfiguration {
         var configuration = cell.defaultContentConfiguration()
-        configuration.text = option.mentionsAll ? "@所有人" : option.displayName
-        configuration.secondaryText = option.mentionsAll ? "提醒全部群成员" : "昵称：\(option.displayName)"
+        configuration.text = option.mentionsAll ? L10n.shared.tr("chat.mention.all") : option.displayName
+        configuration.secondaryText = option.mentionsAll
+            ? L10n.shared.tr("chat.mention.all.subtitle")
+            : L10n.shared.tr("chat.mention.nicknameFormat", option.displayName)
         configuration.image = Self.avatarImage(for: option)
         configuration.imageProperties.maximumSize = CGSize(width: 44, height: 44)
         configuration.imageProperties.cornerRadius = 10
@@ -300,8 +304,9 @@ final class ChatMentionPickerViewController: UIViewController {
             leadingButton.configuration = nil
             doneButton.isHidden = true
             doneButton.isUserInteractionEnabled = false
-            trailingButton.configuration = Self.navigationButtonConfiguration(title: "多选", color: .label)
-            trailingButton.accessibilityLabel = "多选"
+            let multiSelectTitle = L10n.shared.tr("chat.mention.multiSelect")
+            trailingButton.configuration = Self.navigationButtonConfiguration(title: multiSelectTitle, color: .label)
+            trailingButton.accessibilityLabel = multiSelectTitle
             trailingButton.isHidden = false
             trailingButton.isEnabled = true
             trailingButton.isUserInteractionEnabled = true
@@ -310,17 +315,18 @@ final class ChatMentionPickerViewController: UIViewController {
         case .multiple:
             grabberView.isHidden = false
             leadingButton.isHidden = false
-            leadingButton.configuration = Self.navigationButtonConfiguration(title: "取消", color: .label)
-            leadingButton.accessibilityLabel = "取消"
+            let cancelTitle = L10n.shared.tr("common.cancel")
+            leadingButton.configuration = Self.navigationButtonConfiguration(title: cancelTitle, color: .label)
+            leadingButton.accessibilityLabel = cancelTitle
             leadingButton.accessibilityIdentifier = "chat.mentionPicker.cancelButton"
             trailingButton.isHidden = true
             trailingButton.isUserInteractionEnabled = false
             doneButton.isHidden = false
             doneButton.configuration = Self.navigationButtonConfiguration(
-                title: "完成",
+                title: L10n.shared.tr("chat.mention.done"),
                 color: selectedContactIDs.isEmpty ? .tertiaryLabel : .systemBlue
             )
-            doneButton.accessibilityLabel = "完成"
+            doneButton.accessibilityLabel = L10n.shared.tr("chat.mention.done")
             doneButton.isEnabled = !selectedContactIDs.isEmpty
             doneButton.isUserInteractionEnabled = true
             doneButton.accessibilityTraits = selectedContactIDs.isEmpty ? [.button, .notEnabled] : [.button]
@@ -457,7 +463,7 @@ final class ChatMentionPickerViewController: UIViewController {
             button.tag = sectionIndex
             button.configuration = Self.sectionIndexButtonConfiguration(title: title)
             button.accessibilityIdentifier = "chat.mentionPicker.sectionIndex.\(title)"
-            button.accessibilityLabel = "跳转到\(title)分组"
+            button.accessibilityLabel = L10n.shared.tr("chat.mention.jumpToSection.accessibility", title)
             button.addTarget(self, action: #selector(sectionIndexTapped(_:)), for: .touchUpInside)
             indexStackView.addArrangedSubview(button)
         }
@@ -545,6 +551,18 @@ final class ChatMentionPickerViewController: UIViewController {
             context.cgContext.addPath(UIBezierPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 10).cgPath)
             context.cgContext.strokePath()
         }
+    }
+}
+
+extension ChatMentionPickerViewController: AppLanguageUpdatable {
+    /// 语言变化时刷新弹层文案、方向和当前候选列表。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        view.applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        grabberView.accessibilityLabel = L10n.shared.tr("chat.mention.dismiss.accessibility")
+        titleLabel.text = L10n.shared.tr("chat.mention.title")
+        searchField.placeholder = L10n.shared.tr("chat.mention.search.placeholder")
+        renderChrome()
+        applySnapshot(animatingDifferences: false)
     }
 }
 

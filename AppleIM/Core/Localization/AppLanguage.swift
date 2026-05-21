@@ -134,6 +134,13 @@ struct AppLanguageContext {
     let semanticContentAttribute: UISemanticContentAttribute
 }
 
+/// `NotificationCenter` 返回的观察 token 本身来自 Objective-C，未标注 Sendable。
+///
+/// token 只在主 actor 隔离的语言管理器内创建、移除和释放，不跨线程共享。
+nonisolated private struct NotificationObservationToken: @unchecked Sendable {
+    let value: NSObjectProtocol
+}
+
 /// 可响应应用内语言切换的 UI 对象。
 @MainActor
 protocol AppLanguageUpdatable: AnyObject {
@@ -151,6 +158,8 @@ final class AppLanguageManager {
     private let storageKey = "chatbridge.appLanguagePreference"
     private let userDefaults: UserDefaults
     private let preferredLanguagesProvider: () -> [String]
+    private let notificationCenter: NotificationCenter
+    private var localeObservation: NotificationObservationToken?
     private(set) var resolvedLanguage: AppLanguage
 
     var preference: AppLanguagePreference {
@@ -180,13 +189,22 @@ final class AppLanguageManager {
 
     init(
         userDefaults: UserDefaults = .standard,
-        preferredLanguagesProvider: @escaping () -> [String] = { Locale.preferredLanguages }
+        preferredLanguagesProvider: @escaping () -> [String] = { Locale.preferredLanguages },
+        notificationCenter: NotificationCenter = .default
     ) {
         self.userDefaults = userDefaults
         self.preferredLanguagesProvider = preferredLanguagesProvider
+        self.notificationCenter = notificationCenter
         let preference = AppLanguagePreference(storageValue: userDefaults.string(forKey: storageKey))
         self.preference = preference
         self.resolvedLanguage = Self.resolve(preference: preference, preferredLanguages: preferredLanguagesProvider())
+        observeSystemLocaleChanges()
+    }
+
+    deinit {
+        if let localeObservation {
+            notificationCenter.removeObserver(localeObservation.value)
+        }
     }
 
     func setPreference(_ preference: AppLanguagePreference) {
@@ -225,6 +243,20 @@ final class AppLanguageManager {
             name: Self.didChangeNotification,
             object: self,
             userInfo: ["context": currentContext]
+        )
+    }
+
+    private func observeSystemLocaleChanges() {
+        localeObservation = NotificationObservationToken(
+            value: notificationCenter.addObserver(
+                forName: NSLocale.currentLocaleDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.refreshSystemLanguageIfNeeded()
+                }
+            }
         )
     }
 }
@@ -305,9 +337,16 @@ final class L10n {
 nonisolated struct LocalizableCatalogLoader {
     nonisolated static func loadSourceCatalog(named name: String) throws -> LocalizableStringCatalog {
         let fileName = "\(name).xcstrings"
+        let sourceResourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources")
+            .appendingPathComponent(fileName)
         let candidates = [
             Bundle.main.url(forResource: name, withExtension: "xcstrings"),
             Bundle(identifier: "com.sondra.AppleIM")?.url(forResource: name, withExtension: "xcstrings"),
+            sourceResourceURL,
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("AppleIM/Resources")
                 .appendingPathComponent(fileName),

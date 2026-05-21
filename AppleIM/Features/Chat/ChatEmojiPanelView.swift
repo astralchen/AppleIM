@@ -115,7 +115,7 @@ final class ChatEmojiPanelView: UIControl {
         emptyLabel.textColor = .secondaryLabel
         emptyLabel.textAlignment = .center
         emptyLabel.numberOfLines = 0
-        emptyLabel.text = "No emoji"
+        emptyLabel.text = L10n.shared.tr("chat.emoji.empty")
 
         addSubview(sectionButtonStackView)
         addSubview(collectionView)
@@ -167,8 +167,8 @@ final class ChatEmojiPanelView: UIControl {
 
     private func rebuildSections() {
         visibleSections = [
-            Section(id: .recent, title: "最近", emojis: panelState.recentEmojis),
-            Section(id: .favorites, title: "收藏", emojis: panelState.favoriteEmojis)
+            Section(id: .recent, title: L10n.shared.tr("chat.emoji.recent"), emojis: panelState.recentEmojis),
+            Section(id: .favorites, title: L10n.shared.tr("chat.emoji.favorites"), emojis: panelState.favoriteEmojis)
         ] + panelState.packages.map { package in
             Section(
                 id: .package(package.packageID),

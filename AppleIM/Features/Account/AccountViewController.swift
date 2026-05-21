@@ -196,6 +196,27 @@ final class AccountViewController: UIViewController {
         dataSource?.apply(snapshot, animatingDifferences: false)
     }
 
+    /// 立即重配可见行，避免 diffable reconfigure 与同步布局检查之间出现方向约束残留。
+    private func refreshVisibleCellsForCurrentLanguage() {
+        for cell in collectionView.visibleCells {
+            guard
+                let indexPath = collectionView.indexPath(for: cell),
+                let item = dataSource?.itemIdentifier(for: indexPath)
+            else {
+                continue
+            }
+
+            switch (cell, item) {
+            case (let profileCell as AccountProfileCell, .profile):
+                profileCellRegistrationHandler(cell: profileCell, indexPath: indexPath, item: item)
+            case (let actionCell as AccountActionCell, .action):
+                actionCellRegistrationHandler(cell: actionCell, indexPath: indexPath, item: item)
+            default:
+                cell.applyLanguageSemanticContentAttribute(AppLanguageManager.shared.currentContext.semanticContentAttribute)
+            }
+        }
+    }
+
     /// 构造当前账号本地数据删除确认弹窗。
     func makeDeleteLocalDataConfirmationController() -> UIAlertController {
         let alertController = UIAlertController(
@@ -282,6 +303,9 @@ extension AccountViewController: AppLanguageUpdatable {
         updateSnapshot(forceReconfigure: true)
         collectionView.reloadData()
         collectionView.layoutIfNeeded()
+        refreshVisibleCellsForCurrentLanguage()
+        collectionView.layoutIfNeeded()
+        view.layoutIfNeeded()
     }
 }
 
@@ -383,6 +407,8 @@ private final class AccountActionCell: UICollectionViewListCell {
         contentView.semanticContentAttribute = layoutDirection
         iconImageView.semanticContentAttribute = layoutDirection
         textStackView.semanticContentAttribute = layoutDirection
+        titleLabel.semanticContentAttribute = layoutDirection
+        subtitleLabel.semanticContentAttribute = layoutDirection
         chevronImageView.semanticContentAttribute = layoutDirection
 
         let tintColor: UIColor = isDestructive ? .systemRed : .systemBlue
@@ -424,26 +450,26 @@ private final class AccountActionCell: UICollectionViewListCell {
         contentView.addSubview(textStackView)
         contentView.addSubview(chevronImageView)
 
-        iconLeadingConstraint = iconImageView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
-        iconTrailingConstraint = iconImageView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
-        textLeadingToIconConstraint = textStackView.leadingAnchor.constraint(
-            equalTo: iconImageView.trailingAnchor,
+        iconLeadingConstraint = iconImageView.leftAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leftAnchor)
+        iconTrailingConstraint = iconImageView.rightAnchor.constraint(equalTo: contentView.layoutMarginsGuide.rightAnchor)
+        textLeadingToIconConstraint = textStackView.leftAnchor.constraint(
+            equalTo: iconImageView.rightAnchor,
             constant: Layout.iconToTextSpacing
         )
-        textTrailingToChevronConstraint = textStackView.trailingAnchor.constraint(
-            equalTo: chevronImageView.leadingAnchor,
+        textTrailingToChevronConstraint = textStackView.rightAnchor.constraint(
+            equalTo: chevronImageView.leftAnchor,
             constant: -Layout.textToChevronSpacing
         )
-        textLeadingToChevronConstraint = textStackView.leadingAnchor.constraint(
-            equalTo: chevronImageView.trailingAnchor,
+        textLeadingToChevronConstraint = textStackView.leftAnchor.constraint(
+            equalTo: chevronImageView.rightAnchor,
             constant: Layout.textToChevronSpacing
         )
-        textTrailingToIconConstraint = textStackView.trailingAnchor.constraint(
-            equalTo: iconImageView.leadingAnchor,
+        textTrailingToIconConstraint = textStackView.rightAnchor.constraint(
+            equalTo: iconImageView.leftAnchor,
             constant: -Layout.iconToTextSpacing
         )
-        chevronLeadingConstraint = chevronImageView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
-        chevronTrailingConstraint = chevronImageView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor)
+        chevronLeadingConstraint = chevronImageView.leftAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leftAnchor)
+        chevronTrailingConstraint = chevronImageView.rightAnchor.constraint(equalTo: contentView.layoutMarginsGuide.rightAnchor)
 
         NSLayoutConstraint.activate([
             iconImageView.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
@@ -461,7 +487,7 @@ private final class AccountActionCell: UICollectionViewListCell {
     private func applyLayoutDirection(_ direction: UISemanticContentAttribute) {
         let isRTL = direction == .forceRightToLeft
         let textAlignment: NSTextAlignment = isRTL ? .right : .left
-        textStackView.alignment = isRTL ? .trailing : .leading
+        textStackView.alignment = .fill
         titleLabel.textAlignment = textAlignment
         subtitleLabel.textAlignment = textAlignment
         iconLeadingConstraint?.isActive = !isRTL
@@ -473,6 +499,7 @@ private final class AccountActionCell: UICollectionViewListCell {
         textTrailingToIconConstraint?.isActive = isRTL
         chevronLeadingConstraint?.isActive = isRTL
         setNeedsLayout()
+        layoutIfNeeded()
     }
 
     private func attributedText(
@@ -508,6 +535,10 @@ private final class AccountProfileHeaderView: UIView {
     private let displayNameLabel = UILabel()
     /// 用户 ID 标签
     private let userIDLabel = UILabel()
+    /// 资料文字堆叠。
+    private let labelStackView = UIStackView()
+    /// 头像和文字的横向堆叠。
+    private let stackView = UIStackView()
 
     /// 初始化资料头部
     override init(frame: CGRect) {
@@ -544,23 +575,19 @@ private final class AccountProfileHeaderView: UIView {
         userIDLabel.adjustsFontForContentSizeCategory = true
         userIDLabel.numberOfLines = 0
 
-        let labelStackView = UIStackView(arrangedSubviews: [
-            displayNameLabel,
-            userIDLabel
-        ])
         labelStackView.translatesAutoresizingMaskIntoConstraints = false
         labelStackView.axis = .vertical
         labelStackView.spacing = 4
         labelStackView.alignment = .fill
+        labelStackView.addArrangedSubview(displayNameLabel)
+        labelStackView.addArrangedSubview(userIDLabel)
 
-        let stackView = UIStackView(arrangedSubviews: [
-            avatarImageView,
-            labelStackView
-        ])
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.axis = .horizontal
         stackView.spacing = 16
         stackView.alignment = .center
+        stackView.addArrangedSubview(avatarImageView)
+        stackView.addArrangedSubview(labelStackView)
 
         addSubview(stackView)
 
@@ -579,5 +606,17 @@ private final class AccountProfileHeaderView: UIView {
     func configure(state: AccountViewState) {
         displayNameLabel.text = state.displayName
         userIDLabel.text = state.userID.rawValue
+        applyLayoutDirection(semanticContentAttribute)
+    }
+
+    /// 根据当前界面方向刷新资料头部的排列与文字对齐。
+    func applyLayoutDirection(_ direction: UISemanticContentAttribute) {
+        let isRTL = direction == .forceRightToLeft
+        semanticContentAttribute = direction
+        stackView.semanticContentAttribute = direction
+        labelStackView.semanticContentAttribute = direction
+        displayNameLabel.textAlignment = isRTL ? .right : .left
+        userIDLabel.textAlignment = isRTL ? .right : .left
+        setNeedsLayout()
     }
 }

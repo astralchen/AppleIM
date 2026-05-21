@@ -66,7 +66,37 @@ extension AppleIMTests {
                 "account.action.language",
                 "login.submit",
                 "conversation.title",
-                "chat.input.placeholder"
+                "chat.input.placeholder",
+                "chat.media.imageUnavailable",
+                "chat.media.videoUnavailable",
+                "chat.media.image.accessibility",
+                "chat.media.playVideo.accessibility",
+                "chat.voice.play.accessibility",
+                "chat.voice.stop.accessibility",
+                "chat.voicePreview.play.accessibility",
+                "chat.voicePreview.pause.accessibility",
+                "chat.voicePreview.send.accessibility",
+                "chat.voiceRecording.stop.accessibility",
+                "chat.attachment.remove.accessibility",
+                "chat.upload.progress.accessibility",
+                "chat.photoLibrary.photo.accessibility",
+                "chat.photoLibrary.video.accessibility",
+                "chat.photoLibrary.selected.accessibility",
+                "chat.emoji.empty",
+                "chat.emoji.recent",
+                "chat.emoji.favorites",
+                "chat.mention.search.placeholder",
+                "chat.mention.title",
+                "chat.mention.dismiss.accessibility",
+                "chat.mention.multiSelect",
+                "chat.mention.done",
+                "chat.mention.all",
+                "chat.mention.all.subtitle",
+                "chat.mention.nicknameFormat",
+                "chat.mention.selected",
+                "chat.mention.notSelected",
+                "chat.mention.jumpToSection.accessibility",
+                "chat.groupAnnouncement.inlineFormat"
             ]
         )
     }
@@ -94,5 +124,31 @@ extension AppleIMTests {
 
         #expect(l10n.tr("language.option.arabic") == "العربية")
         #expect(l10n.tr("missing.localization.key") == "missing.localization.key")
+    }
+
+    @Test func appLanguageManagerRefreshesSystemPreferenceWhenLocaleNotificationArrives() async throws {
+        let suiteName = "AppleIMTests.Localization.\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: suiteName))
+        let notificationCenter = NotificationCenter()
+        var preferredLanguages = ["en-US"]
+        defer {
+            userDefaults.removePersistentDomain(forName: suiteName)
+        }
+        let manager = AppLanguageManager(
+            userDefaults: userDefaults,
+            preferredLanguagesProvider: { preferredLanguages },
+            notificationCenter: notificationCenter
+        )
+
+        #expect(manager.preference == .system)
+        #expect(manager.resolvedLanguage == .english)
+
+        preferredLanguages = ["ar-SA"]
+        notificationCenter.post(name: NSLocale.currentLocaleDidChangeNotification, object: nil)
+
+        try await waitForCondition {
+            manager.resolvedLanguage == .arabic
+                && manager.currentLayoutDirection == .forceRightToLeft
+        }
     }
 }

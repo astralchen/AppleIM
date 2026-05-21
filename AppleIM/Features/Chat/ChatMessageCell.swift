@@ -523,17 +523,19 @@ final class MediaMessageContentView: UIView, ChatMessageContentView {
         updateMediaSize(for: thumbnailImageView.image?.size)
 
         thumbnailImageView.isHidden = thumbnailImageView.image == nil
-        fallbackLabel.text = isVideo ? "Video unavailable" : "Image unavailable"
+        fallbackLabel.text = L10n.shared.tr(isVideo ? "chat.media.videoUnavailable" : "chat.media.imageUnavailable")
         fallbackLabel.textColor = style.textColor
         fallbackLabel.isHidden = thumbnailImageView.image != nil
 
         videoOverlayView.isHidden = !isVideo || thumbnailImageView.image == nil
         videoStackView.isHidden = !isVideo || thumbnailImageView.image == nil
         videoPlaybackButton.tintColor = .white
-        videoPlaybackButton.accessibilityLabel = "Play Video"
+        videoPlaybackButton.accessibilityLabel = L10n.shared.tr("chat.media.playVideo.accessibility")
         videoDurationLabel.text = Self.durationText(milliseconds: videoDurationMilliseconds ?? 0)
         videoDurationLabel.textColor = .white
-        accessibilityLabel = isVideo ? "Play Video" : "Image"
+        accessibilityLabel = L10n.shared.tr(
+            isVideo ? "chat.media.playVideo.accessibility" : "chat.media.image.accessibility"
+        )
     }
 
     private func configureView() {
@@ -713,8 +715,11 @@ final class VoiceMessageContentView: UIView, ChatMessageContentView, UIGestureRe
         let isPlaying = voice?.isPlaying == true
         voicePlaybackButton.setImage(UIImage(systemName: isPlaying ? "pause.fill" : "play.fill"), for: .normal)
         voicePlaybackButton.tintColor = style.tintColor
-        voicePlaybackButton.accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
-        accessibilityLabel = isPlaying ? "Stop Voice" : "Play Voice"
+        let accessibilityText = L10n.shared.tr(
+            isPlaying ? "chat.voice.stop.accessibility" : "chat.voice.play.accessibility"
+        )
+        voicePlaybackButton.accessibilityLabel = accessibilityText
+        accessibilityLabel = accessibilityText
         waveformView.tintColor = style.tintColor
         waveformView.isPlaying = isPlaying
         waveformView.playbackProgress = voice?.playbackProgress ?? 0
@@ -926,10 +931,14 @@ struct ChatMessageCellContentConfiguration: UIContentConfiguration {
         }
 
         if let uploadProgress = row.uploadProgress {
-            parts.append("Uploading \(Int(uploadProgress * 100))%")
+            parts.append(Self.uploadProgressText(uploadProgress))
         }
 
         return parts.joined(separator: ", ")
+    }
+
+    static func uploadProgressText(_ progress: Double) -> String {
+        L10n.shared.tr("chat.upload.progress.accessibility", Int(progress * 100))
     }
 }
 
@@ -1089,7 +1098,7 @@ final class ChatMessageCellContentView: UIView, UIContentView, UIContextMenuInte
         configureContent(row: row, style: contentStyle, actions: actions)
         configureBubblePadding(style: bubbleStyle, kind: kind)
 
-        let progressText = row.uploadProgress.map { "Uploading \(Int($0 * 100))%" }
+        let progressText = row.uploadProgress.map(ChatMessageCellContentConfiguration.uploadProgressText)
         let metadataText = [
             row.showsTimeSeparator ? row.timeText : nil,
             progressText ?? row.statusText
@@ -1453,5 +1462,16 @@ final class ChatMessageCell: UICollectionViewCell {
 
         accessibilityIdentifier = "chat.messageCell.\(configuration.row.id.rawValue)"
         accessibilityLabel = ChatMessageCellContentConfiguration.accessibilityLabel(for: configuration.row)
+    }
+
+    /// 语言切换时重新应用当前配置，让消息内容、元数据和辅助文案原地刷新。
+    func applyLanguageChange(_ context: AppLanguageContext) {
+        applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        guard let configuration = contentConfiguration as? ChatMessageCellContentConfiguration else {
+            return
+        }
+        contentConfiguration = nil
+        contentConfiguration = configuration
+        applyAccessibility(from: configuration)
     }
 }

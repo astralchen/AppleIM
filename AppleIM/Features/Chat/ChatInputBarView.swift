@@ -1129,6 +1129,7 @@ extension ChatInputBarView: AppLanguageUpdatable {
     /// 语言切换时刷新输入栏按钮、菜单和输入占位，保留草稿文本。
     func applyLanguageChange(_ context: AppLanguageContext) {
         applyLanguageSemanticContentAttribute(context.semanticContentAttribute)
+        attachmentPreviewRailView.applyLocalizedText()
         composerFieldView.applyLocalizedText()
         moreButton.menu = hasPendingVoicePreview ? nil : makeMoreMenu()
         renderMoreButtonState(animated: false)

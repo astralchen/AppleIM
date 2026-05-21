@@ -836,10 +836,10 @@ private final class ChatPhotoLibraryCell: UICollectionViewCell {
         )
         accessibilityIdentifier = "chat.photoLibraryCell.\(asset.localIdentifier)"
         accessibilityLabel = asset.mediaType == .video
-            ? "Video \(ChatPhotoLibraryInputView.durationText(for: asset) ?? "")"
-            : "Photo"
+            ? L10n.shared.tr("chat.photoLibrary.video.accessibility", ChatPhotoLibraryInputView.durationText(for: asset) ?? "")
+            : L10n.shared.tr("chat.photoLibrary.photo.accessibility")
         if let selectionNumber {
-            accessibilityValue = "Selected \(selectionNumber)"
+            accessibilityValue = L10n.shared.tr("chat.photoLibrary.selected.accessibility", selectionNumber)
         } else {
             accessibilityValue = nil
         }

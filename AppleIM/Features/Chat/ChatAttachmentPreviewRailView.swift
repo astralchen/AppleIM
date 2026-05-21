@@ -51,6 +51,13 @@ final class ChatAttachmentPreviewRailView: UIView {
         scrollView.contentOffset = CGPoint(x: offset.x, y: 0)
     }
 
+    /// 语言切换时刷新当前可见附件项的辅助文案。
+    func applyLocalizedText() {
+        for itemView in stackView.arrangedSubviews.compactMap({ $0 as? PendingAttachmentPreviewItemView }) {
+            itemView.applyLocalizedText()
+        }
+    }
+
     /// 配置视图层级。
     private func configure() {
         backgroundColor = .clear
@@ -180,7 +187,7 @@ final class PendingAttachmentPreviewItemView: UIControl {
         spinner.color = .white
 
         removeButton.translatesAutoresizingMaskIntoConstraints = false
-        removeButton.accessibilityLabel = "Remove Attachment"
+        applyLocalizedText()
         removeButton.accessibilityIdentifier = "chat.removeAttachmentButton.\(itemID)"
         removeButton.configuration = nil
         removeButton.backgroundColor = UIColor.systemGray.withAlphaComponent(0.62)
@@ -239,5 +246,9 @@ final class PendingAttachmentPreviewItemView: UIControl {
         guard removeButton.isEnabled else { return }
         sendActions(for: .primaryActionTriggered)
     }
-}
 
+    /// 刷新移除按钮本地化辅助文案。
+    func applyLocalizedText() {
+        removeButton.accessibilityLabel = L10n.shared.tr("chat.attachment.remove.accessibility")
+    }
+}

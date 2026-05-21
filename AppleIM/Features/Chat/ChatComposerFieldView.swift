@@ -320,6 +320,8 @@ final class ChatComposerFieldView: UIView {
     /// 刷新文本输入胶囊内的本地化文案。
     func applyLocalizedText() {
         placeholderLabel.text = L10n.shared.tr("chat.input.placeholder")
+        recordingCapsuleView.applyLocalizedText()
+        voicePreviewCapsuleView.applyLocalizedText()
         renderTrailingAction(
             showsSend: trailingActionShowsSend,
             hidesTrailingAction: trailingActionButton.alpha == 0,
@@ -391,14 +393,14 @@ final class ChatComposerFieldView: UIView {
     private func applyText(_ text: String, selectedRange: NSRange?) {
         let font = textView.font ?? .preferredFont(forTextStyle: .body)
         let baseColor = textView.textColor ?? .label
+        textView.font = font
+        textView.textColor = baseColor
         textView.attributedText = ChatMentionTextStyling.attributedText(
             for: text,
             baseColor: baseColor,
             mentionColor: .systemBlue,
             font: font
         )
-        textView.font = font
-        textView.textColor = baseColor
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: baseColor
