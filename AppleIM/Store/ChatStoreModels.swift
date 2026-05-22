@@ -5,7 +5,12 @@
 //  聊天存储模型
 //  定义数据库操作相关的数据结构和错误类型
 
+import Combine
 import Foundation
+
+/// Combine 的 `AnyPublisher` 没有声明 Sendable，但本工程只把它作为不可变订阅描述跨层传递；
+/// 实际事件交付由 Combine/GRDB 调度器管理，生命周期由持有方的 cancellable 控制。
+extension AnyPublisher: @unchecked @retroactive Sendable where Output: Sendable {}
 
 /// 聊天存储错误
 nonisolated enum ChatStoreError: Error, Equatable, Sendable {
@@ -1221,6 +1226,16 @@ protocol ConversationRepository: Sendable {
     func updateGroupAnnouncement(conversationID: ConversationID, userID: UserID, text: String) async throws
 }
 
+/// 会话观察仓储协议。
+///
+/// 只暴露业务模型 publisher，避免 UI 或 UseCase 直接依赖 GRDB。
+protocol ConversationObservationRepository: Sendable {
+    /// 观察指定账号首屏会话列表。
+    func observeConversations(for userID: UserID, limit: Int) async throws -> AnyPublisher<[Conversation], Error>
+    /// 观察指定账号的应用角标未读数。
+    func observeUnreadBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error>
+}
+
 extension ConversationRepository {
     func groupMembers(conversationID: ConversationID) async throws -> [GroupMember] {
         []
@@ -1236,6 +1251,16 @@ extension ConversationRepository {
 
     func updateGroupAnnouncement(conversationID: ConversationID, userID: UserID, text: String) async throws {
         throw GroupChatError.permissionDenied
+    }
+}
+
+extension ConversationObservationRepository {
+    func observeConversations(for userID: UserID, limit: Int) async throws -> AnyPublisher<[Conversation], Error> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
+
+    func observeUnreadBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
     }
 }
 
@@ -1326,6 +1351,18 @@ protocol MessageRepository: Sendable {
     func draft(conversationID: ConversationID, userID: UserID) async throws -> String?
     /// 清空草稿
     func clearDraft(conversationID: ConversationID, userID: UserID) async throws
+}
+
+/// 消息观察仓储协议。
+protocol MessageObservationRepository: Sendable {
+    /// 观察指定会话的最新消息窗口；历史分页仍走显式查询。
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error>
+}
+
+extension MessageObservationRepository {
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error> {
+        Empty(completeImmediately: false).eraseToAnyPublisher()
+    }
 }
 
 /// 消息发送恢复仓储协议

@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 import UIKit
 
 @testable import AppleIM
@@ -29,16 +30,24 @@ extension AppleIMTests {
         let rows = try await collectRows(from: useCase.sendImage(data: samplePNGData(), preferredFileExtension: "png"))
         let messageID = try #require(rows.first?.id)
         let storedMessage = try await repository.message(messageID: messageID)
-        let imageRows = try await databaseContext.databaseActor.query(
-            "SELECT cdn_url, upload_status FROM message_image WHERE content_id = ?;",
-            parameters: [.text("image_\(messageID.rawValue)")],
-            paths: databaseContext.paths
-        )
-        let resourceRows = try await databaseContext.databaseActor.query(
-            "SELECT remote_url, upload_status FROM media_resource WHERE owner_message_id = ?;",
-            parameters: [.text(messageID.rawValue)],
-            paths: databaseContext.paths
-        )
+        let imageRows = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT cdn_url, upload_status FROM message_image WHERE content_id = ?;",
+                arguments: ["image_\(messageID.rawValue)"]
+            ).map { row in
+                (cdnURL: row["cdn_url"] as String?, uploadStatus: row["upload_status"] as Int?)
+            }
+        }
+        let resourceRows = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT remote_url, upload_status FROM media_resource WHERE owner_message_id = ?;",
+                arguments: [messageID.rawValue]
+            ).map { row in
+                (remoteURL: row["remote_url"] as String?, uploadStatus: row["upload_status"] as Int?)
+            }
+        }
 
         #expect(rows.first?.statusText == "Sending")
         #expect(rows.compactMap(\.uploadProgress) == [0.25, 0.75, 1.0])
@@ -46,10 +55,10 @@ extension AppleIMTests {
         let storedImage = try requireImageContent(storedMessage)
         #expect(storedMessage?.state.sendStatus == .success)
         #expect(storedImage.remoteURL?.contains("mock-cdn.chatbridge.local") == true)
-        #expect(imageRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(imageRows.first?.string("cdn_url") == storedImage.remoteURL)
-        #expect(resourceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(resourceRows.first?.string("remote_url") == storedImage.remoteURL)
+        #expect(imageRows.first?.uploadStatus == MediaUploadStatus.success.rawValue)
+        #expect(imageRows.first?.cdnURL == storedImage.remoteURL)
+        #expect(resourceRows.first?.uploadStatus == MediaUploadStatus.success.rawValue)
+        #expect(resourceRows.first?.remoteURL == storedImage.remoteURL)
     }
 
     @Test func chatUseCaseSendVoiceYieldsProgressThenSuccess() async throws {
@@ -84,11 +93,15 @@ extension AppleIMTests {
         )
         let messageID = try #require(rows.first?.id)
         let storedMessage = try await repository.message(messageID: messageID)
-        let voiceRows = try await databaseContext.databaseActor.query(
-            "SELECT cdn_url, upload_status FROM message_voice WHERE content_id = ?;",
-            parameters: [.text("voice_\(messageID.rawValue)")],
-            paths: databaseContext.paths
-        )
+        let voiceRows = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT cdn_url, upload_status FROM message_voice WHERE content_id = ?;",
+                arguments: ["voice_\(messageID.rawValue)"]
+            ).map { row in
+                (cdnURL: row["cdn_url"] as String?, uploadStatus: row["upload_status"] as Int?)
+            }
+        }
 
         #expect(rows.first?.statusText == "Sending")
         #expect(rows.first.map(isVoiceContent) == true)
@@ -97,8 +110,8 @@ extension AppleIMTests {
         let storedVoice = try requireVoiceContent(storedMessage)
         #expect(storedMessage?.state.sendStatus == .success)
         #expect(storedVoice.remoteURL?.contains("mock-cdn.chatbridge.local/voice") == true)
-        #expect(voiceRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(voiceRows.first?.string("cdn_url") == storedVoice.remoteURL)
+        #expect(voiceRows.first?.uploadStatus == MediaUploadStatus.success.rawValue)
+        #expect(voiceRows.first?.cdnURL == storedVoice.remoteURL)
     }
 
     @Test func chatUseCaseSendVideoYieldsProgressThenSuccess() async throws {
@@ -130,11 +143,15 @@ extension AppleIMTests {
         )
         let messageID = try #require(rows.first?.id)
         let storedMessage = try await repository.message(messageID: messageID)
-        let videoRows = try await databaseContext.databaseActor.query(
-            "SELECT cdn_url, upload_status FROM message_video WHERE content_id = ?;",
-            parameters: [.text("video_\(messageID.rawValue)")],
-            paths: databaseContext.paths
-        )
+        let videoRows = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT cdn_url, upload_status FROM message_video WHERE content_id = ?;",
+                arguments: ["video_\(messageID.rawValue)"]
+            ).map { row in
+                (cdnURL: row["cdn_url"] as String?, uploadStatus: row["upload_status"] as Int?)
+            }
+        }
 
         #expect(rows.first?.statusText == "Sending")
         #expect(rows.first.map(isVideoContent) == true)
@@ -144,8 +161,8 @@ extension AppleIMTests {
         let storedVideo = try requireVideoContent(storedMessage)
         #expect(storedMessage?.state.sendStatus == .success)
         #expect(storedVideo.remoteURL?.contains("mock-cdn.chatbridge.local/video") == true)
-        #expect(videoRows.first?.int("upload_status") == MediaUploadStatus.success.rawValue)
-        #expect(videoRows.first?.string("cdn_url") == storedVideo.remoteURL)
+        #expect(videoRows.first?.uploadStatus == MediaUploadStatus.success.rawValue)
+        #expect(videoRows.first?.cdnURL == storedVideo.remoteURL)
     }
 
     @Test func chatUseCaseDoesNotSendTooShortVoice() async throws {
@@ -421,14 +438,18 @@ extension AppleIMTests {
             )
         )
 
-        let rows = try await databaseContext.databaseActor.query(
-            "SELECT mentions_json, at_all FROM message_text WHERE content_id = ?;",
-            parameters: [.text("text_\(message.id.rawValue)")],
-            paths: databaseContext.paths
-        )
+        let mentionRow = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Row.fetchOne(
+                db,
+                sql: "SELECT mentions_json, at_all FROM message_text WHERE content_id = ?;",
+                arguments: ["text_\(message.id.rawValue)"]
+            ).map { row in
+                (mentionsJSON: row["mentions_json"] as String?, atAll: row["at_all"] as Int?)
+            }
+        }
 
-        #expect(rows.first?.string("mentions_json") == "[\"sondra\"]")
-        #expect(rows.first?.int("at_all") == 0)
+        #expect(mentionRow?.mentionsJSON == "[\"sondra\"]")
+        #expect(mentionRow?.atAll == 0)
     }
 
     @Test func incomingMentionMarksConversationUntilRead() async throws {
@@ -1832,16 +1853,18 @@ extension AppleIMTests {
         )
         let storedMessage = try await repository.message(messageID: message.id)
         let job = try await repository.pendingJob(id: "image_upload_crash_image_client")
-        let mediaRows = try await databaseContext.databaseActor.query(
-            "SELECT upload_status FROM media_resource WHERE media_id = ? LIMIT 1;",
-            parameters: [.text("crash_image_media")],
-            paths: databaseContext.paths
-        )
+        let mediaUploadStatus = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT upload_status FROM media_resource WHERE media_id = ? LIMIT 1;",
+                arguments: ["crash_image_media"]
+            )
+        }
 
         #expect(result == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
         #expect(storedMessage?.state.sendStatus == .pending)
         #expect(try requireImageContent(storedMessage).uploadStatus == .pending)
-        #expect(mediaRows.first?.int("upload_status") == MediaUploadStatus.pending.rawValue)
+        #expect(mediaUploadStatus == MediaUploadStatus.pending.rawValue)
         #expect(job?.status == .pending)
         #expect(job?.type == .imageUpload)
         #expect(job?.bizKey == "crash_image_client")
@@ -1900,11 +1923,13 @@ extension AppleIMTests {
         )
         let storedMessage = try await repository.message(messageID: message.id)
         let job = try await repository.pendingJob(id: "message_resend_crash_idempotent_client")
-        let countRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS job_count FROM pending_job WHERE job_id = ?;",
-            parameters: [.text("message_resend_crash_idempotent_client")],
-            paths: databaseContext.paths
-        )
+        let jobCount = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM pending_job WHERE job_id = ?;",
+                arguments: ["message_resend_crash_idempotent_client"]
+            ) ?? 0
+        }
 
         #expect(firstResult == MessageCrashRecoveryResult(scannedMessageCount: 1, recoveredMessageCount: 1, pendingJobCount: 1, failedMessageCount: 0))
         #expect(secondResult == MessageCrashRecoveryResult(scannedMessageCount: 0, recoveredMessageCount: 0, pendingJobCount: 0, failedMessageCount: 0))
@@ -1912,7 +1937,7 @@ extension AppleIMTests {
         #expect(job?.status == .success)
         #expect(job?.payloadJSON == #"{"terminal":true}"#)
         #expect(job?.maxRetryCount == 1)
-        #expect(countRows.first?.int("job_count") == 1)
+        #expect(jobCount == 1)
     }
 
     @MainActor
@@ -2344,14 +2369,12 @@ extension AppleIMTests {
                 sortSequence: 530
             )
         )
-        try await databaseContext.databaseActor.execute(
-            "UPDATE message SET read_status = ? WHERE message_id = ?;",
-            parameters: [
-                .integer(Int64(MessageReadStatus.unread.rawValue)),
-                .text(insertedMessage.id.rawValue)
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: "UPDATE message SET read_status = ? WHERE message_id = ?;",
+                arguments: [MessageReadStatus.unread.rawValue, insertedMessage.id.rawValue]
+            )
+        }
 
         let useCase = LocalChatUseCase(
             userID: "voice_dot_user",

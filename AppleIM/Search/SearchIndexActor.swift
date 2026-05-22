@@ -5,6 +5,61 @@
 //  Owns search.db FTS writes and rebuilds.
 
 import Foundation
+import GRDB
+
+/// 联系人 FTS 搜索结果行。
+nonisolated private struct ContactSearchResultRow: FetchableRecord, Sendable {
+    let result: SearchResultRecord
+
+    init(row: Row) throws {
+        result = SearchResultRecord(
+            kind: .contact,
+            id: row["contact_id"] ?? "",
+            title: row["title"] ?? "",
+            subtitle: row["subtitle"] ?? "",
+            conversationID: nil,
+            messageID: nil
+        )
+    }
+}
+
+/// 会话 FTS 搜索结果行。
+nonisolated private struct ConversationSearchResultRow: FetchableRecord, Sendable {
+    let result: SearchResultRecord
+
+    init(row: Row) throws {
+        let rawConversationID: String = row["conversation_id"] ?? ""
+        let conversationID = ConversationID(rawValue: rawConversationID)
+        result = SearchResultRecord(
+            kind: .conversation,
+            id: conversationID.rawValue,
+            title: row["title"] ?? "",
+            subtitle: row["subtitle"] ?? "",
+            conversationID: conversationID,
+            messageID: nil
+        )
+    }
+}
+
+/// 文本消息 FTS 搜索结果行。
+nonisolated private struct MessageSearchResultRow: FetchableRecord, Sendable {
+    let result: SearchResultRecord
+
+    init(row: Row) throws {
+        let rawMessageID: String = row["message_id"] ?? ""
+        let rawConversationID: String = row["conversation_id"] ?? ""
+        let messageID = MessageID(rawValue: rawMessageID)
+        let conversationID = ConversationID(rawValue: rawConversationID)
+        result = SearchResultRecord(
+            kind: .message,
+            id: messageID.rawValue,
+            title: row["text"] ?? "",
+            subtitle: row["sender_id"] ?? "",
+            conversationID: conversationID,
+            messageID: messageID
+        )
+    }
+}
 
 /// 搜索索引 Actor
 ///
@@ -27,17 +82,21 @@ actor SearchIndexActor {
         let contacts = try await contactIndexRows(userID: userID)
         let messages = try await messageIndexRows(userID: userID)
 
-        var statements = [
-            SQLiteStatement("DELETE FROM contact_search;"),
-            SQLiteStatement("DELETE FROM conversation_search;"),
-            SQLiteStatement("DELETE FROM message_search;")
-        ]
+        _ = try await database.write(in: .search, paths: paths) { db in
+            try Table("contact_search").deleteAll(db)
+            try Table("conversation_search").deleteAll(db)
+            try Table("message_search").deleteAll(db)
 
-        statements += contacts.map(Self.upsertContactSearchStatement)
-        statements += conversations.map(Self.upsertConversationSearchStatement)
-        statements += messages.map(Self.upsertMessageSearchStatement)
-
-        try await database.performTransaction(statements, in: .search, paths: paths)
+            for row in contacts {
+                try ContactSearchDatabaseRecord(row: row).insert(db)
+            }
+            for row in conversations {
+                try ConversationSearchDatabaseRecord(row: row).insert(db)
+            }
+            for row in messages {
+                try MessageSearchDatabaseRecord(row: row).insert(db)
+            }
+        }
     }
 
     /// 按关键词搜索联系人、会话和消息
@@ -58,17 +117,12 @@ actor SearchIndexActor {
     func indexMessageBestEffort(messageID: MessageID, userID: UserID) async {
         do {
             if let row = try await messageIndexRow(messageID: messageID, userID: userID) {
-                try await database.performTransaction(
-                    [
-                        SQLiteStatement(
-                            "DELETE FROM message_search WHERE message_id = ?;",
-                            parameters: [.text(messageID.rawValue)]
-                        ),
-                        Self.upsertMessageSearchStatement(row)
-                    ],
-                    in: .search,
-                    paths: paths
-                )
+                _ = try await database.write(in: .search, paths: paths) { db in
+                    try Table("message_search")
+                        .filter(Column("message_id") == messageID.rawValue)
+                        .deleteAll(db)
+                    try MessageSearchDatabaseRecord(row: row).insert(db)
+                }
             } else {
                 try await removeMessage(messageID: messageID)
             }
@@ -100,17 +154,12 @@ actor SearchIndexActor {
     func indexConversationBestEffort(conversationID: ConversationID, userID: UserID) async {
         do {
             if let row = try await conversationIndexRow(conversationID: conversationID, userID: userID) {
-                try await database.performTransaction(
-                    [
-                        SQLiteStatement(
-                            "DELETE FROM conversation_search WHERE conversation_id = ?;",
-                            parameters: [.text(conversationID.rawValue)]
-                        ),
-                        Self.upsertConversationSearchStatement(row)
-                    ],
-                    in: .search,
-                    paths: paths
-                )
+                _ = try await database.write(in: .search, paths: paths) { db in
+                    try Table("conversation_search")
+                        .filter(Column("conversation_id") == conversationID.rawValue)
+                        .deleteAll(db)
+                    try ConversationSearchDatabaseRecord(row: row).insert(db)
+                }
             }
         } catch {
             try? await enqueueRepairJob(
@@ -124,213 +173,175 @@ actor SearchIndexActor {
 
     /// 从 FTS 消息索引中删除一条消息
     private func removeMessage(messageID: MessageID) async throws {
-        try await database.execute(
-            "DELETE FROM message_search WHERE message_id = ?;",
-            parameters: [.text(messageID.rawValue)],
-            in: .search,
-            paths: paths
-        )
+        _ = try await database.write(in: .search, paths: paths) { db in
+            try Table("message_search")
+                .filter(Column("message_id") == messageID.rawValue)
+                .deleteAll(db)
+        }
     }
 
     /// 搜索联系人索引表
     private func searchContacts(expression: String, limit: Int) async throws -> [SearchResultRecord] {
-        let rows = try await database.query(
-            """
-            SELECT contact_id, title, subtitle
-            FROM contact_search
-            WHERE contact_search MATCH ?
-            ORDER BY rank
-            LIMIT ?;
-            """,
-            parameters: [.text(expression), .integer(Int64(limit))],
-            in: .search,
-            paths: paths
-        )
-
-        return rows.map {
-            SearchResultRecord(
-                kind: .contact,
-                id: $0.string("contact_id") ?? "",
-                title: $0.string("title") ?? "",
-                subtitle: $0.string("subtitle") ?? "",
-                conversationID: nil,
-                messageID: nil
+        try await database.read(in: .search, paths: paths) { db in
+            try ContactSearchResultRow.fetchAll(
+                db,
+                // 保留 FTS MATCH 手写 SQL：Query Interface 不覆盖 FTS 排名语义。
+                sql: """
+                SELECT contact_id, title, subtitle
+                FROM contact_search
+                WHERE contact_search MATCH ?
+                ORDER BY rank
+                LIMIT ?;
+                """,
+                arguments: [expression, Int64(limit)]
             )
+            .map(\.result)
         }
     }
 
     /// 搜索会话索引表
     private func searchConversations(expression: String, limit: Int) async throws -> [SearchResultRecord] {
-        let rows = try await database.query(
-            """
-            SELECT conversation_id, title, subtitle
-            FROM conversation_search
-            WHERE conversation_search MATCH ?
-            ORDER BY rank
-            LIMIT ?;
-            """,
-            parameters: [.text(expression), .integer(Int64(limit))],
-            in: .search,
-            paths: paths
-        )
-
-        return rows.map {
-            let conversationID = ConversationID(rawValue: $0.string("conversation_id") ?? "")
-            return SearchResultRecord(
-                kind: .conversation,
-                id: conversationID.rawValue,
-                title: $0.string("title") ?? "",
-                subtitle: $0.string("subtitle") ?? "",
-                conversationID: conversationID,
-                messageID: nil
+        try await database.read(in: .search, paths: paths) { db in
+            try ConversationSearchResultRow.fetchAll(
+                db,
+                // 保留 FTS MATCH 手写 SQL：Query Interface 不覆盖 FTS 排名语义。
+                sql: """
+                SELECT conversation_id, title, subtitle
+                FROM conversation_search
+                WHERE conversation_search MATCH ?
+                ORDER BY rank
+                LIMIT ?;
+                """,
+                arguments: [expression, Int64(limit)]
             )
+            .map(\.result)
         }
     }
 
     /// 搜索文本消息索引表
     private func searchMessages(expression: String, limit: Int) async throws -> [SearchResultRecord] {
-        let rows = try await database.query(
-            """
-            SELECT message_id, conversation_id, sender_id, text
-            FROM message_search
-            WHERE message_search MATCH ?
-            ORDER BY rank
-            LIMIT ?;
-            """,
-            parameters: [.text(expression), .integer(Int64(limit))],
-            in: .search,
-            paths: paths
-        )
-
-        return rows.map {
-            let messageID = MessageID(rawValue: $0.string("message_id") ?? "")
-            let conversationID = ConversationID(rawValue: $0.string("conversation_id") ?? "")
-            return SearchResultRecord(
-                kind: .message,
-                id: messageID.rawValue,
-                title: $0.string("text") ?? "",
-                subtitle: $0.string("sender_id") ?? "",
-                conversationID: conversationID,
-                messageID: messageID
+        try await database.read(in: .search, paths: paths) { db in
+            try MessageSearchResultRow.fetchAll(
+                db,
+                // 保留 FTS MATCH 手写 SQL：Query Interface 不覆盖 FTS 排名语义。
+                sql: """
+                SELECT message_id, conversation_id, sender_id, text
+                FROM message_search
+                WHERE message_search MATCH ?
+                ORDER BY rank
+                LIMIT ?;
+                """,
+                arguments: [expression, Int64(limit)]
             )
+            .map(\.result)
         }
     }
 
     /// 生成当前用户可写入联系人索引的行数据
     private func contactIndexRows(userID: UserID) async throws -> [ContactIndexRow] {
-        let rows = try await database.query(
-            """
-            SELECT contact_id, COALESCE(NULLIF(remark, ''), nickname, wxid) AS title, wxid AS subtitle
-            FROM contact
-            WHERE user_id = ? AND is_deleted = 0;
-            """,
-            parameters: [.text(userID.rawValue)],
-            paths: paths
-        )
-
-        return rows.compactMap { row in
-            guard let id = row.string("contact_id") else { return nil }
-            return ContactIndexRow(
-                id: id,
-                title: row.string("title") ?? "",
-                subtitle: row.string("subtitle") ?? ""
-            )
+        try await database.read(paths: paths) { db in
+            try ContactDatabaseRecord
+                .filter(ContactDatabaseRecord.Columns.userID == userID.rawValue)
+                .filter(ContactDatabaseRecord.Columns.isDeleted == false)
+                .fetchAll(db)
+                .map(\.record)
+                .map { record in
+                    ContactIndexRow(
+                        id: record.contactID.rawValue,
+                        title: record.displayName,
+                        subtitle: record.wxid
+                    )
+                }
         }
     }
 
     /// 生成当前用户可写入会话索引的行数据
     private func conversationIndexRows(userID: UserID) async throws -> [ConversationIndexRow] {
-        let rows = try await database.query(
-            """
-            SELECT conversation_id, COALESCE(title, target_id) AS title, COALESCE(draft_text, last_message_digest, '') AS subtitle
-            FROM conversation
-            WHERE user_id = ? AND is_hidden = 0;
-            """,
-            parameters: [.text(userID.rawValue)],
-            paths: paths
-        )
-
-        return rows.compactMap { row in
-            guard let id = row.string("conversation_id") else { return nil }
-            return ConversationIndexRow(
-                id: ConversationID(rawValue: id),
-                title: row.string("title") ?? "",
-                subtitle: row.string("subtitle") ?? ""
-            )
+        try await database.read(paths: paths) { db in
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.isHidden == false)
+                .fetchAll(db)
+                .map(\.record)
+                .map { record in
+                    ConversationIndexRow(
+                        id: record.id,
+                        title: record.title.isEmpty ? record.targetID : record.title,
+                        subtitle: record.draftText ?? record.lastMessageDigest
+                    )
+                }
         }
     }
 
     /// 查询单个会话当前可写入索引的行数据
     private func conversationIndexRow(conversationID: ConversationID, userID: UserID) async throws -> ConversationIndexRow? {
-        let rows = try await database.query(
-            """
-            SELECT conversation_id, COALESCE(title, target_id) AS title, COALESCE(draft_text, last_message_digest, '') AS subtitle
-            FROM conversation
-            WHERE conversation_id = ? AND user_id = ? AND is_hidden = 0
-            LIMIT 1;
-            """,
-            parameters: [.text(conversationID.rawValue), .text(userID.rawValue)],
-            paths: paths
-        )
+        let record = try await database.read(paths: paths) { db in
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.isHidden == false)
+                .fetchOne(db)?
+                .record
+        }
 
-        guard let row = rows.first else {
+        guard let record else {
             return nil
         }
 
         return ConversationIndexRow(
-            id: conversationID,
-            title: row.string("title") ?? "",
-            subtitle: row.string("subtitle") ?? ""
+            id: record.id,
+            title: record.title.isEmpty ? record.targetID : record.title,
+            subtitle: record.draftText ?? record.lastMessageDigest
         )
     }
 
     /// 生成当前用户可写入文本消息索引的行数据
+    ///
+    /// 这里保留手写 SQL：需要跨 message、conversation、message_text 三表过滤，
+    /// 且和 FTS 重建的批量路径强相关，Query Interface 版本可读性更差。
     private func messageIndexRows(userID: UserID) async throws -> [MessageIndexRow] {
-        let rows = try await database.query(
-            """
-            SELECT message.message_id, message.conversation_id, message.sender_id, message_text.text
-            FROM message
-            INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
-            INNER JOIN message_text ON message_text.content_id = message.content_id
-            WHERE conversation.user_id = ?
-            AND message.msg_type = ?
-            AND message.is_deleted = 0
-            AND message.revoke_status = 0;
-            """,
-            parameters: [
-                .text(userID.rawValue),
-                .integer(Int64(MessageType.text.rawValue))
-            ],
-            paths: paths
-        )
-
-        return rows.compactMap(Self.messageIndexRow)
+        try await database.read(paths: paths) { db in
+            try MessageIndexDatabaseRecord.fetchAll(
+                db,
+                sql: """
+                SELECT message.message_id, message.conversation_id, message.sender_id, message_text.text
+                FROM message
+                INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
+                INNER JOIN message_text ON message_text.content_id = message.content_id
+                WHERE conversation.user_id = ?
+                AND message.msg_type = ?
+                AND message.is_deleted = 0
+                AND message.revoke_status = 0;
+                """,
+                arguments: [userID.rawValue, MessageType.text.rawValue]
+            )
+            .map(\.row)
+        }
     }
 
     /// 查询单条消息当前可写入索引的行数据
+    ///
+    /// 这里保留手写 SQL，理由同批量重建：跨表条件集中，且只为 FTS 索引源服务。
     private func messageIndexRow(messageID: MessageID, userID: UserID) async throws -> MessageIndexRow? {
-        let rows = try await database.query(
-            """
-            SELECT message.message_id, message.conversation_id, message.sender_id, message_text.text
-            FROM message
-            INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
-            INNER JOIN message_text ON message_text.content_id = message.content_id
-            WHERE conversation.user_id = ?
-            AND message.message_id = ?
-            AND message.msg_type = ?
-            AND message.is_deleted = 0
-            AND message.revoke_status = 0
-            LIMIT 1;
-            """,
-            parameters: [
-                .text(userID.rawValue),
-                .text(messageID.rawValue),
-                .integer(Int64(MessageType.text.rawValue))
-            ],
-            paths: paths
-        )
-
-        return rows.first.flatMap(Self.messageIndexRow)
+        try await database.read(paths: paths) { db in
+            try MessageIndexDatabaseRecord.fetchOne(
+                db,
+                sql: """
+                SELECT message.message_id, message.conversation_id, message.sender_id, message_text.text
+                FROM message
+                INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
+                INNER JOIN message_text ON message_text.content_id = message.content_id
+                WHERE conversation.user_id = ?
+                AND message.message_id = ?
+                AND message.msg_type = ?
+                AND message.is_deleted = 0
+                AND message.revoke_status = 0
+                LIMIT 1;
+                """,
+                arguments: [userID.rawValue, messageID.rawValue, MessageType.text.rawValue]
+            )?
+            .row
+        }
     }
 
     /// 将索引失败的对象登记为待处理修复任务
@@ -352,38 +363,22 @@ actor SearchIndexActor {
             .joined(separator: ":")
         let jobID = "search_index_repair_\(bizKey)"
 
-        try await database.execute(
-            """
-            INSERT INTO pending_job (
-                job_id,
-                user_id,
-                job_type,
-                biz_key,
-                payload_json,
-                status,
-                retry_count,
-                max_retry_count,
-                next_retry_at,
-                updated_at,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 3, NULL, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                payload_json = excluded.payload_json,
-                status = excluded.status,
-                updated_at = excluded.updated_at;
-            """,
-            parameters: [
-                .text(jobID),
-                .text(userID.rawValue),
-                .integer(Int64(PendingJobType.searchIndexRepair.rawValue)),
-                .text(bizKey),
-                .text(payloadJSON),
-                .integer(Int64(PendingJobStatus.pending.rawValue)),
-                .integer(now),
-                .integer(now)
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            let job = PendingJob(
+                id: jobID,
+                userID: userID,
+                type: .searchIndexRepair,
+                bizKey: bizKey,
+                payloadJSON: payloadJSON,
+                status: .pending,
+                retryCount: 0,
+                maxRetryCount: 3,
+                nextRetryAt: nil,
+                updatedAt: now,
+                createdAt: now
+            )
+            try PendingJobDatabaseRecord.upsertRepairJob(job, in: db)
+        }
     }
 
     /// 将用户输入转换为 SQLite FTS MATCH 表达式
@@ -413,61 +408,6 @@ actor SearchIndexActor {
         return tokens.joined(separator: " ")
     }
 
-    /// 将数据库行转换为消息索引行
-    private static func messageIndexRow(from row: SQLiteRow) -> MessageIndexRow? {
-        guard
-            let messageID = row.string("message_id"),
-            let conversationID = row.string("conversation_id"),
-            let senderID = row.string("sender_id")
-        else {
-            return nil
-        }
-
-        return MessageIndexRow(
-            id: MessageID(rawValue: messageID),
-            conversationID: ConversationID(rawValue: conversationID),
-            senderID: UserID(rawValue: senderID),
-            text: row.string("text") ?? ""
-        )
-    }
-
-    /// 构造联系人索引 upsert 语句
-    private static func upsertContactSearchStatement(_ row: ContactIndexRow) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO contact_search (contact_id, title, subtitle)
-            VALUES (?, ?, ?);
-            """,
-            parameters: [.text(row.id), .text(row.title), .text(row.subtitle)]
-        )
-    }
-
-    /// 构造会话索引 upsert 语句
-    private static func upsertConversationSearchStatement(_ row: ConversationIndexRow) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO conversation_search (conversation_id, title, subtitle)
-            VALUES (?, ?, ?);
-            """,
-            parameters: [.text(row.id.rawValue), .text(row.title), .text(row.subtitle)]
-        )
-    }
-
-    /// 构造消息索引 upsert 语句
-    private static func upsertMessageSearchStatement(_ row: MessageIndexRow) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO message_search (message_id, conversation_id, sender_id, text)
-            VALUES (?, ?, ?, ?);
-            """,
-            parameters: [
-                .text(row.id.rawValue),
-                .text(row.conversationID.rawValue),
-                .text(row.senderID.rawValue),
-                .text(row.text)
-            ]
-        )
-    }
 }
 
 /// 联系人搜索索引行
@@ -500,4 +440,58 @@ nonisolated private struct MessageIndexRow: Equatable, Sendable {
     let senderID: UserID
     /// 可检索文本
     let text: String
+}
+
+/// 文本消息索引源查询行。
+nonisolated private struct MessageIndexDatabaseRecord: FetchableRecord, Sendable {
+    let row: MessageIndexRow
+
+    init(row: Row) throws {
+        self.row = MessageIndexRow(
+            id: MessageID(rawValue: row["message_id"]),
+            conversationID: ConversationID(rawValue: row["conversation_id"]),
+            senderID: UserID(rawValue: row["sender_id"]),
+            text: row["text"] ?? ""
+        )
+    }
+}
+
+/// contact_search FTS 写入模型。
+nonisolated private struct ContactSearchDatabaseRecord: PersistableRecord, Sendable {
+    static let databaseTableName = "contact_search"
+
+    let row: ContactIndexRow
+
+    func encode(to container: inout PersistenceContainer) throws {
+        container["contact_id"] = row.id
+        container["title"] = row.title
+        container["subtitle"] = row.subtitle
+    }
+}
+
+/// conversation_search FTS 写入模型。
+nonisolated private struct ConversationSearchDatabaseRecord: PersistableRecord, Sendable {
+    static let databaseTableName = "conversation_search"
+
+    let row: ConversationIndexRow
+
+    func encode(to container: inout PersistenceContainer) throws {
+        container["conversation_id"] = row.id.rawValue
+        container["title"] = row.title
+        container["subtitle"] = row.subtitle
+    }
+}
+
+/// message_search FTS 写入模型。
+nonisolated private struct MessageSearchDatabaseRecord: PersistableRecord, Sendable {
+    static let databaseTableName = "message_search"
+
+    let row: MessageIndexRow
+
+    func encode(to container: inout PersistenceContainer) throws {
+        container["message_id"] = row.id.rawValue
+        container["conversation_id"] = row.conversationID.rawValue
+        container["sender_id"] = row.senderID.rawValue
+        container["text"] = row.text
+    }
 }

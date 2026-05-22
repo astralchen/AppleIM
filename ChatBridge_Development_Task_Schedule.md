@@ -45,8 +45,8 @@
 | 已完成 | 第 2 周 | 退出登录、账号切换与本地数据删除 | 会话列表账号入口，清除登录态后回到登录页，重新登录其他账号重建依赖容器；删除本地数据需二次确认并清理当前账号数据库、搜索库、媒体目录、缓存和账号绑定密钥 | 退出登录后不展示原账号数据；切换账号后进入新账号会话列表且不串目录；删除当前账号本地数据后回到登录页，重新登录会重建干净账号存储 | iOS |
 | 已完成 | 第 2 周 | 账号目录隔离 | `account_xxx/main.db/search.db/file_index.db/media/cache` | 切换账号不串数据 | iOS |
 | 已完成 | 第 2 周 | Keychain 密钥管理 | 密钥与账号绑定，不硬编码 | 登录后可读取当前账号密钥 | iOS |
-| 已完成 | 第 2 周 | DatabaseActor | actor 串行化连接、迁移、事务 | 数据库访问不在主线程 | iOS |
-| 已完成 | 第 2 周 | migration_meta | 记录 schema 版本、迁移 ID、检查时间 | 重启后版本可追踪 | iOS |
+| 已完成 | 第 2 周 | DatabaseActor | actor 串行化连接、GRDB 基线初始化、事务 | 数据库访问不在主线程 | iOS |
+| 已完成 | 第 2 周 | 当前基线重建 | 项目未上架阶段不保留历史迁移链；旧 schema 不匹配时重建数据库文件 | 新库直接拥有当前完整表、索引和 FTS | iOS |
 | 已完成 | 第 3 周 | 核心表建表 | user、contact、conversation、message、content tables | 建表和索引完成 | iOS |
 | 已完成 | 第 3 周 | Repository/DAO | UI 不直接访问数据库 | 单元测试覆盖基础 CRUD | iOS |
 | 已完成 | 第 3 周 | 事务封装 | 消息、内容、会话摘要、未读数同事务 | 模拟异常时不产生半写入 | iOS |
@@ -216,7 +216,7 @@
 | 风险 | 影响 | 应对 |
 |---|---|---|
 | 服务端接口延期 | 消息发送、同步、媒体上传无法完整联调 | 先实现 Mock Service 和本地回环模式 |
-| 数据库方案未定 | Store 层返工风险 | 先封装 Repository/DAO 协议，隔离 WCDB/GRDB/SQLite 细节 |
+| 数据库方案已切换为 GRDB + SQLCipher | Store 层继续扩展时需要保持边界清晰 | 统一通过 `DatabaseActor` 的 GRDB `read/write/observe` 入口访问；保留本地 `Packages/GRDBSQLCipher`，不再新增旧 SQLite 兼容 API |
 | Swift 6 并发警告积累 | 后期修复成本高 | 每个 Sprint 必须保持严格并发零警告 |
 | iOS 15 API 兼容 | 新 API 无降级导致低版本崩溃 | Code Review 必查 `#available` 和降级路径 |
 | 媒体链路复杂 | 上传、缓存、索引、重试容易互相影响 | 媒体任务全部进入 pending_job，状态机单独测试 |
@@ -231,5 +231,9 @@
 - 每周补齐对应模块单元测试。
 - 每周输出当前 Sprint 完成项、延期项、风险项。
 - 涉及 UI 的任务必须提供 iOS 15+ 兼容验证。
-- 涉及数据库的任务必须附带迁移和回滚验证说明。
+- 涉及数据库的任务必须说明当前基线 schema、重建策略和 SQLCipher 验证；项目上架前不要求旧业务数据迁移。
 - 涉及消息链路的任务必须覆盖弱网、重试和去重场景。
+
+> 进度更新（2026-05-22）：数据库全链路架构已按 GRDB 最优方案继续收敛。`DatabaseActor` 移除旧迁移元数据、旧业务 schema 补列和明文库数据搬运逻辑，只保留 SQLCipher 配置、连接池、`read/write/observe`、完整性检查和当前基线重建；`DatabaseSchema` 改为当前完整基线，检测到不符合基线的本地库会重建数据库文件及 `-wal` / `-shm`；消息分页、最新消息观察、单条消息读取、同步去重、崩溃恢复查询、会话摘要刷新和角标聚合已改为 GRDB Record / Query Interface 路径，普通业务 CRUD 不再依赖旧手写 SQL。验证：生产代码静态审计 `rg -n "database\\.query|database\\.execute|SQLiteRow|SQLiteStatement|performTransaction|SQLiteTypes|MigrationMetadata|migrationScripts|allScripts|listMessagesQuery|StatementArguments|MessageAggregateDatabaseRecord" AppleIM/Database AppleIM/Store AppleIM/Search` 无命中；`xcodebuild -quiet -project AppleIM.xcodeproj -scheme AppleIM -destination 'generic/platform=iOS Simulator' build-for-testing` 通过；数据库/Store 定向测试命令 `xcodebuild -quiet -project AppleIM.xcodeproj -scheme AppleIM -destination 'platform=iOS Simulator,name=iPhone 17' test -only-testing:AppleIMTests/AppleIMTests/plaintextDatabaseIsRecreatedAsEncryptedDatabaseWithoutDataMigration -only-testing:AppleIMTests/AppleIMTests/databaseBootstrapCreatesCurrentBaselineWithoutMigrationState -only-testing:AppleIMTests/AppleIMTests/databaseBootstrapRecreatesLegacyNotificationBadgeSettingSchema -only-testing:AppleIMTests/AppleIMTests/startupDataRepairRunsWithoutMigrationStateGate -only-testing:AppleIMTests/AppleIMTests/messagePaginationQueriesUseVisibleSortIndex -only-testing:AppleIMTests/AppleIMTests/localChatRepositoryObservesLatestMessages -only-testing:AppleIMTests/AppleIMTests/sqlHotPathQueriesUseDedicatedIndexes` 通过；`git diff --check` 通过。
+
+> 进度更新（2026-05-22）：`DatabaseSchema` 已从 SQL 脚本数组继续收敛为 GRDB schema builder 当前基线。主库、搜索库、文件索引库分别通过 `DatabaseSchema.applyBaseline(to:kind:)` 创建；普通表和普通索引使用 `db.create(table:)` / `db.create(index:)`，仅 FTS `CREATE VIRTUAL TABLE ... USING fts5` 与 `PRAGMA user_version` 保留必要 SQL。新增 schema 形态静态测试，继续保留旧 schema 不匹配即重建策略和 SQL 热点索引验证。

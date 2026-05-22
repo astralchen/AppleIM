@@ -31,6 +31,10 @@ final class ConversationListViewModel {
     private var settingTask: Task<Void, Never>?
     /// 模拟收消息任务集合
     private var simulationTasks: [UUID: Task<Void, Never>] = [:]
+    /// 首屏会话观察启动任务
+    private var observationStartTask: Task<Void, Never>?
+    /// 首屏会话观察订阅
+    private var conversationObservationCancellable: AnyCancellable?
     /// 下一页分页游标
     private var nextCursor: ConversationPageCursor?
     /// 首屏加载代次，用于忽略已取消的旧任务回调
@@ -149,6 +153,7 @@ final class ConversationListViewModel {
                     "ConversationList loaded state published generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: loadedPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
                 )
                 nextCursor = page.nextCursor
+                startConversationObservationIfNeeded()
                 loadTask = nil
                 diagnostics.log(
                     "ConversationList initial load completed generation=\(currentGeneration) rows=\(page.rows.count) hasMore=\(page.hasMore) elapsed=\(elapsed)"
@@ -328,8 +333,59 @@ final class ConversationListViewModel {
         loadMoreTask = nil
         settingTask?.cancel()
         settingTask = nil
+        observationStartTask?.cancel()
+        observationStartTask = nil
+        conversationObservationCancellable?.cancel()
+        conversationObservationCancellable = nil
         simulationTasks.values.forEach { $0.cancel() }
         simulationTasks.removeAll()
+    }
+
+    private func startConversationObservationIfNeeded() {
+        guard conversationObservationCancellable == nil, observationStartTask == nil else {
+            return
+        }
+
+        observationStartTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let publisher = try await useCase.observeConversationPage(limit: pageSize) else {
+                    observationStartTask = nil
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                bindConversationObservation(publisher)
+                observationStartTask = nil
+            } catch is CancellationError {
+                observationStartTask = nil
+            } catch {
+                observationStartTask = nil
+                diagnostics.log("ConversationList observation failed error=\(error)")
+            }
+        }
+    }
+
+    private func bindConversationObservation(_ publisher: AnyPublisher<ConversationListPage, Error>) {
+        conversationObservationCancellable = publisher
+            .sink(
+                receiveCompletion: { [weak self] completion in
+                    guard case let .failure(error) = completion else { return }
+                    self?.diagnostics.log("ConversationList observation completed error=\(error)")
+                    self?.conversationObservationCancellable = nil
+                },
+                receiveValue: { [weak self] page in
+                    guard let self else { return }
+                    guard loadTask == nil, loadMoreTask == nil else { return }
+                    publish { state in
+                        state.phase = .loaded
+                        state.rows = page.rows
+                        state.hasMoreRows = page.hasMore
+                        state.isLoadingMore = false
+                        state.renderIntent = .backgroundRefresh
+                    }
+                    nextCursor = page.nextCursor
+                }
+            )
     }
 
     private func publish(_ update: (inout ConversationListViewState) -> Void) {

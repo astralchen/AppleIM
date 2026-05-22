@@ -35,6 +35,8 @@ final class ConversationUnreadBadgeController {
     private var cancellables = Set<AnyCancellable>()
     /// 当前刷新任务。
     private var refreshTask: Task<Void, Never>?
+    /// 未读数观察启动任务。
+    private var observationTask: Task<Void, Never>?
 
     /// UI 可订阅的未读徽标文本。
     var badgePublisher: AnyPublisher<String?, Never> {
@@ -54,6 +56,7 @@ final class ConversationUnreadBadgeController {
 
     deinit {
         refreshTask?.cancel()
+        observationTask?.cancel()
     }
 
     /// 启动监听并立即刷新一次未读数。
@@ -74,7 +77,36 @@ final class ConversationUnreadBadgeController {
             }
             .store(in: &cancellables)
 
+        startBadgeObservation()
         refresh()
+    }
+
+    private func startBadgeObservation() {
+        observationTask?.cancel()
+        let userID = userID
+        let storeProvider = storeProvider
+        observationTask = Task { [weak self] in
+            do {
+                let repository = try await storeProvider.repository()
+                let publisher = try await repository.observeUnreadBadgeCount(for: userID)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard let self else { return }
+                    publisher
+                        .map(ConversationUnreadBadgeFormatter.text(for:))
+                        .replaceError(with: nil)
+                        .sink { text in
+                            self.badgeSubject.send(text)
+                        }
+                        .store(in: &self.cancellables)
+                }
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    self?.refresh()
+                }
+            }
+        }
     }
 
     /// 主动刷新账号级未读数。

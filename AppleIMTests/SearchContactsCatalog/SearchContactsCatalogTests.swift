@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 import UIKit
 
 @testable import AppleIM
@@ -170,27 +171,28 @@ extension AppleIMTests {
         }
 
         let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "search_user")
-        try await databaseContext.databaseActor.execute(
-            """
-            INSERT INTO contact (
-                contact_id,
-                user_id,
-                wxid,
-                nickname,
-                remark,
-                type,
-                is_deleted
-            ) VALUES (?, ?, ?, ?, ?, 0, 0);
-            """,
-            parameters: [
-                .text("contact_sondra"),
-                .text("search_user"),
-                .text("wx_sondra"),
-                .text("Sondra Search"),
-                .text("Index Friend")
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: """
+                INSERT INTO contact (
+                    contact_id,
+                    user_id,
+                    wxid,
+                    nickname,
+                    remark,
+                    type,
+                    is_deleted
+                ) VALUES (?, ?, ?, ?, ?, 0, 0);
+                """,
+                arguments: [
+                    "contact_sondra",
+                    "search_user",
+                    "wx_sondra",
+                    "Sondra Search",
+                    "Index Friend"
+                ]
+            )
+        }
         try await repository.upsertConversation(
             makeConversationRecord(id: "search_conversation", userID: "search_user", title: "Bridge Search", sortTimestamp: 1)
         )
@@ -902,24 +904,24 @@ extension AppleIMTests {
             )
         )
         try await waitForCondition {
-            let rows = try await databaseContext.databaseActor.query(
-                "SELECT COUNT(*) AS index_count FROM message_search WHERE message_id = ?;",
-                parameters: [.text("search_failure_message")],
-                in: .search,
-                paths: databaseContext.paths
-            )
-
-            return rows.first?.int("index_count") == 1
+            let count = try await databaseContext.databaseActor.read(in: .search, paths: databaseContext.paths) { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM message_search WHERE message_id = ?;",
+                    arguments: ["search_failure_message"]
+                ) ?? 0
+            }
+            return count == 1
         }
         try await waitForCondition {
-            let rows = try await databaseContext.databaseActor.query(
-                "SELECT COUNT(*) AS index_count FROM conversation_search WHERE conversation_id = ?;",
-                parameters: [.text("search_failure_conversation")],
-                in: .search,
-                paths: databaseContext.paths
-            )
-
-            return rows.first?.int("index_count") == 1
+            let count = try await databaseContext.databaseActor.read(in: .search, paths: databaseContext.paths) { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM conversation_search WHERE conversation_id = ?;",
+                    arguments: ["search_failure_conversation"]
+                ) ?? 0
+            }
+            return count == 1
         }
         try FileManager.default.removeItem(at: databaseContext.paths.searchDatabase)
         try FileManager.default.createDirectory(at: databaseContext.paths.searchDatabase, withIntermediateDirectories: false)
