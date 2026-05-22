@@ -238,6 +238,10 @@ final class ChatViewController: UIViewController {
     private let viewModel: ChatViewModel
     /// 账号级消息未读徽标文本发布源。
     private let unreadBadgePublisher: AnyPublisher<String?, Never>
+    /// 临时媒体文件管理服务。
+    private let temporaryMediaFileManager: any TemporaryMediaFileManaging
+    /// 媒体预览与播放协调器。
+    private let mediaPreviewPresenter: ChatMediaPreviewPresenter
     /// Combine 订阅集合
     private var cancellables = Set<AnyCancellable>()
     /// 键盘通知监听任务。
@@ -356,10 +360,8 @@ final class ChatViewController: UIViewController {
     private let voiceRecorder = VoiceRecordingController()
     /// 语音播放控制器
     private let voicePlaybackController = VoicePlaybackController()
-    /// 待发送附件预览
-    private var pendingAttachmentPreviews: [ChatPendingAttachmentPreviewItem] = []
-    /// 待发送媒体内容缓存
-    private var pendingComposerMediaByID: [String: ChatComposerMedia] = [:]
+    /// 输入附件状态协调器。
+    private let inputAttachmentCoordinator = ChatInputAttachmentCoordinator()
     /// 待确认发送的本地语音录音
     private var pendingVoiceRecording: VoiceRecordingFile?
     /// 返回消息列表按钮。
@@ -370,10 +372,13 @@ final class ChatViewController: UIViewController {
     /// 初始化聊天页
     init(
         viewModel: ChatViewModel,
-        unreadBadgePublisher: AnyPublisher<String?, Never> = Just<String?>(nil).eraseToAnyPublisher()
+        unreadBadgePublisher: AnyPublisher<String?, Never> = Just<String?>(nil).eraseToAnyPublisher(),
+        temporaryMediaFileManager: any TemporaryMediaFileManaging = DefaultTemporaryMediaFileManager.shared
     ) {
         self.viewModel = viewModel
         self.unreadBadgePublisher = unreadBadgePublisher
+        self.temporaryMediaFileManager = temporaryMediaFileManager
+        self.mediaPreviewPresenter = ChatMediaPreviewPresenter(temporaryMediaFileManager: temporaryMediaFileManager)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -991,9 +996,7 @@ final class ChatViewController: UIViewController {
 
     /// 发送当前文本和待发送附件
     private func sendComposer(text: String) {
-        let media = pendingAttachmentPreviews.compactMap { pendingComposerMediaByID[$0.id] }
-        pendingAttachmentPreviews.removeAll()
-        pendingComposerMediaByID.removeAll()
+        let media = inputAttachmentCoordinator.mediaForSendingAndClear()
         inputBarView.clearPendingAttachmentPreviews(animated: true)
         photoLibraryInputView.clearSelection()
         viewModel.sendComposer(media: media, text: text)
@@ -1001,19 +1004,12 @@ final class ChatViewController: UIViewController {
 
     /// 新增或更新待发送附件预览
     private func upsertPendingAttachmentPreview(_ item: ChatPendingAttachmentPreviewItem) {
-        if let index = pendingAttachmentPreviews.firstIndex(where: { $0.id == item.id }) {
-            pendingAttachmentPreviews[index] = item
-        } else {
-            pendingAttachmentPreviews.append(item)
-        }
-        inputBarView.setPendingAttachmentPreviews(pendingAttachmentPreviews, animated: true)
+        inputBarView.setPendingAttachmentPreviews(inputAttachmentCoordinator.upsertPreview(item), animated: true)
     }
 
     /// 移除待发送附件
     private func removePendingAttachment(id: String) {
-        pendingAttachmentPreviews.removeAll { $0.id == id }
-        pendingComposerMediaByID[id] = nil
-        inputBarView.setPendingAttachmentPreviews(pendingAttachmentPreviews, animated: true)
+        inputBarView.setPendingAttachmentPreviews(inputAttachmentCoordinator.remove(id: id), animated: true)
     }
 
     /// 绑定语音录制状态和完成回调
@@ -1167,7 +1163,7 @@ final class ChatViewController: UIViewController {
     /// 这个方法集中处理状态到界面的单向同步：先刷新导航标题、空态和输入栏，
     /// 再计算消息列表的增量快照，最后根据消息插入位置决定是否保持当前位置或滚动到底部。
     private func render(_ state: ChatViewState) {
-        let renderStartUptime = ProcessInfo.processInfo.systemUptime
+        let renderStartUptime = AppLogger.performanceSpan()
         logger.debug("ChatViewController render started rows=\(state.rows.count)")
 
         // 同步不依赖 collection view diff 的轻量 UI 状态。
@@ -1248,7 +1244,7 @@ final class ChatViewController: UIViewController {
             return
         }
 
-        let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
+        let snapshotStartUptime = AppLogger.performanceSpan()
         logger.debug(
             "ChatViewController snapshot apply started rows=\(newRowIDs.count) appended=\(appendedCount) changed=\(changedRowIDs.count) initial=\(isInitialMessageRender) prepending=\(isPrependingOlderMessages) didAppend=\(didAppendNewMessage)"
         )
@@ -1745,7 +1741,7 @@ final class ChatViewController: UIViewController {
     private func removePendingVoiceRecordingFile() {
         guard let recording = pendingVoiceRecording else { return }
         pendingVoiceRecording = nil
-        try? FileManager.default.removeItem(at: recording.fileURL)
+        temporaryMediaFileManager.removeFileIfExists(at: recording.fileURL)
     }
 
     /// 播放或停止语音消息
@@ -1767,14 +1763,11 @@ final class ChatViewController: UIViewController {
 
     /// 使用系统播放器播放本地视频消息
     private func handleVideoPlayback(_ row: ChatMessageRowState) {
-        guard case let .video(video) = row.content else { return }
-        guard FileManager.default.fileExists(atPath: video.localPath) else {
+        guard let playerViewController = mediaPreviewPresenter.makeVideoPlayer(for: row) else {
             showTransientRecordingMessage("Video file unavailable")
             return
         }
 
-        let playerViewController = AVPlayerViewController()
-        playerViewController.player = AVPlayer(url: URL(fileURLWithPath: video.localPath))
         present(playerViewController, animated: true) {
             playerViewController.player?.play()
         }
@@ -2318,17 +2311,7 @@ extension ChatViewController: ChatPhotoLibraryInputViewDelegate {
     }
 
     func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didPrepareSelection preparedMedia: ChatPhotoLibraryPreparedMedia) {
-        pendingComposerMediaByID[preparedMedia.id] = preparedMedia.media
-        upsertPendingAttachmentPreview(
-            ChatPendingAttachmentPreviewItem(
-                id: preparedMedia.id,
-                image: preparedMedia.preview.image,
-                title: preparedMedia.preview.title,
-                durationText: preparedMedia.preview.durationText,
-                isVideo: preparedMedia.preview.isVideo,
-                isLoading: false
-            )
-        )
+        inputBarView.setPendingAttachmentPreviews(inputAttachmentCoordinator.storePreparedMedia(preparedMedia), animated: true)
     }
 
     func chatPhotoLibraryInputView(_ inputView: ChatPhotoLibraryInputView, didRemoveSelection id: String) {

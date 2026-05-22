@@ -52,8 +52,6 @@ final class ChatViewModel {
     private var storeRefreshTask: Task<Void, Never>?
     /// 最新消息观察启动任务
     private var latestMessagesObservationTask: Task<Void, Never>?
-    /// 最新消息观察订阅
-    private var latestMessagesObservationCancellable: AnyCancellable?
     /// 语音播放状态回写任务
     private var voicePlaybackTask: Task<Void, Never>?
     /// 当前语音播放会话的 UI 临时状态；数据库行不保存播放中状态。
@@ -113,7 +111,7 @@ final class ChatViewModel {
     init(
         useCase: any ChatUseCase,
         title: String,
-        currentUptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+        currentUptime: @escaping () -> TimeInterval = { SystemPerformanceMeasurer.shared.currentUptime() }
     ) {
         self.useCase = useCase
         self.currentUptime = currentUptime
@@ -251,7 +249,7 @@ final class ChatViewModel {
         let taskID = UUID()
         nextSendOrder += 1
         let sendOrder = nextSendOrder
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatViewModel sendText started taskID=\(Self.shortLogID(taskID.uuidString))")
         sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
@@ -388,7 +386,7 @@ final class ChatViewModel {
         onFinish: (() -> Void)? = nil
     ) {
         let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatViewModel \(name) started taskID=\(Self.shortLogID(taskID.uuidString))")
         sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
@@ -437,7 +435,7 @@ final class ChatViewModel {
         let mentionsAll = selectedMentionsAll
 
         let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatViewModel sendComposer started taskID=\(Self.shortLogID(taskID.uuidString)) mediaCount=\(media.count) hasText=\(!trimmedText.isEmpty)")
         sendTasks[taskID] = Task { [weak self] in
             guard let self else { return }
@@ -707,7 +705,7 @@ final class ChatViewModel {
     /// 每次点击都保留独立任务，避免连续点击时互相取消。
     func simulateIncomingMessage() {
         let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatViewModel peerPush tapped taskID=\(Self.shortLogID(taskID.uuidString))")
         simulatedIncomingTasks[taskID] = Task { [weak self] in
             guard let self else { return }
@@ -753,7 +751,7 @@ final class ChatViewModel {
         }
 
         let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         storeRefreshTask?.cancel()
         logger.info("ChatViewModel storeRefresh started taskID=\(Self.shortLogID(taskID.uuidString))")
         storeRefreshTask = Task { [weak self] in
@@ -926,7 +924,6 @@ final class ChatViewModel {
         emojiPanelTask?.cancel()
         storeRefreshTask?.cancel()
         latestMessagesObservationTask?.cancel()
-        latestMessagesObservationCancellable?.cancel()
         simulatedIncomingTasks.values.forEach { $0.cancel() }
         activeVoicePlayback = nil
         loadTask = nil
@@ -938,7 +935,6 @@ final class ChatViewModel {
         emojiPanelTask = nil
         storeRefreshTask = nil
         latestMessagesObservationTask = nil
-        latestMessagesObservationCancellable = nil
         simulatedIncomingTasks.removeAll()
     }
 
@@ -983,19 +979,22 @@ final class ChatViewModel {
     }
 
     private func startLatestMessagesObservationIfNeeded() {
-        guard latestMessagesObservationCancellable == nil, latestMessagesObservationTask == nil else {
+        guard latestMessagesObservationTask == nil else {
             return
         }
 
         latestMessagesObservationTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let publisher = try await useCase.observeLatestMessages(limit: pageSize) else {
+                guard let stream = try await useCase.observeLatestMessages(limit: pageSize) else {
                     latestMessagesObservationTask = nil
                     return
                 }
-                guard !Task.isCancelled else { return }
-                bindLatestMessagesObservation(publisher)
+                for try await rows in stream {
+                    guard !Task.isCancelled else { return }
+                    guard paginationTask == nil else { continue }
+                    applyLatestObservedRows(rows)
+                }
                 latestMessagesObservationTask = nil
             } catch is CancellationError {
                 latestMessagesObservationTask = nil
@@ -1004,22 +1003,6 @@ final class ChatViewModel {
                 logger.error("ChatViewModel latest observation failed error=\(String(describing: type(of: error)))")
             }
         }
-    }
-
-    private func bindLatestMessagesObservation(_ publisher: AnyPublisher<[ChatMessageRowState], Error>) {
-        latestMessagesObservationCancellable = publisher
-            .sink(
-                receiveCompletion: { [weak self] completion in
-                    guard case let .failure(error) = completion else { return }
-                    self?.logger.error("ChatViewModel latest observation completed error=\(String(describing: type(of: error)))")
-                    self?.latestMessagesObservationCancellable = nil
-                },
-                receiveValue: { [weak self] rows in
-                    guard let self else { return }
-                    guard paginationTask == nil else { return }
-                    applyLatestObservedRows(rows)
-                }
-            )
     }
 
     private func applyLatestObservedRows(_ latestRows: [ChatMessageRowState]) {

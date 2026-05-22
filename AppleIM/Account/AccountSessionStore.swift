@@ -38,7 +38,13 @@ nonisolated enum AccountSessionStoreError: Error, Equatable, Sendable {
 ///
 /// 使用 UserDefaults 持久化登录态
 ///
-/// - Note: UserDefaults 的简单值访问是线程安全的
+/// ## Sendable 审计
+///
+/// 保留 `@unchecked Sendable` 的原因：
+/// - `UserDefaults` 未声明 Sendable。
+/// - 本类型只保存不可变 `UserDefaults` 引用和不可变 key，不保存可变业务状态。
+/// - 暴露方法只通过单个 key 读写 `Data` 值，编码器/解码器在方法内部创建。
+/// - 登录态对象以值类型 `AccountSession` 跨边界传递，不共享可变引用。
 nonisolated struct UserDefaultsAccountSessionStore: AccountSessionStore, @unchecked Sendable {
     /// UserDefaults 实例
     private let userDefaults: UserDefaults

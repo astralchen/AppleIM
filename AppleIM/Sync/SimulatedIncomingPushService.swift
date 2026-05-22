@@ -126,16 +126,16 @@ nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Senda
     func simulateIncomingPush(
         _ request: SimulatedIncomingPushRequest = SimulatedIncomingPushRequest()
     ) async throws -> SimulatedIncomingPushResult? {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("SimulatedPush started target=\(request.target.logDescription)")
 
-        let repositoryStartUptime = ProcessInfo.processInfo.systemUptime
+        let repositoryStartUptime = AppLogger.performanceSpan()
         let repository = try await repositoryProvider()
         logger.info(
             "SimulatedPush repositoryReady elapsed=\(AppLogger.elapsedMilliseconds(since: repositoryStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
 
-        let conversationStartUptime = ProcessInfo.processInfo.systemUptime
+        let conversationStartUptime = AppLogger.performanceSpan()
         let conversations = try await repository.listConversations(for: userID)
         guard let selectedConversation = Self.selectConversation(from: conversations, target: request.target) else {
             logger.info(
@@ -147,13 +147,13 @@ nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Senda
             "SimulatedPush conversationSelected conversationID=\(Self.shortLogID(selectedConversation.id.rawValue)) elapsed=\(AppLogger.elapsedMilliseconds(since: conversationStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
 
-        let senderStartUptime = ProcessInfo.processInfo.systemUptime
+        let senderStartUptime = AppLogger.performanceSpan()
         let senderID = try await resolveIncomingSenderID(for: selectedConversation, repository: repository)
         logger.info(
             "SimulatedPush senderResolved conversationID=\(Self.shortLogID(selectedConversation.id.rawValue)) senderID=\(Self.shortLogID(senderID.rawValue)) elapsed=\(AppLogger.elapsedMilliseconds(since: senderStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
 
-        let latestStartUptime = ProcessInfo.processInfo.systemUptime
+        let latestStartUptime = AppLogger.performanceSpan()
         let latestMessage = try await repository.listMessages(
             conversationID: selectedConversation.id,
             limit: 1,
@@ -164,7 +164,7 @@ nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Senda
         )
 
         let messageCount = resolvedMessageCount(from: request)
-        let sequenceStartUptime = ProcessInfo.processInfo.systemUptime
+        let sequenceStartUptime = AppLogger.performanceSpan()
         let sequences = await sequenceAllocator.allocateSequences(
             conversationID: selectedConversation.id,
             latestStoredSequence: latestMessage?.timeline.sortSequence,
@@ -193,7 +193,7 @@ nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Senda
             )
         }
 
-        let applyStartUptime = ProcessInfo.processInfo.systemUptime
+        let applyStartUptime = AppLogger.performanceSpan()
         let applyResult = try await repository.applyIncomingSyncBatch(
             SyncBatch(messages: messages, nextCursor: nil, nextSequence: messages.last?.sequence),
             userID: userID
@@ -362,7 +362,7 @@ nonisolated struct SimulatedContactProfilePushService: Sendable {
 
     /// 随机修改一个好友或群聊联系人，并同步更新已存在会话的标题和头像。
     func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult? {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("SimulatedContactProfilePush started")
 
         let repository = try await repositoryProvider()

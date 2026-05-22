@@ -8,6 +8,54 @@ import UIKit
 @testable import AppleIM
 
 extension AppleIMTests {
+    @Test func mediaPathResolverKeepsExistingStoredPath() throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+        let storedURL = rootDirectory
+            .appendingPathComponent("media")
+            .appendingPathComponent("image")
+            .appendingPathComponent("a.jpg")
+        try FileManager.default.createDirectory(
+            at: storedURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: storedURL.path, contents: Data())
+
+        let resolver = DefaultMediaPathResolver(metadataProvider: DefaultMediaFileMetadataProvider())
+        let resolvedPath = resolver.resolvedMediaPath(
+            storedURL.path,
+            mediaDirectory: rootDirectory.appendingPathComponent("media")
+        )
+
+        #expect(resolvedPath == storedURL.path)
+    }
+
+    @Test func mediaPathResolverMapsLegacyMediaPathWhenCurrentFileExists() throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+        let mediaDirectory = rootDirectory.appendingPathComponent("media")
+        let currentURL = mediaDirectory
+            .appendingPathComponent("image")
+            .appendingPathComponent("a.jpg")
+        try FileManager.default.createDirectory(
+            at: currentURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        FileManager.default.createFile(atPath: currentURL.path, contents: Data())
+
+        let resolver = DefaultMediaPathResolver(metadataProvider: DefaultMediaFileMetadataProvider())
+        let resolvedPath = resolver.resolvedMediaPath(
+            "/old/account/media/image/a.jpg",
+            mediaDirectory: mediaDirectory
+        )
+
+        #expect(resolvedPath == currentURL.path)
+    }
+
     @Test func conversationDAOListsPinnedThenNewestConversations() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -102,18 +150,16 @@ extension AppleIMTests {
 
         let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "observe_conversation_user")
         let values = CapturingPublisherValues<[Conversation]>()
-        let cancellable = try await repository
-            .observeConversations(for: "observe_conversation_user", limit: 10)
-            .sink(
-                receiveCompletion: { _ in },
-                receiveValue: { conversations in
-                    Task {
-                        await values.append(conversations)
-                    }
+        let stream = try await repository.observeConversations(for: "observe_conversation_user", limit: 10)
+        let observationTask = Task {
+            do {
+                for try await conversations in stream {
+                    await values.append(conversations)
                 }
-            )
+            } catch {}
+        }
         defer {
-            cancellable.cancel()
+            observationTask.cancel()
         }
 
         try await waitForCondition {
@@ -144,18 +190,16 @@ extension AppleIMTests {
 
         let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "observe_badge_user")
         let values = CapturingPublisherValues<Int>()
-        let cancellable = try await repository
-            .observeUnreadBadgeCount(for: "observe_badge_user")
-            .sink(
-                receiveCompletion: { _ in },
-                receiveValue: { count in
-                    Task {
-                        await values.append(count)
-                    }
+        let stream = try await repository.observeUnreadBadgeCount(for: "observe_badge_user")
+        let observationTask = Task {
+            do {
+                for try await count in stream {
+                    await values.append(count)
                 }
-            )
+            } catch {}
+        }
         defer {
-            cancellable.cancel()
+            observationTask.cancel()
         }
 
         try await waitForCondition {
@@ -198,18 +242,16 @@ extension AppleIMTests {
         )
 
         let values = CapturingPublisherValues<[StoredMessage]>()
-        let cancellable = try await repository
-            .observeLatestMessages(conversationID: "observe_message_conversation", limit: 10)
-            .sink(
-                receiveCompletion: { _ in },
-                receiveValue: { messages in
-                    Task {
-                        await values.append(messages)
-                    }
+        let stream = try await repository.observeLatestMessages(conversationID: "observe_message_conversation", limit: 10)
+        let observationTask = Task {
+            do {
+                for try await messages in stream {
+                    await values.append(messages)
                 }
-            )
+            } catch {}
+        }
         defer {
-            cancellable.cancel()
+            observationTask.cancel()
         }
 
         try await waitForCondition {

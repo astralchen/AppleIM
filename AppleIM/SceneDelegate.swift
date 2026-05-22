@@ -25,6 +25,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var languageObservation: NSObjectProtocol?
     /// 登录态缓存
     private let sessionStore: any AccountSessionStore = UserDefaultsAccountSessionStore()
+    /// 登录后主界面构建器
+    private let mainInterfaceBuilder = MainInterfaceBuilder()
 
     /// 场景连接到会话
     ///
@@ -226,86 +228,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             dependencies.runStartupDataRepair()
             let unreadBadgeController = dependencies.makeConversationUnreadBadgeController()
             self.unreadBadgeController = unreadBadgeController
-            let rootViewController = makeMainTabController(
+            let mainInterface = mainInterfaceBuilder.makeMainTabController(
                 session: session,
                 dependencies: dependencies,
-                unreadBadgeController: unreadBadgeController
+                unreadBadgeController: unreadBadgeController,
+                onAccountAction: { [weak self] action in
+                    switch action {
+                    case .switchAccount, .logOut:
+                        self?.endCurrentSession()
+                    case .deleteLocalData:
+                        self?.deleteCurrentAccountLocalData()
+                    }
+                }
             )
-            window.rootViewController = rootViewController
+            mainInterface.unreadBadgeCancellable.store(in: &cancellables)
+            window.rootViewController = mainInterface.tabBarController
             applyLanguageContext(AppLanguageManager.shared.currentContext)
             unreadBadgeController.start()
         } catch {
             window.rootViewController = makeStartupErrorViewController()
             applyLanguageContext(AppLanguageManager.shared.currentContext)
         }
-    }
-
-    /// 创建登录后的主 Tab 界面。
-    private func makeMainTabController(
-        session: AccountSession,
-        dependencies: AppDependencyContainer,
-        unreadBadgeController: ConversationUnreadBadgeController
-    ) -> UITabBarController {
-        let messagesNavigationController = UINavigationController()
-        let unreadBadgePublisher = unreadBadgeController.badgePublisher
-        let conversationListViewController = dependencies.makeConversationListViewController { [weak messagesNavigationController, weak dependencies] conversation in
-            guard let chatViewController = dependencies?.makeChatViewController(
-                conversation: conversation,
-                unreadBadgePublisher: unreadBadgePublisher
-            ) else {
-                return
-            }
-
-            messagesNavigationController?.pushViewController(chatViewController, animated: true)
-        }
-        let messagesTabBarItem = UITabBarItem(
-            title: L10n.shared.tr("conversation.title"),
-            image: UIImage(systemName: "message"),
-            selectedImage: UIImage(systemName: "message.fill")
-        )
-        messagesTabBarItem.accessibilityIdentifier = "mainTab.messages"
-        unreadBadgePublisher
-            .sink { badgeText in
-                messagesTabBarItem.badgeValue = badgeText
-            }
-            .store(in: &cancellables)
-        conversationListViewController.tabBarItem = messagesTabBarItem
-        messagesNavigationController.tabBarItem = messagesTabBarItem
-        messagesNavigationController.viewControllers = [conversationListViewController]
-
-        let contactNavigationController = UINavigationController()
-        let contactRouter = MainAppRouter(
-            navigationController: contactNavigationController,
-            dependencies: dependencies
-        )
-        let contactListViewController = dependencies.makeContactListViewController(router: contactRouter)
-        contactNavigationController.viewControllers = [contactListViewController]
-        contactNavigationController.tabBarItem = UITabBarItem(
-            title: L10n.shared.tr("contacts.title"),
-            image: UIImage(systemName: "person.2"),
-            selectedImage: UIImage(systemName: "person.2.fill")
-        )
-        contactNavigationController.tabBarItem.accessibilityIdentifier = "mainTab.contacts"
-
-        let accountViewController = dependencies.makeAccountViewController(session: session) { [weak self] action in
-            switch action {
-            case .switchAccount, .logOut:
-                self?.endCurrentSession()
-            case .deleteLocalData:
-                self?.deleteCurrentAccountLocalData()
-            }
-        }
-        let accountNavigationController = UINavigationController(rootViewController: accountViewController)
-        accountNavigationController.tabBarItem = accountViewController.tabBarItem
-
-        let tabBarController = UITabBarController()
-        tabBarController.viewControllers = [
-            messagesNavigationController,
-            contactNavigationController,
-            accountNavigationController
-        ]
-        tabBarController.selectedIndex = 0
-        return tabBarController
     }
 
     /// 监听应用内语言变化，递归刷新当前 UI 树。
@@ -346,7 +289,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let tokenActor = TokenRefreshActor(
             session: session,
             sessionStore: sessionStore,
-            configuration: ChatBridgeHTTPClient.Configuration(
+            configuration: URLSessionHTTPClient.Configuration(
                 baseURL: baseURL,
                 authTokenProvider: { nil },
                 timeoutSeconds: timeoutSeconds

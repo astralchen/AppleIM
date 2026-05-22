@@ -5,7 +5,6 @@
 //  通知设置与角标计数的 GRDB 存储协作者。
 //
 
-import Combine
 import Foundation
 import GRDB
 
@@ -56,15 +55,14 @@ nonisolated struct NotificationSettingsStore: Sendable {
     }
 
     /// 观察账号级角标数。
-    func observeBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error> {
-        let observation = try await database.observe(paths: paths) { db in
+    func observeBadgeCount(for userID: UserID) async throws -> DatabaseObservationStream<Int> {
+        try await database.observe(paths: paths) { db in
             let setting = try Self.setting(for: userID, db: db)
             guard setting.badgeEnabled else {
                 return 0
             }
             return try Self.badgeCount(userID: userID, includeMuted: setting.badgeIncludeMuted, db: db)
         }
-        return observation.publisher
     }
 
     private func upsertBadgeSetting(userID: UserID, columnName: String, value: Bool) async throws {

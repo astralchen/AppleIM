@@ -279,11 +279,11 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         }
     }
 
-    private let httpClient: any ChatBridgeHTTPPosting
+    private let httpClient: any HTTPClient
 
     init(configuration: Configuration) {
-        let httpClient = ChatBridgeHTTPClient(
-            configuration: ChatBridgeHTTPClient.Configuration(
+        let httpClient = URLSessionHTTPClient(
+            configuration: URLSessionHTTPClient.Configuration(
                 baseURL: configuration.baseURL,
                 authTokenProvider: configuration.authTokenProvider,
                 timeoutSeconds: configuration.timeoutSeconds
@@ -295,7 +295,7 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         )
     }
 
-    init(httpClient: any ChatBridgeHTTPPosting) {
+    init(httpClient: any HTTPClient) {
         self.httpClient = httpClient
     }
 
@@ -316,13 +316,9 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         )
 
         do {
-            let response = try await httpClient.postJSON(
-                path: Self.sendTextPath,
-                body: request,
-                responseType: ServerTextMessageSendResponse.self
-            )
+            let response = try await httpClient.sendJSON(request, to: Self.sendTextPath, decoding: ServerTextMessageSendResponse.self)
             return .success(response.ack)
-        } catch let error as ChatBridgeHTTPError {
+        } catch let error as HTTPClientError {
             return .failure(Self.failureReason(from: error))
         } catch {
             return .failure(.unknown)
@@ -472,20 +468,16 @@ nonisolated struct ServerMessageSendService: MessageSendService {
         request: Request
     ) async -> MessageSendResult {
         do {
-            let response = try await httpClient.postJSON(
-                path: path,
-                body: request,
-                responseType: ServerTextMessageSendResponse.self
-            )
+            let response = try await httpClient.sendJSON(request, to: path, decoding: ServerTextMessageSendResponse.self)
             return .success(response.ack)
-        } catch let error as ChatBridgeHTTPError {
+        } catch let error as HTTPClientError {
             return .failure(Self.failureReason(from: error))
         } catch {
             return .failure(.unknown)
         }
     }
 
-    private static func failureReason(from error: ChatBridgeHTTPError) -> MessageSendFailureReason {
+    private static func failureReason(from error: HTTPClientError) -> MessageSendFailureReason {
         switch error {
         case .offline:
             return .offline

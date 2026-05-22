@@ -77,12 +77,66 @@ nonisolated struct DatabaseIntegrityCheckResult: Equatable, Sendable {
     }
 }
 
-/// 从 DatabaseActor 跨并发边界返回的观察 publisher 包装。
+/// 数据库观察流。
 ///
-/// Combine 的 `AnyPublisher` 自身未声明 Sendable，但这里的 publisher 只封装 GRDB
-/// 观察流和不可变闭包，实际订阅仍在调用方持有的 Combine 生命周期内管理。
-nonisolated struct DatabaseObservationPublisher<Output: Sendable>: @unchecked Sendable {
-    let publisher: AnyPublisher<Output, Error>
+/// DatabaseActor 内部仍用 GRDB/Combine 生成观察事件；跨 actor 边界只暴露
+/// `AsyncThrowingStream`，避免业务层依赖 `AnyPublisher` 的 Sendable 假设。
+nonisolated struct DatabaseObservationStream<Output: Sendable>: Sendable, AsyncSequence {
+    typealias Element = Output
+    typealias AsyncIterator = AsyncThrowingStream<Output, Error>.AsyncIterator
+
+    private let stream: AsyncThrowingStream<Output, Error>
+
+    init(_ stream: AsyncThrowingStream<Output, Error>) {
+        self.stream = stream
+    }
+
+    func makeAsyncIterator() -> AsyncIterator {
+        stream.makeAsyncIterator()
+    }
+
+    func map<Mapped: Sendable>(
+        _ transform: @escaping @Sendable (Output) -> Mapped
+    ) -> DatabaseObservationStream<Mapped> {
+        DatabaseObservationStream<Mapped>(
+            AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        for try await value in self {
+                            continuation.yield(transform(value))
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in
+                    task.cancel()
+                }
+            }
+        )
+    }
+}
+
+/// Combine 订阅取消盒子。
+///
+/// ## Sendable 审计
+///
+/// 保留 `@unchecked Sendable` 的原因：
+/// - `AnyCancellable` 未声明 Sendable。
+/// - 本类型只保存不可变取消 token，不保存可变业务状态。
+/// - 暴露方法只调用 `cancel()`，取消操作幂等。
+/// - 生命周期绑定到 `DatabaseObservationStream` 的 termination 回调，不参与数据库读写状态共享。
+nonisolated private final class DatabaseObservationCancellableBox: @unchecked Sendable {
+    private let cancellable: AnyCancellable
+
+    init(_ cancellable: AnyCancellable) {
+        self.cancellable = cancellable
+    }
+
+    func cancel() {
+        cancellable.cancel()
+    }
 }
 
 /// 数据库 Actor
@@ -263,7 +317,7 @@ actor DatabaseActor {
         in database: DatabaseFileKind = .main,
         paths: AccountStoragePaths,
         _ fetch: @Sendable @escaping (Database) throws -> T
-    ) async throws -> DatabaseObservationPublisher<T> {
+    ) async throws -> DatabaseObservationStream<T> {
         let databaseURL = url(for: database, in: paths)
         let pool = try databasePool(for: databaseURL)
         let path = databaseURL.path
@@ -278,7 +332,27 @@ actor DatabaseActor {
                 )
             }
             .eraseToAnyPublisher()
-        return DatabaseObservationPublisher(publisher: publisher)
+        return DatabaseObservationStream(
+            AsyncThrowingStream { continuation in
+                let cancellable = publisher.sink(
+                    receiveCompletion: { completion in
+                        switch completion {
+                        case .finished:
+                            continuation.finish()
+                        case .failure(let error):
+                            continuation.finish(throwing: error)
+                        }
+                    },
+                    receiveValue: { value in
+                        continuation.yield(value)
+                    }
+                )
+                let box = DatabaseObservationCancellableBox(cancellable)
+                continuation.onTermination = { _ in
+                    box.cancel()
+                }
+            }
+        )
     }
 
     /// 删除无法用当前配置读取的旧库。
@@ -444,7 +518,7 @@ actor DatabaseActor {
             return pool
         }
 
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         do {
             let pool = try makeDatabasePool(at: url, encryptionKey: encryptionKey(for: url))
             poolsByDatabasePath[path] = pool
@@ -498,7 +572,7 @@ actor DatabaseActor {
             return
         }
 
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         let url = URL(fileURLWithPath: path)
         do {
             try pool.close()

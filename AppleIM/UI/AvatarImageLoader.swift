@@ -90,7 +90,7 @@ final class DefaultAvatarImageLoader: AvatarImageLoading {
 }
 
 /// 基于 Swift Task 的头像加载任务。
-nonisolated private final class AvatarImageTask: AvatarImageLoadTask, @unchecked Sendable {
+nonisolated private final class AvatarImageTask: AvatarImageLoadTask {
     private let task: Task<Void, Never>
 
     init(task: Task<Void, Never>) {

@@ -75,7 +75,15 @@ final class NWPathConnectivityMonitor: NetworkConnectivityMonitoring {
 /// 监听网络状态变化，当网络从不可达变为可达时，自动触发失败消息的重试
 /// 使用 pending_job 表管理待重试的任务
 @MainActor
-final class NetworkRecoveryCoordinator {
+protocol NetworkRecoveryCoordinating: AnyObject {
+    /// 启动网络恢复监听。
+    func start()
+    /// 网络可达时运行待处理任务。
+    func runDueJobsWhenReachable()
+}
+
+@MainActor
+final class NetworkRecoveryCoordinator: NetworkRecoveryCoordinating {
     private let userID: UserID
     private let storeProvider: ChatStoreProvider
     private let sendService: any MessageSendService

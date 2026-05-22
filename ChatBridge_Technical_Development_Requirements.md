@@ -141,7 +141,7 @@ GRDB / SQLCipher / FileManager / Keychain
 - DAO 只处理单表或少量强相关表的读写，普通 CRUD、分页、聚合和去重查询优先使用 GRDB Query Interface / Record。
 - 数据库事务必须在 Store 层统一管理。
 - 本地数据库统一通过 `DatabaseActor` 的 GRDB `read/write/observe` 入口访问；新代码不再保留旧 SQLite 兼容层。
-- 项目未上架阶段采用当前基线 schema，旧业务 schema 不做字段迁移或数据搬运；检测到不符合当前基线的本地库时直接重建数据库文件及 `-wal` / `-shm`。
+- 项目未上架阶段采用当前基线 schema，旧业务 schema 不做字段迁移或数据搬运；检测到不符合当前基线的本地库时直接重建数据库文件及 `-wal` / `-shm`。这是上架前的开发期策略，不代表生产发布后的数据迁移策略；进入生产迁移阶段前必须重新建立版本化迁移、备份和失败恢复方案。
 - 普通表和普通索引必须使用 GRDB schema builder；手写 SQL 仅保留在 FTS 建表、`PRAGMA`、SQLCipher 基础语句、FTS `MATCH` 和测试查询计划中。
 - `Packages/GRDBSQLCipher` 作为本地 GRDB + SQLCipher 适配包保留，工程依赖 GRDB product，不修改第三方包源码。
 
@@ -672,7 +672,7 @@ cancelled
 ### 10.3 数据库
 
 - 当前数据库访问基线为 GRDB `DatabasePool` + SQLCipher。连接池、密钥配置、当前基线重建、错误脱敏和观察入口集中在 `DatabaseActor`。
-- `DatabaseSchema` 使用单一当前基线，普通表和普通索引用 GRDB schema builder 创建；项目上架前不保留旧 schema 增量迁移、补列脚本或迁移元数据持久化。
+- `DatabaseSchema` 使用单一当前基线，普通表和普通索引用 GRDB schema builder 创建；项目上架前不保留旧 schema 增量迁移、补列脚本或迁移元数据持久化。该策略仅用于未发布阶段快速收敛 schema，生产发布前需切换为显式迁移链与数据保护流程。
 - Store 内部 Record 按领域拆分为会话、消息、联系人、表情、媒体、通知设置、任务与同步等文件，避免单一映射文件继续膨胀。
 - 普通 CRUD 优先使用 GRDB Query Interface；消息分页、FTS MATCH、批量恢复和查询计划断言等热点路径可保留手写 SQL，但必须使用参数绑定和 GRDB 行模型。
 - 批量同步必须批量插入。
@@ -680,6 +680,15 @@ cancelled
 - 搜索索引异步写入。
 - 会话摘要必须在消息事务内同步更新。
 - 定期执行完整性检查、FTS 重建和 VACUUM 策略。
+
+#### 生产发布前迁移清单
+
+- 将当前开发期基线冻结为生产 `v1` schema，并明确主库、搜索库、文件索引库的版本号来源。
+- 建立显式版本化迁移链；每次 schema 变更必须包含可重复执行的迁移步骤、`user_version` 更新和对应降级说明。
+- 上架后禁止以“不匹配即重建”处理真实用户数据库；除用户主动删除本地数据外，任何 schema 不匹配都必须进入迁移、备份或恢复流程。
+- 迁移前必须创建账号隔离范围内的加密备份，并验证失败恢复不会丢失消息、媒体索引、草稿、通知设置和任务队列。
+- 覆盖升级验证：全新安装、当前生产版本升级、跨多个旧版本升级、迁移中断后重试、备份恢复、损坏库重建提示和账号切换隔离。
+- 发布门禁必须包含 SQLCipher 密钥读取、文件保护属性、迁移错误脱敏、迁移耗时和 iOS 15 设备兼容验证。
 
 ---
 

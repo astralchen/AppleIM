@@ -136,7 +136,13 @@ struct AppLanguageContext {
 
 /// `NotificationCenter` 返回的观察 token 本身来自 Objective-C，未标注 Sendable。
 ///
-/// token 只在主 actor 隔离的语言管理器内创建、移除和释放，不跨线程共享。
+/// ## Sendable 审计
+///
+/// 保留 `@unchecked Sendable` 的原因：
+/// - `NSObjectProtocol` 观察 token 来自 Objective-C，未声明 Sendable。
+/// - 本类型只保存不可变 token，不保存可变业务状态。
+/// - token 只在主 actor 隔离的语言管理器内创建、移除和释放。
+/// - 不跨线程执行 token 操作，只允许主 actor owner 管理生命周期。
 nonisolated private struct NotificationObservationToken: @unchecked Sendable {
     let value: NSObjectProtocol
 }

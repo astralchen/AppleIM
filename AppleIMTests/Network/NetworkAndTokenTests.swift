@@ -149,13 +149,13 @@ extension AppleIMTests {
 
     @Test func serverMessageSendServiceMapsTransportFailuresToSendFailures() async throws {
         let offlineService = ServerMessageSendService(
-            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.offline)
+            httpClient: RecordingHTTPClient(error: HTTPClientError.offline)
         )
         let timeoutService = ServerMessageSendService(
-            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.timeout)
+            httpClient: RecordingHTTPClient(error: HTTPClientError.timeout)
         )
         let ackMissingService = ServerMessageSendService(
-            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.ackMissing)
+            httpClient: RecordingHTTPClient(error: HTTPClientError.ackMissing)
         )
         let message = makeStoredTextMessage()
 
@@ -240,13 +240,13 @@ extension AppleIMTests {
         let upload = MediaUploadAck(mediaID: "image_media", cdnURL: "https://cdn.example/image.png", md5: nil)
 
         let offlineResult = await ServerMessageSendService(
-            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.offline)
+            httpClient: RecordingHTTPClient(error: HTTPClientError.offline)
         ).sendImage(message: message, upload: upload)
         let timeoutResult = await ServerMessageSendService(
-            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.timeout)
+            httpClient: RecordingHTTPClient(error: HTTPClientError.timeout)
         ).sendImage(message: message, upload: upload)
         let ackMissingResult = await ServerMessageSendService(
-            httpClient: RecordingHTTPClient(error: ChatBridgeHTTPError.ackMissing)
+            httpClient: RecordingHTTPClient(error: HTTPClientError.ackMissing)
         ).sendImage(message: message, upload: upload)
         let missingURLResult = await ServerMessageSendService(
             httpClient: RecordingHTTPClient()
@@ -297,7 +297,7 @@ extension AppleIMTests {
     }
 
     @Test func tokenRefreshingHTTPClientDoesNotRefreshNonUnauthorizedFailures() async throws {
-        let httpClient = ExpiringTextHTTPClient(error: ChatBridgeHTTPError.timeout)
+        let httpClient = ExpiringTextHTTPClient(error: HTTPClientError.timeout)
         let refreshCallCount = Counter()
         let refreshingClient = TokenRefreshingHTTPClient(httpClient: httpClient) {
             await refreshCallCount.increment()

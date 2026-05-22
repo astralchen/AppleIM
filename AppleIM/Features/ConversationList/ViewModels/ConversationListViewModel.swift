@@ -33,8 +33,6 @@ final class ConversationListViewModel {
     private var simulationTasks: [UUID: Task<Void, Never>] = [:]
     /// 首屏会话观察启动任务
     private var observationStartTask: Task<Void, Never>?
-    /// 首屏会话观察订阅
-    private var conversationObservationCancellable: AnyCancellable?
     /// 下一页分页游标
     private var nextCursor: ConversationPageCursor?
     /// 首屏加载代次，用于忽略已取消的旧任务回调
@@ -100,13 +98,13 @@ final class ConversationListViewModel {
         loadTask?.cancel()
         loadMoreTask?.cancel()
         nextCursor = nil
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         diagnostics.log(
             "ConversationList initial load started generation=\(currentGeneration) pageSize=\(pageSize) showLoading=\(showLoading)"
         )
 
         if showLoading {
-            let loadingPublishStartUptime = ProcessInfo.processInfo.systemUptime
+            let loadingPublishStartUptime = AppLogger.performanceSpan()
             publish { state in
                 state.phase = .loading
                 state.rows = []
@@ -118,7 +116,7 @@ final class ConversationListViewModel {
                 "ConversationList loading state published generation=\(currentGeneration) elapsed=\(AppLogger.elapsedMilliseconds(since: loadingPublishStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
             )
         } else {
-            let refreshPublishStartUptime = ProcessInfo.processInfo.systemUptime
+            let refreshPublishStartUptime = AppLogger.performanceSpan()
             publish { state in
                 state.isLoadingMore = false
                 state.renderIntent = .backgroundRefresh
@@ -132,7 +130,7 @@ final class ConversationListViewModel {
             guard let self else { return }
 
             do {
-                let useCaseStartUptime = ProcessInfo.processInfo.systemUptime
+                let useCaseStartUptime = AppLogger.performanceSpan()
                 let page = try await useCase.loadConversationPage(limit: pageSize, after: nil)
                 guard !Task.isCancelled, loadGeneration == currentGeneration else { return }
                 diagnostics.log(
@@ -140,7 +138,7 @@ final class ConversationListViewModel {
                 )
                 let elapsed = AppLogger.elapsedMilliseconds(since: startUptime)
 
-                let loadedPublishStartUptime = ProcessInfo.processInfo.systemUptime
+                let loadedPublishStartUptime = AppLogger.performanceSpan()
                 publish { state in
                     state.phase = .loaded
                     state.rows = page.rows
@@ -280,7 +278,7 @@ final class ConversationListViewModel {
 
     func simulateIncomingMessages() {
         let taskID = UUID()
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         diagnostics.log("ConversationList simulatedPush tapped taskID=\(Self.shortLogID(taskID.uuidString))")
         simulationTasks[taskID] = Task { [weak self] in
             guard let self else { return }
@@ -335,47 +333,25 @@ final class ConversationListViewModel {
         settingTask = nil
         observationStartTask?.cancel()
         observationStartTask = nil
-        conversationObservationCancellable?.cancel()
-        conversationObservationCancellable = nil
         simulationTasks.values.forEach { $0.cancel() }
         simulationTasks.removeAll()
     }
 
     private func startConversationObservationIfNeeded() {
-        guard conversationObservationCancellable == nil, observationStartTask == nil else {
+        guard observationStartTask == nil else {
             return
         }
 
         observationStartTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let publisher = try await useCase.observeConversationPage(limit: pageSize) else {
+                guard let stream = try await useCase.observeConversationPage(limit: pageSize) else {
                     observationStartTask = nil
                     return
                 }
-                guard !Task.isCancelled else { return }
-                bindConversationObservation(publisher)
-                observationStartTask = nil
-            } catch is CancellationError {
-                observationStartTask = nil
-            } catch {
-                observationStartTask = nil
-                diagnostics.log("ConversationList observation failed error=\(error)")
-            }
-        }
-    }
-
-    private func bindConversationObservation(_ publisher: AnyPublisher<ConversationListPage, Error>) {
-        conversationObservationCancellable = publisher
-            .sink(
-                receiveCompletion: { [weak self] completion in
-                    guard case let .failure(error) = completion else { return }
-                    self?.diagnostics.log("ConversationList observation completed error=\(error)")
-                    self?.conversationObservationCancellable = nil
-                },
-                receiveValue: { [weak self] page in
-                    guard let self else { return }
-                    guard loadTask == nil, loadMoreTask == nil else { return }
+                for try await page in stream {
+                    guard !Task.isCancelled else { return }
+                    guard loadTask == nil, loadMoreTask == nil else { continue }
                     publish { state in
                         state.phase = .loaded
                         state.rows = page.rows
@@ -385,7 +361,14 @@ final class ConversationListViewModel {
                     }
                     nextCursor = page.nextCursor
                 }
-            )
+                observationStartTask = nil
+            } catch is CancellationError {
+                observationStartTask = nil
+            } catch {
+                observationStartTask = nil
+                diagnostics.log("ConversationList observation failed error=\(error)")
+            }
+        }
     }
 
     private func publish(_ update: (inout ConversationListViewState) -> Void) {

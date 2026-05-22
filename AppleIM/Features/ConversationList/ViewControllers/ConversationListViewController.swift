@@ -8,75 +8,6 @@
 import Combine
 import UIKit
 
-/// 会话列表 diffable snapshot 操作计划。
-nonisolated struct ConversationListSnapshotPlan: Equatable, Sendable {
-    /// 需要执行的 snapshot 操作。
-    enum Operation: Equatable, Sendable {
-        /// 重建整个会话分区。
-        case rebuild(animatingDifferences: Bool)
-        /// 仅追加分页新行。
-        case append(newRowIDs: [ConversationID])
-        /// 仅刷新已有可见行内容。
-        case reconfigure
-        /// 无需更新 snapshot。
-        case none
-    }
-
-    /// 主要 snapshot 操作。
-    let operation: Operation
-    /// 需要在同一次 snapshot 中刷新内容的既有会话。
-    let reconfiguredRowIDs: [ConversationID]
-}
-
-/// 将列表状态变化归约成稳定、可测试的 snapshot 更新策略。
-nonisolated enum ConversationListSnapshotPlanner {
-    static func plan(
-        previousRowIDs: [ConversationID],
-        rowIDs: [ConversationID],
-        changedRowIDs: [ConversationID],
-        phase: ConversationListViewState.LoadingPhase,
-        renderIntent: ConversationListViewState.RenderIntent
-    ) -> ConversationListSnapshotPlan {
-        let currentIDSet = Set(rowIDs)
-        let previousIDSet = Set(previousRowIDs)
-        let existingChangedRowIDs = changedRowIDs.filter { currentIDSet.contains($0) && previousIDSet.contains($0) }
-
-        guard !previousRowIDs.isEmpty else {
-            return ConversationListSnapshotPlan(operation: .rebuild(animatingDifferences: false), reconfiguredRowIDs: [])
-        }
-
-        guard phase != .loading else {
-            return ConversationListSnapshotPlan(operation: .rebuild(animatingDifferences: false), reconfiguredRowIDs: existingChangedRowIDs)
-        }
-
-        guard rowIDs.count >= previousRowIDs.count else {
-            return ConversationListSnapshotPlan(operation: .rebuild(animatingDifferences: false), reconfiguredRowIDs: existingChangedRowIDs)
-        }
-
-        guard rowIDs.starts(with: previousRowIDs) else {
-            return ConversationListSnapshotPlan(
-                operation: .rebuild(animatingDifferences: renderIntent == .simulatedIncoming),
-                reconfiguredRowIDs: existingChangedRowIDs
-            )
-        }
-
-        if rowIDs.count > previousRowIDs.count {
-            let newRowIDs = Array(rowIDs.dropFirst(previousRowIDs.count))
-            let newIDSet = Set(newRowIDs)
-            return ConversationListSnapshotPlan(
-                operation: .append(newRowIDs: newRowIDs),
-                reconfiguredRowIDs: existingChangedRowIDs.filter { !newIDSet.contains($0) }
-            )
-        }
-
-        if !existingChangedRowIDs.isEmpty {
-            return ConversationListSnapshotPlan(operation: .reconfigure, reconfiguredRowIDs: existingChangedRowIDs)
-        }
-
-        return ConversationListSnapshotPlan(operation: .none, reconfiguredRowIDs: [])
-    }
-}
-
 /// 会话列表页面控制器
 @MainActor
 final class ConversationListViewController: UIViewController {
@@ -150,7 +81,7 @@ final class ConversationListViewController: UIViewController {
     /// 页面当前是否处于可见生命周期内
     private var isVisible = false
     /// 首次出现的起始时间，用于首屏链路诊断
-    private var firstAppearStartUptime: TimeInterval?
+    private var firstAppearStartUptime: PerformanceSpan?
 
     /// 会话列表 collection view
     private lazy var collectionView = UICollectionView(
@@ -186,19 +117,19 @@ final class ConversationListViewController: UIViewController {
 
     /// 配置视图、数据源和状态绑定
     override func viewDidLoad() {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         super.viewDidLoad()
-        let configureStartUptime = ProcessInfo.processInfo.systemUptime
+        let configureStartUptime = AppLogger.performanceSpan()
         configureView()
         logger.info(
             "ConversationListViewController configureView completed elapsed=\(AppLogger.elapsedMilliseconds(since: configureStartUptime))"
         )
-        let dataSourceStartUptime = ProcessInfo.processInfo.systemUptime
+        let dataSourceStartUptime = AppLogger.performanceSpan()
         configureDataSource()
         logger.info(
             "ConversationListViewController configureDataSource completed elapsed=\(AppLogger.elapsedMilliseconds(since: dataSourceStartUptime))"
         )
-        let bindStartUptime = ProcessInfo.processInfo.systemUptime
+        let bindStartUptime = AppLogger.performanceSpan()
         bindViewModel()
         bindConversationStoreNotifications()
         logger.info(
@@ -208,7 +139,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 页面出现时触发会话加载
     override func viewWillAppear(_ animated: Bool) {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         if firstAppearStartUptime == nil {
             firstAppearStartUptime = startUptime
         }
@@ -421,7 +352,7 @@ final class ConversationListViewController: UIViewController {
 
     /// 渲染普通会话列表状态
     private func renderConversations(_ state: ConversationListViewState, forceReconfigure: Bool = false) {
-        let renderStartUptime = ProcessInfo.processInfo.systemUptime
+        let renderStartUptime = AppLogger.performanceSpan()
         title = L10n.shared.tr("conversation.title")
         emptyLabel.text = localizedEmptyMessage(state.emptyMessage)
         emptyLabel.isHidden = !state.isEmpty || state.phase == .loading
@@ -433,7 +364,7 @@ final class ConversationListViewController: UIViewController {
         }
 
         let previousRowsByID = rowsByID
-        let cacheStartUptime = ProcessInfo.processInfo.systemUptime
+        let cacheStartUptime = AppLogger.performanceSpan()
         rowsByID = Dictionary(uniqueKeysWithValues: state.rows.map { ($0.id, $0) })
         searchRowsByID = [:]
         let rowIDs = state.rows.map(\.id)
@@ -452,7 +383,7 @@ final class ConversationListViewController: UIViewController {
 
         switch snapshotPlan.operation {
         case let .rebuild(shouldAnimate):
-            let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
+            let snapshotStartUptime = AppLogger.performanceSpan()
             var snapshot = NSDiffableDataSourceSnapshot<Section, Item>()
             snapshot.appendSections([.conversations])
             snapshot.appendItems(rowIDs.map(Item.conversation), toSection: .conversations)
@@ -467,7 +398,7 @@ final class ConversationListViewController: UIViewController {
                 )
             }
         case let .append(newRowIDs):
-            let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
+            let snapshotStartUptime = AppLogger.performanceSpan()
             var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<Section, Item>()
 
             if !snapshot.sectionIdentifiers.contains(.conversations) {
@@ -486,7 +417,7 @@ final class ConversationListViewController: UIViewController {
                 )
             }
         case .reconfigure:
-            let snapshotStartUptime = ProcessInfo.processInfo.systemUptime
+            let snapshotStartUptime = AppLogger.performanceSpan()
             var snapshot = dataSource?.snapshot() ?? NSDiffableDataSourceSnapshot<Section, Item>()
             snapshot.reconfigureItems(snapshotPlan.reconfiguredRowIDs.map(Item.conversation))
             dataSource?.apply(snapshot, animatingDifferences: false) { [weak self] in

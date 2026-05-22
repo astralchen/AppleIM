@@ -45,13 +45,13 @@ actor TokenRefreshActor: AuthTokenProviding {
 
     private var session: AccountSession
     private let sessionStore: any AccountSessionStore
-    private let httpClient: any ChatBridgeHTTPPosting
+    private let httpClient: any HTTPClient
     private var refreshTask: Task<AccountSession?, Never>?
 
     init(
         session: AccountSession,
         sessionStore: any AccountSessionStore,
-        httpClient: any ChatBridgeHTTPPosting
+        httpClient: any HTTPClient
     ) {
         self.session = session
         self.sessionStore = sessionStore
@@ -61,12 +61,12 @@ actor TokenRefreshActor: AuthTokenProviding {
     init(
         session: AccountSession,
         sessionStore: any AccountSessionStore,
-        configuration: ChatBridgeHTTPClient.Configuration
+        configuration: URLSessionHTTPClient.Configuration
     ) {
         self.init(
             session: session,
             sessionStore: sessionStore,
-            httpClient: ChatBridgeHTTPClient(configuration: configuration)
+            httpClient: URLSessionHTTPClient(configuration: configuration)
         )
     }
 
@@ -88,11 +88,7 @@ actor TokenRefreshActor: AuthTokenProviding {
         let httpClient = httpClient
         let task = Task<AccountSession?, Never> {
             do {
-                let response = try await httpClient.postJSON(
-                    path: Self.refreshPath,
-                    body: ServerTokenRefreshRequest(token: currentToken),
-                    responseType: ServerTokenRefreshResponse.self
-                )
+                let response = try await httpClient.sendJSON(ServerTokenRefreshRequest(token: currentToken), to: Self.refreshPath, decoding: ServerTokenRefreshResponse.self)
                 guard let refreshedToken = Self.nonEmptyValue(response.token) else {
                     return nil
                 }

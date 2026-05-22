@@ -5,7 +5,6 @@
 //  会话列表用例
 //  封装会话列表的业务逻辑
 
-import Combine
 import Foundation
 
 /// 会话列表分页结果
@@ -44,7 +43,7 @@ protocol ConversationListUseCase: Sendable {
     /// - Throws: 加载错误
     func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage
     /// 观察首屏会话列表。
-    func observeConversationPage(limit: Int) async throws -> AnyPublisher<ConversationListPage, Error>?
+    func observeConversationPage(limit: Int) async throws -> DatabaseObservationStream<ConversationListPage>?
     /// 更新会话置顶状态
     ///
     /// - Parameters:
@@ -67,7 +66,7 @@ protocol ConversationListUseCase: Sendable {
 }
 
 extension ConversationListUseCase {
-    func observeConversationPage(limit: Int) async throws -> AnyPublisher<ConversationListPage, Error>? {
+    func observeConversationPage(limit: Int) async throws -> DatabaseObservationStream<ConversationListPage>? {
         nil
     }
 
@@ -113,7 +112,7 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     /// - Returns: 会话列表行状态数组
     /// - Throws: 存储访问错误
     func loadConversations() async throws -> [ConversationListRowState] {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ConversationList useCase loadConversations requested")
         let repository = try await storeProvider.repository()
         let conversations = try await repository.listConversations(for: userID)
@@ -134,16 +133,16 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     /// - Returns: 会话列表分页结果（包含是否有更多数据）
     /// - Throws: 存储访问错误
     func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ConversationList useCase page requested limit=\(limit) cursor=\(cursor?.conversationID.rawValue ?? "nil")")
-        let repositoryStartUptime = ProcessInfo.processInfo.systemUptime
+        let repositoryStartUptime = AppLogger.performanceSpan()
         let repository = try await storeProvider.repository()
         logger.info(
             "ConversationList useCase repository ready elapsed=\(AppLogger.elapsedMilliseconds(since: repositoryStartUptime))"
         )
 
         let requestedLimit = max(limit, 0)
-        let queryStartUptime = ProcessInfo.processInfo.systemUptime
+        let queryStartUptime = AppLogger.performanceSpan()
         let conversations = try await repository.listConversations(for: userID, limit: requestedLimit + 1, after: cursor)
         logger.info(
             "ConversationList useCase query completed fetched=\(conversations.count) requestedLimit=\(requestedLimit) elapsed=\(AppLogger.elapsedMilliseconds(since: queryStartUptime))"
@@ -165,7 +164,7 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     }
 
     /// 观察首屏会话列表，供 ViewModel 实时刷新可见窗口。
-    func observeConversationPage(limit: Int) async throws -> AnyPublisher<ConversationListPage, Error>? {
+    func observeConversationPage(limit: Int) async throws -> DatabaseObservationStream<ConversationListPage>? {
         let repository = try await storeProvider.repository()
         let requestedLimit = max(limit, 1)
         return try await repository
@@ -178,7 +177,6 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
                     nextCursor: pageConversations.last.map(ConversationPageCursor.init(conversation:))
                 )
             }
-            .eraseToAnyPublisher()
     }
 
     /// 更新会话置顶状态
@@ -205,7 +203,7 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
 
     /// 从统一模拟后台推送入口随机写入 1...5 条 incoming 文本消息。
     func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         guard let pushResult = try await simulatedIncomingPushService.simulateIncomingPush() else {
             return nil
         }

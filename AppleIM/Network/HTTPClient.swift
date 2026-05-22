@@ -1,5 +1,5 @@
 //
-//  ChatBridgeHTTPClient.swift
+//  HTTPClient.swift
 //  AppleIM
 //
 //  轻量 HTTP JSON 客户端
@@ -7,10 +7,10 @@
 
 import Foundation
 
-/// ChatBridge HTTP 错误。
+/// HTTP 客户端错误。
 ///
 /// 只暴露脱敏后的分类，避免把 URL、token、请求体或消息明文带到上层。
-nonisolated enum ChatBridgeHTTPError: Error, Equatable, Sendable {
+nonisolated enum HTTPClientError: Error, Equatable, Sendable {
     /// 网络不可达
     case offline
     /// 请求超时
@@ -25,39 +25,39 @@ nonisolated enum ChatBridgeHTTPError: Error, Equatable, Sendable {
     case unknown
 }
 
-/// JSON POST 客户端边界。
-nonisolated protocol ChatBridgeHTTPPosting: Sendable {
+/// HTTP 客户端边界，当前提供 JSON POST 能力。
+nonisolated protocol HTTPClient: Sendable {
     /// 发送 JSON POST 请求并解码响应。
-    func postJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
-        path: String,
-        body: Request,
-        responseType: Response.Type
+    func sendJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
+        _ body: Request,
+        to path: String,
+        decoding responseType: Response.Type
     ) async throws -> Response
 }
 
-/// 带 token 刷新的一次性重放 HTTP 客户端。
+/// 带 token 刷新的一次性重放 HTTP 客户端包装器。
 ///
 /// 只在服务端返回 401 时触发刷新；刷新成功后重放原请求一次，避免无限循环。
-nonisolated struct TokenRefreshingHTTPClient: ChatBridgeHTTPPosting {
-    private let httpClient: any ChatBridgeHTTPPosting
+nonisolated struct TokenRefreshingHTTPClient: HTTPClient {
+    private let httpClient: any HTTPClient
     private let authTokenRefresher: @Sendable () async -> String?
 
     init(
-        httpClient: any ChatBridgeHTTPPosting,
+        httpClient: any HTTPClient,
         authTokenRefresher: @escaping @Sendable () async -> String?
     ) {
         self.httpClient = httpClient
         self.authTokenRefresher = authTokenRefresher
     }
 
-    func postJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
-        path: String,
-        body: Request,
-        responseType: Response.Type
+    func sendJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
+        _ body: Request,
+        to path: String,
+        decoding responseType: Response.Type
     ) async throws -> Response {
         do {
-            return try await httpClient.postJSON(path: path, body: body, responseType: responseType)
-        } catch let error as ChatBridgeHTTPError {
+            return try await httpClient.sendJSON(body, to: path, decoding: responseType)
+        } catch let error as HTTPClientError {
             guard case .unacceptableStatus(401) = error else {
                 throw error
             }
@@ -66,15 +66,21 @@ nonisolated struct TokenRefreshingHTTPClient: ChatBridgeHTTPPosting {
                 throw error
             }
 
-            return try await httpClient.postJSON(path: path, body: body, responseType: responseType)
+            return try await httpClient.sendJSON(body, to: path, decoding: responseType)
         }
     }
 }
 
-/// 基于 URLSession 的 ChatBridge HTTP 客户端。
+/// 基于 URLSession 的 HTTP 客户端。
 ///
-/// `URLSession` 可安全跨并发任务使用；encoder/decoder 仅在请求方法内部顺序访问。
-nonisolated final class ChatBridgeHTTPClient: ChatBridgeHTTPPosting, @unchecked Sendable {
+/// ## Sendable 审计
+///
+/// 保留 `@unchecked Sendable` 的原因：
+/// - `URLSession` 未在当前部署目标完整标注 Sendable，但系统支持跨任务发起请求。
+/// - 本类型只保存不可变配置和不可变 session 引用，不保存可变业务状态。
+/// - JSON 编解码器在单次请求方法内部创建，不跨任务共享。
+/// - 请求生命周期由调用方任务管理，取消语义交给 `URLSession.data(for:)`。
+nonisolated final class URLSessionHTTPClient: HTTPClient, @unchecked Sendable {
     /// 客户端配置
     nonisolated struct Configuration: Sendable {
         /// 服务端基础 URL
@@ -97,20 +103,16 @@ nonisolated final class ChatBridgeHTTPClient: ChatBridgeHTTPPosting, @unchecked 
 
     private let configuration: Configuration
     private let session: URLSession
-    private let encoder: JSONEncoder
-    private let decoder: JSONDecoder
 
     nonisolated init(configuration: Configuration, session: URLSession = .shared) {
         self.configuration = configuration
         self.session = session
-        self.encoder = JSONEncoder()
-        self.decoder = JSONDecoder()
     }
 
-    func postJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
-        path: String,
-        body: Request,
-        responseType: Response.Type
+    func sendJSON<Request: Encodable & Sendable, Response: Decodable & Sendable>(
+        _ body: Request,
+        to path: String,
+        decoding responseType: Response.Type
     ) async throws -> Response {
         var request = URLRequest(url: endpointURL(path: path))
         request.httpMethod = "POST"
@@ -123,27 +125,29 @@ nonisolated final class ChatBridgeHTTPClient: ChatBridgeHTTPPosting, @unchecked 
         }
 
         do {
+            let encoder = JSONEncoder()
             request.httpBody = try encoder.encode(body)
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
-                throw ChatBridgeHTTPError.invalidResponse
+                throw HTTPClientError.invalidResponse
             }
 
             guard (200..<300).contains(httpResponse.statusCode) else {
-                throw ChatBridgeHTTPError.unacceptableStatus(httpResponse.statusCode)
+                throw HTTPClientError.unacceptableStatus(httpResponse.statusCode)
             }
 
             do {
+                let decoder = JSONDecoder()
                 return try decoder.decode(Response.self, from: data)
             } catch {
-                throw ChatBridgeHTTPError.ackMissing
+                throw HTTPClientError.ackMissing
             }
-        } catch let error as ChatBridgeHTTPError {
+        } catch let error as HTTPClientError {
             throw error
         } catch let error as URLError {
             throw Self.httpError(from: error)
         } catch {
-            throw ChatBridgeHTTPError.unknown
+            throw HTTPClientError.unknown
         }
     }
 
@@ -156,7 +160,7 @@ nonisolated final class ChatBridgeHTTPClient: ChatBridgeHTTPPosting, @unchecked 
             }
     }
 
-    private static func httpError(from error: URLError) -> ChatBridgeHTTPError {
+    private static func httpError(from error: URLError) -> HTTPClientError {
         switch error.code {
         case .notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost:
             return .offline

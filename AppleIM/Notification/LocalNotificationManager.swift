@@ -102,7 +102,13 @@ protocol LocalNotificationManaging: Sendable {
 ///
 /// ## 并发安全
 ///
-/// - 标记为 `@unchecked Sendable`，因为 UNUserNotificationCenter 是线程安全的
+/// ## Sendable 审计
+///
+/// 保留 `@unchecked Sendable` 的原因：
+/// - `UNUserNotificationCenter` 和 delegate 回调来自 Objective-C，未完整声明 Sendable。
+/// - 本类型只保存不可变通知中心引用，不保存可变业务状态。
+/// - 暴露方法只调用系统通知中心的授权、添加、角标和清理 API。
+/// - delegate 生命周期由通知中心持有；回调只返回展示选项，不读写共享状态。
 final class UserNotificationCenterNotificationManager: NSObject, LocalNotificationManaging, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private let center: UNUserNotificationCenter
 

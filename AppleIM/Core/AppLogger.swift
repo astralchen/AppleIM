@@ -97,7 +97,25 @@ nonisolated struct AppLogger: Sendable {
     /// - Parameter startUptime: 起始系统启动时间
     /// - Returns: 格式化的毫秒数字符串（如 "123.4ms"）
     static func elapsedMilliseconds(since startUptime: TimeInterval) -> String {
-        let milliseconds = (ProcessInfo.processInfo.systemUptime - startUptime) * 1_000
-        return String(format: "%.1fms", milliseconds)
+        PerformanceFormatting.elapsedMilliseconds(
+            from: startUptime,
+            to: SystemPerformanceMeasurer.shared.currentUptime()
+        )
+    }
+
+    /// 开始一段性能诊断计时。
+    ///
+    /// - Parameter name: 诊断名称
+    /// - Returns: 性能诊断 span
+    static func performanceSpan(_ name: String = "") -> PerformanceSpan {
+        SystemPerformanceMeasurer.shared.start(name)
+    }
+
+    /// 计算经过的毫秒数。
+    ///
+    /// - Parameter span: 性能诊断 span
+    /// - Returns: 格式化的毫秒数字符串（如 "123.4ms"）
+    static func elapsedMilliseconds(since span: PerformanceSpan) -> String {
+        SystemPerformanceMeasurer.shared.elapsedMilliseconds(since: span)
     }
 }

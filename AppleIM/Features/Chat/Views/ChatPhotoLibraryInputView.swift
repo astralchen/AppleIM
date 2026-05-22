@@ -62,59 +62,6 @@ protocol ChatPhotoLibraryInputViewDelegate: AnyObject {
     func chatPhotoLibraryInputViewDidRequestDismiss(_ inputView: ChatPhotoLibraryInputView)
 }
 
-/// 图片库多选状态
-nonisolated struct ChatPhotoLibrarySelectionState {
-    /// 选择切换结果
-    enum ToggleResult: Equatable {
-        /// 已选中
-        case selected
-        /// 已取消选择
-        case deselected
-        /// 已达到选择上限
-        case limitReached
-    }
-
-    /// 最大可选择数量
-    static let maxSelectionCount = 9
-    /// 当前已选资源 ID，保留选择顺序
-    private(set) var selectedAssetIDs: [String] = []
-
-    /// 切换资源选择状态
-    mutating func toggle(assetID: String) -> ToggleResult {
-        if let existingIndex = selectedAssetIDs.firstIndex(of: assetID) {
-            selectedAssetIDs.remove(at: existingIndex)
-            return .deselected
-        }
-
-        guard selectedAssetIDs.count < Self.maxSelectionCount else {
-            return .limitReached
-        }
-
-        selectedAssetIDs.append(assetID)
-        return .selected
-    }
-
-    /// 移除指定资源选择
-    mutating func remove(assetID: String) {
-        selectedAssetIDs.removeAll { $0 == assetID }
-    }
-
-    /// 清空所有选择
-    mutating func removeAll() {
-        selectedAssetIDs.removeAll()
-    }
-
-    /// 判断资源是否已选中
-    func contains(assetID: String) -> Bool {
-        selectedAssetIDs.contains(assetID)
-    }
-
-    /// 返回资源的选择序号
-    func selectionNumber(for assetID: String) -> Int? {
-        selectedAssetIDs.firstIndex(of: assetID).map { $0 + 1 }
-    }
-}
-
 /// 聊天页图片库输入面板
 @MainActor
 final class ChatPhotoLibraryInputView: UIControl {
@@ -131,8 +78,8 @@ final class ChatPhotoLibraryInputView: UIControl {
     private static let dismissDistanceThreshold: CGFloat = 92
     /// 下滑关闭最小速度
     private static let dismissVelocityThreshold: CGFloat = 780
-    /// 临时媒体文件管理服务，可在测试中替换。
-    static var temporaryMediaFileManager: any TemporaryMediaFileManaging = DefaultTemporaryMediaFileManager.shared
+    /// 相册媒体准备服务。
+    private let mediaPreparationService: any ChatPhotoLibraryMediaPreparing
     /// 系统风格的动态拖拽提示条颜色
     private static func grabberColor(for traits: UITraitCollection) -> UIColor {
         switch (traits.userInterfaceStyle, traits.accessibilityContrast) {
@@ -197,7 +144,11 @@ final class ChatPhotoLibraryInputView: UIControl {
     }
 
     /// 初始化图片库输入面板
-    override init(frame: CGRect) {
+    init(
+        frame: CGRect,
+        mediaPreparationService: any ChatPhotoLibraryMediaPreparing = DefaultChatPhotoLibraryMediaPreparationService()
+    ) {
+        self.mediaPreparationService = mediaPreparationService
         let layout = UICollectionViewFlowLayout()
         layout.minimumLineSpacing = Self.interItemSpacing
         layout.minimumInteritemSpacing = Self.interItemSpacing
@@ -209,6 +160,7 @@ final class ChatPhotoLibraryInputView: UIControl {
 
     /// 从 storyboard/xib 初始化图片库输入视图
     required init?(coder: NSCoder) {
+        mediaPreparationService = DefaultChatPhotoLibraryMediaPreparationService()
         let layout = UICollectionViewFlowLayout()
         layout.minimumLineSpacing = Self.interItemSpacing
         layout.minimumInteritemSpacing = Self.interItemSpacing
@@ -625,26 +577,18 @@ final class ChatPhotoLibraryInputView: UIControl {
         let originalExtension = URL(fileURLWithPath: resource.originalFilename).pathExtension
         let typeExtension = UTType(resource.uniformTypeIdentifier)?.preferredFilenameExtension
         let fileExtension = originalExtension.isEmpty ? (typeExtension ?? "mov") : originalExtension
-        let temporaryURL = Self.temporaryMediaFileManager.makeTemporaryFileURL(
-            prefix: "ChatBridgeVideoPick",
-            fileExtension: fileExtension
-        )
-
-        Self.temporaryMediaFileManager.createEmptyFile(at: temporaryURL)
-
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
 
-        ChatPhotoLibraryVideoFileIO.stream(
+        mediaPreparationService.prepareVideoResource(
             resource,
-            to: temporaryURL,
+            fileExtension: fileExtension,
             resourceManager: resourceManager,
             options: options,
-            temporaryFileManager: Self.temporaryMediaFileManager,
-            completion: { [weak self, assetID = asset.localIdentifier, preview, fileExtension] result in
+            completion: { [weak self, mediaPreparationService, assetID = asset.localIdentifier, preview, fileExtension] result in
                 guard let self, self.selectionState.contains(assetID: assetID) else {
                     if case .success(let url) = result {
-                        Self.temporaryMediaFileManager.removeFileIfExists(at: url)
+                        mediaPreparationService.removePreparedMediaFileIfExists(at: url)
                     }
                     return
                 }
@@ -714,76 +658,6 @@ final class ChatPhotoLibraryInputView: UIControl {
         guard asset.mediaType == .video else { return nil }
         let seconds = max(0, Int(asset.duration.rounded()))
         return "\(seconds / 60):\(String(format: "%02d", seconds % 60))"
-    }
-}
-
-/// 图片库视频文件流式写入工具
-enum ChatPhotoLibraryVideoFileIO {
-    /// 视频流式写入错误
-    enum StreamError: Error {
-        /// 无法打开临时文件
-        case unableToOpenFile
-        /// 无法关闭临时文件
-        case unableToCloseFile
-        /// Photos 资源请求失败
-        case requestFailed
-    }
-
-    /// 创建资源数据接收回调
-    nonisolated static func makeDataReceivedHandler(fileHandle: FileHandle) -> (Data) -> Void {
-        { data in
-            fileHandle.write(data)
-        }
-    }
-
-    /// 将 Photos 视频资源流式写入临时文件
-    nonisolated static func stream(
-        _ resource: PHAssetResource,
-        to temporaryURL: URL,
-        resourceManager: PHAssetResourceManager,
-        options: PHAssetResourceRequestOptions,
-        temporaryFileManager: any TemporaryMediaFileManaging = DefaultTemporaryMediaFileManager.shared,
-        completion: @escaping @MainActor (Result<URL, StreamError>) -> Void
-    ) {
-        let fileHandle: FileHandle
-        do {
-            fileHandle = try FileHandle(forWritingTo: temporaryURL)
-        } catch {
-            Task { @MainActor in
-                completion(.failure(.unableToOpenFile))
-            }
-            return
-        }
-
-        resourceManager.requestData(
-            for: resource,
-            options: options,
-            dataReceivedHandler: makeDataReceivedHandler(fileHandle: fileHandle),
-            completionHandler: { error in
-                let result: Result<URL, StreamError>
-                do {
-                    try fileHandle.close()
-                } catch {
-                    temporaryFileManager.removeFileIfExists(at: temporaryURL)
-                    result = .failure(.unableToCloseFile)
-                    Task { @MainActor in
-                        completion(result)
-                    }
-                    return
-                }
-
-                if error == nil {
-                    result = .success(temporaryURL)
-                } else {
-                    temporaryFileManager.removeFileIfExists(at: temporaryURL)
-                    result = .failure(.requestFailed)
-                }
-
-                Task { @MainActor in
-                    completion(result)
-                }
-            }
-        )
     }
 }
 

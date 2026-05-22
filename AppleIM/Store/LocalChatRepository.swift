@@ -5,7 +5,6 @@
 //  本地聊天仓储
 //  实现多个仓储协议，统一管理会话、消息、同步等数据操作
 
-import Combine
 import Foundation
 import GRDB
 
@@ -159,13 +158,16 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     private let notificationSettingsStore: NotificationSettingsStore
     /// 事务后事件分发器
     private let eventDispatcher: any ChatStoreEventDispatching
+    /// 媒体文件元数据读取器
+    private let mediaFileMetadataProvider: any MediaFileMetadataProviding
 
     init(
         database: DatabaseActor,
         paths: AccountStoragePaths,
         localNotificationManager: (any LocalNotificationManaging)? = nil,
         applicationBadgeManager: (any ApplicationBadgeManaging)? = nil,
-        eventDispatcher: (any ChatStoreEventDispatching)? = nil
+        eventDispatcher: (any ChatStoreEventDispatching)? = nil,
+        mediaFileMetadataProvider: any MediaFileMetadataProviding = DefaultMediaFileMetadataProvider()
     ) {
         self.database = database
         self.paths = paths
@@ -180,6 +182,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
             localNotificationManager: localNotificationManager,
             applicationBadgeManager: applicationBadgeManager
         )
+        self.mediaFileMetadataProvider = mediaFileMetadataProvider
     }
 
     // MARK: - ConversationRepository
@@ -210,15 +213,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     }
 
     /// 观察账号首屏会话列表。
-    func observeConversations(for userID: UserID, limit: Int) async throws -> AnyPublisher<[Conversation], Error> {
+    func observeConversations(for userID: UserID, limit: Int) async throws -> DatabaseObservationStream<[Conversation]> {
         let boundedLimit = max(1, limit)
-        let observation = try await database.observe(paths: paths) { db in
+        return try await database.observe(paths: paths) { db in
             let records = try ConversationDAO.visibleConversations(for: userID)
                 .limit(boundedLimit)
                 .fetchAll(db)
             return try Self.conversations(from: records)
         }
-        return observation.publisher
     }
 
     /// 查询账号下所有可见会话的未读总数。
@@ -229,7 +231,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     }
 
     /// 观察账号级未读角标数。
-    func observeUnreadBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error> {
+    func observeUnreadBadgeCount(for userID: UserID) async throws -> DatabaseObservationStream<Int> {
         try await notificationSettingsStore.observeBadgeCount(for: userID)
     }
 
@@ -565,7 +567,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage {
         let plan = MessageDAO.makeOutgoingImageWritePlan(input)
         try await writeMessagePlan(plan)
-        try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.image, userID: input.userID, createdAt: input.localTime))
+        try await upsertMediaIndexRecords(Self.mediaIndexRecords(
+            for: input.image,
+            userID: input.userID,
+            createdAt: input.localTime,
+            mediaFileMetadataProvider: mediaFileMetadataProvider
+        ))
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
         return plan.message
     }
@@ -581,7 +588,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     func insertOutgoingVideoMessage(_ input: OutgoingVideoMessageInput) async throws -> StoredMessage {
         let plan = MessageDAO.makeOutgoingVideoWritePlan(input)
         try await writeMessagePlan(plan)
-        try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.video, userID: input.userID, createdAt: input.localTime))
+        try await upsertMediaIndexRecords(Self.mediaIndexRecords(
+            for: input.video,
+            userID: input.userID,
+            createdAt: input.localTime,
+            mediaFileMetadataProvider: mediaFileMetadataProvider
+        ))
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
         return plan.message
     }
@@ -612,7 +624,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     /// 观察聊天页最新消息窗口。
     ///
     /// 历史分页仍使用显式游标查询；这里仅用于同步最新一页内容，避免观察刷新重置历史分页窗口。
-    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error> {
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> DatabaseObservationStream<[StoredMessage]> {
         try await messageDAO.observeLatestMessages(conversationID: conversationID, limit: max(1, limit))
     }
 
@@ -1202,7 +1214,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
         }
 
         return resources.filter { resource in
-            !FileManager.default.fileExists(atPath: resource.localPath)
+            !mediaFileMetadataProvider.fileExists(atPath: resource.localPath)
         }
     }
 
@@ -1213,7 +1225,10 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
 
     func rebuildMediaIndex(userID: UserID) async throws -> MediaIndexRebuildResult {
         let resourceRows = try await mediaResourceRowsForIndexRebuild(userID: userID)
-        let rebuiltRecords = resourceRows.flatMap(Self.mediaIndexRecordsForExistingFiles)
+        let mediaFileMetadataProvider = mediaFileMetadataProvider
+        let rebuiltRecords = resourceRows.flatMap { row in
+            Self.mediaIndexRecordsForExistingFiles(from: row, mediaFileMetadataProvider: mediaFileMetadataProvider)
+        }
         let missingResources = try await scanMissingMediaResources(userID: userID)
 
         _ = try await database.write(in: .fileIndex, paths: paths) { db in
@@ -1786,7 +1801,10 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
         eventDispatcher.indexConversationBestEffort(conversationID: conversationID, userID: userID)
     }
 
-    private static func mediaIndexRecordsForExistingFiles(from row: MediaResourceIndexRebuildDatabaseRecord) -> [MediaIndexRecord] {
+    private static func mediaIndexRecordsForExistingFiles(
+        from row: MediaResourceIndexRebuildDatabaseRecord,
+        mediaFileMetadataProvider: any MediaFileMetadataProviding
+    ) -> [MediaIndexRecord] {
         guard
             let mediaID = row.mediaID,
             let userID = row.userID
@@ -1798,7 +1816,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
         let md5 = row.md5
         var records: [MediaIndexRecord] = []
 
-        if let localPath = row.localPath, FileManager.default.fileExists(atPath: localPath) {
+        if let localPath = row.localPath, mediaFileMetadataProvider.fileExists(atPath: localPath) {
             records.append(
                 MediaIndexRecord(
                     mediaID: mediaID,
@@ -1806,7 +1824,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
                     localPath: localPath,
                     fileName: fileName(from: localPath),
                     fileExtension: fileExtension(from: localPath, fallback: nil),
-                    sizeBytes: existingFileSize(atPath: localPath) ?? row.sizeBytes,
+                    sizeBytes: mediaFileMetadataProvider.fileSize(atPath: localPath) ?? row.sizeBytes,
                     md5: md5,
                     lastAccessAt: timestamp,
                     createdAt: timestamp
@@ -1814,7 +1832,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
             )
         }
 
-        if let thumbnailPath = row.thumbPath, FileManager.default.fileExists(atPath: thumbnailPath) {
+        if let thumbnailPath = row.thumbPath, mediaFileMetadataProvider.fileExists(atPath: thumbnailPath) {
             records.append(
                 MediaIndexRecord(
                     mediaID: "\(mediaID)_thumb",
@@ -1822,7 +1840,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
                     localPath: thumbnailPath,
                     fileName: fileName(from: thumbnailPath),
                     fileExtension: fileExtension(from: thumbnailPath, fallback: "jpg"),
-                    sizeBytes: existingFileSize(atPath: thumbnailPath),
+                    sizeBytes: mediaFileMetadataProvider.fileSize(atPath: thumbnailPath),
                     md5: nil,
                     lastAccessAt: timestamp,
                     createdAt: timestamp
@@ -1836,7 +1854,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     private static func mediaIndexRecords(
         for image: StoredImageContent,
         userID: UserID,
-        createdAt: Int64
+        createdAt: Int64,
+        mediaFileMetadataProvider: any MediaFileMetadataProviding
     ) -> [MediaIndexRecord] {
         return [
             MediaIndexRecord(
@@ -1856,7 +1875,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
                 localPath: image.thumbnailPath,
                 fileName: fileName(from: image.thumbnailPath),
                 fileExtension: fileExtension(from: image.thumbnailPath, fallback: "jpg"),
-                sizeBytes: existingFileSize(atPath: image.thumbnailPath),
+                sizeBytes: mediaFileMetadataProvider.fileSize(atPath: image.thumbnailPath),
                 md5: nil,
                 lastAccessAt: createdAt,
                 createdAt: createdAt
@@ -1887,7 +1906,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
     private static func mediaIndexRecords(
         for video: StoredVideoContent,
         userID: UserID,
-        createdAt: Int64
+        createdAt: Int64,
+        mediaFileMetadataProvider: any MediaFileMetadataProviding
     ) -> [MediaIndexRecord] {
         [
             MediaIndexRecord(
@@ -1907,7 +1927,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
                 localPath: video.thumbnailPath,
                 fileName: fileName(from: video.thumbnailPath),
                 fileExtension: fileExtension(from: video.thumbnailPath, fallback: "jpg"),
-                sizeBytes: existingFileSize(atPath: video.thumbnailPath),
+                sizeBytes: mediaFileMetadataProvider.fileSize(atPath: video.thumbnailPath),
                 md5: nil,
                 lastAccessAt: createdAt,
                 createdAt: createdAt
@@ -1991,17 +2011,6 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
             .lowercased()
 
         return sanitizedFallback?.isEmpty == false ? sanitizedFallback : nil
-    }
-
-    private static func existingFileSize(atPath path: String) -> Int64? {
-        guard
-            FileManager.default.fileExists(atPath: path),
-            let size = try? FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber
-        else {
-            return nil
-        }
-
-        return size.int64Value
     }
 
     fileprivate static func updateMessageSendStatus(

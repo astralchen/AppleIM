@@ -88,17 +88,12 @@ final class ConversationUnreadBadgeController {
         observationTask = Task { [weak self] in
             do {
                 let repository = try await storeProvider.repository()
-                let publisher = try await repository.observeUnreadBadgeCount(for: userID)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard let self else { return }
-                    publisher
-                        .map(ConversationUnreadBadgeFormatter.text(for:))
-                        .replaceError(with: nil)
-                        .sink { text in
-                            self.badgeSubject.send(text)
-                        }
-                        .store(in: &self.cancellables)
+                let stream = try await repository.observeUnreadBadgeCount(for: userID)
+                for try await count in stream {
+                    guard !Task.isCancelled else { return }
+                    await MainActor.run {
+                        self?.badgeSubject.send(ConversationUnreadBadgeFormatter.text(for: count))
+                    }
                 }
             } catch {
                 guard !Task.isCancelled else { return }

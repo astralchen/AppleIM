@@ -36,12 +36,18 @@ final class AppDependencyContainer {
     private let storageService: any AccountStorageService
     /// 网络恢复协调器
     private let networkRecoveryCoordinator: NetworkRecoveryCoordinator
+    /// 运行时配置
+    private let runtimeConfiguration: AppRuntimeConfiguration
+    /// App 级生命周期副作用服务
+    private let lifecycleService: AppLifecycleService
     /// UI 自动化测试模式
-    let isUITesting: Bool
+    var isUITesting: Bool {
+        runtimeConfiguration.isUITesting
+    }
     /// 最近一次后台数据修复报告
-    private(set) var lastDataRepairReport: DataRepairReport?
-    /// 网络恢复协调器启动幂等标记，避免重复订阅网络状态。
-    private var didStartNetworkRecovery = false
+    var lastDataRepairReport: DataRepairReport? {
+        lifecycleService.lastDataRepairReport
+    }
 
     init(
         accountID: UserID,
@@ -53,9 +59,12 @@ final class AppDependencyContainer {
         serverMessageSendConfiguration: ServerMessageSendService.Configuration? = nil,
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         localNotificationManager: any LocalNotificationManaging = UserNotificationCenterNotificationManager(),
-        applicationBadgeManager: any ApplicationBadgeManaging = UIKitApplicationBadgeManager()
+        applicationBadgeManager: any ApplicationBadgeManaging = UIKitApplicationBadgeManager(),
+        runtimeConfiguration: AppRuntimeConfiguration? = nil
     ) throws {
         let uiTestConfiguration = AppUITestConfiguration.current
+        let runtimeConfiguration = runtimeConfiguration
+            ?? AppRuntimeConfiguration.current(serverMessageSendConfiguration: serverMessageSendConfiguration)
         let storageService = try storageService
             ?? uiTestConfiguration.map(AppUITestConfiguration.makeStorageService)
             ?? AccountStorageFactory.makeDefaultService()
@@ -65,13 +74,13 @@ final class AppDependencyContainer {
         let resolvedMessageSendService: any MessageSendService
         if let uiTestConfiguration {
             resolvedMessageSendService = AppUITestConfiguration.makeMessageSendService(for: uiTestConfiguration)
-        } else if let serverMessageSendConfiguration {
+        } else if let serverMessageSendConfiguration = runtimeConfiguration.serverMessageSendConfiguration {
             resolvedMessageSendService = ServerMessageSendService(configuration: serverMessageSendConfiguration)
         } else {
             resolvedMessageSendService = messageSendService
         }
 
-        self.isUITesting = uiTestConfiguration != nil
+        self.runtimeConfiguration = runtimeConfiguration
         self.accountID = accountID
         self.accountAvatarURL = accountAvatarURL
         self.storageService = storageService
@@ -92,71 +101,39 @@ final class AppDependencyContainer {
             userID: accountID,
             storeProvider: storeProvider
         )
-        self.networkRecoveryCoordinator = NetworkRecoveryCoordinator(
+        let networkRecoveryCoordinator = NetworkRecoveryCoordinator(
             userID: accountID,
             storeProvider: storeProvider,
             sendService: resolvedMessageSendService,
             mediaUploadService: mediaUploadService
         )
+        self.networkRecoveryCoordinator = networkRecoveryCoordinator
+        self.lifecycleService = AppLifecycleService(
+            userID: accountID,
+            storeProvider: storeProvider,
+            localNotificationManager: localNotificationManager,
+            networkRecoveryCoordinator: networkRecoveryCoordinator
+        )
     }
 
     func startNetworkRecovery() {
-        startNetworkRecoveryNow()
-    }
-
-    private func startNetworkRecoveryNow() {
-        guard !didStartNetworkRecovery else { return }
-
-        didStartNetworkRecovery = true
-        networkRecoveryCoordinator.start()
+        lifecycleService.startNetworkRecovery()
     }
 
     func requestLocalNotificationAuthorization() {
-        let localNotificationManager = localNotificationManager
-        Task {
-            _ = try? await localNotificationManager.requestAuthorization()
-        }
+        lifecycleService.requestLocalNotificationAuthorization()
     }
 
     func runDueJobsWhenNetworkIsReachable() {
-        networkRecoveryCoordinator.runDueJobsWhenReachable()
+        lifecycleService.runDueJobsWhenNetworkIsReachable()
     }
 
     func refreshApplicationBadge() {
-        refreshApplicationBadgeNow()
-    }
-
-    private func refreshApplicationBadgeNow() {
-        let storeProvider = storeProvider
-        let userID = accountID
-        Task {
-            guard let repository = try? await storeProvider.repository() else {
-                return
-            }
-
-            _ = try? await repository.refreshApplicationBadge(userID: userID)
-        }
+        lifecycleService.refreshApplicationBadge()
     }
 
     func runStartupDataRepair() {
-        runStartupDataRepairNow()
-    }
-
-    private func runStartupDataRepairNow() {
-        let storeProvider = storeProvider
-        Task { [weak self] in
-            guard let repairService = try? await storeProvider.dataRepairService() else {
-                return
-            }
-
-            guard let report = await repairService.runStartupIfNeeded() else {
-                return
-            }
-
-            await MainActor.run {
-                self?.lastDataRepairReport = report
-            }
-        }
+        lifecycleService.runStartupDataRepair()
     }
 
     func makeConversationListViewController(

@@ -5,7 +5,6 @@
 //  消息数据访问对象（DAO）
 //  负责消息的查询、插入、更新操作
 
-import Combine
 import Foundation
 import GRDB
 
@@ -87,10 +86,17 @@ nonisolated struct MessageDAO: Sendable {
     private let database: DatabaseActor
     /// 账号存储路径
     private let paths: AccountStoragePaths
+    /// 媒体路径解析器
+    private let mediaPathResolver: any MediaPathResolving
 
-    init(database: DatabaseActor, paths: AccountStoragePaths) {
+    init(
+        database: DatabaseActor,
+        paths: AccountStoragePaths,
+        mediaPathResolver: any MediaPathResolving = DefaultMediaPathResolver()
+    ) {
         self.database = database
         self.paths = paths
+        self.mediaPathResolver = mediaPathResolver
     }
 
     /// 本地发出消息插入过程的公共上下文。
@@ -106,20 +112,19 @@ nonisolated struct MessageDAO: Sendable {
             try Self.visibleMessages(conversationID: conversationID, beforeSortSeq: beforeSortSeq)
                 .limit(max(0, limit))
                 .fetchAll(db)
-                .map { try Self.storedMessage(from: $0, db: db, paths: paths) }
+                .map { try storedMessage(from: $0, db: db) }
         }
     }
 
     /// 观察指定会话的最新消息窗口。
-    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error> {
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> DatabaseObservationStream<[StoredMessage]> {
         let boundedLimit = max(1, limit)
-        let observation = try await database.observe(paths: paths) { db in
+        return try await database.observe(paths: paths) { db in
             try Self.visibleMessages(conversationID: conversationID, beforeSortSeq: nil)
                 .limit(boundedLimit)
                 .fetchAll(db)
-                .map { try Self.storedMessage(from: $0, db: db, paths: paths) }
+                .map { try storedMessage(from: $0, db: db) }
         }
-        return observation.publisher
     }
 
     func message(messageID: MessageID) async throws -> StoredMessage? {
@@ -128,7 +133,7 @@ nonisolated struct MessageDAO: Sendable {
                 .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
                 .filter(MessageDatabaseRecord.Columns.isDeleted == false)
                 .fetchOne(db)
-                .map { try Self.storedMessage(from: $0, db: db, paths: paths) }
+                .map { try storedMessage(from: $0, db: db) }
         }
     }
 
@@ -147,10 +152,9 @@ nonisolated struct MessageDAO: Sendable {
         return request.order(MessageDatabaseRecord.Columns.sortSequence.desc)
     }
 
-    private static func storedMessage(
+    private func storedMessage(
         from record: MessageDatabaseRecord,
-        db: Database,
-        paths: AccountStoragePaths
+        db: Database
     ) throws -> StoredMessage {
         let revokeRecord = try MessageRevokeDatabaseRecord
             .filter(MessageRevokeDatabaseRecord.Columns.messageID == record.messageID.rawValue)
@@ -171,33 +175,32 @@ nonisolated struct MessageDAO: Sendable {
                 isRevoked: record.revokeStatus != 0,
                 isDeleted: record.isDeleted,
                 revokeReplacementText: revokeRecord?.replaceText,
-                revokeEditableText: record.revokeStatus != 0 ? textContent(contentID: record.contentID, db: db) : nil
+                revokeEditableText: record.revokeStatus != 0 ? Self.textContent(contentID: record.contentID, db: db) : nil
             ),
             timeline: StoredMessageTimeline(
                 serverTime: record.serverTime,
                 sortSequence: record.sortSequence,
                 localTime: record.localTime
             ),
-            content: try storedContent(from: record, db: db, paths: paths, revokeRecord: revokeRecord)
+            content: try storedContent(from: record, db: db, revokeRecord: revokeRecord)
         )
     }
 
-    private static func storedContent(
+    private func storedContent(
         from record: MessageDatabaseRecord,
         db: Database,
-        paths: AccountStoragePaths,
         revokeRecord: MessageRevokeDatabaseRecord?
     ) throws -> StoredMessageContent {
         switch record.messageType {
         case .text:
-            return .text(textContent(contentID: record.contentID, db: db) ?? "")
+            return .text(Self.textContent(contentID: record.contentID, db: db) ?? "")
         case .image:
             if let image = try MessageImageDatabaseRecord.fetchOne(db, key: record.contentID) {
                 return .image(
                     StoredImageContent(
                         mediaID: image.mediaID,
-                        localPath: resolvedMediaPath(image.localPath, in: paths),
-                        thumbnailPath: resolvedMediaPath(image.thumbPath, in: paths),
+                        localPath: resolvedMediaPath(image.localPath),
+                        thumbnailPath: resolvedMediaPath(image.thumbPath),
                         width: image.width,
                         height: image.height,
                         sizeBytes: image.sizeBytes,
@@ -213,7 +216,7 @@ nonisolated struct MessageDAO: Sendable {
                 return .voice(
                     StoredVoiceContent(
                         mediaID: voice.mediaID,
-                        localPath: resolvedMediaPath(voice.localPath, in: paths),
+                        localPath: resolvedMediaPath(voice.localPath),
                         durationMilliseconds: voice.durationMilliseconds,
                         sizeBytes: voice.sizeBytes,
                         remoteURL: voice.cdnURL,
@@ -227,8 +230,8 @@ nonisolated struct MessageDAO: Sendable {
                 return .video(
                     StoredVideoContent(
                         mediaID: video.mediaID,
-                        localPath: resolvedMediaPath(video.localPath, in: paths),
-                        thumbnailPath: resolvedMediaPath(video.thumbPath, in: paths),
+                        localPath: resolvedMediaPath(video.localPath),
+                        thumbnailPath: resolvedMediaPath(video.thumbPath),
                         durationMilliseconds: video.durationMilliseconds,
                         width: video.width,
                         height: video.height,
@@ -244,7 +247,7 @@ nonisolated struct MessageDAO: Sendable {
                 return .file(
                     StoredFileContent(
                         mediaID: file.mediaID,
-                        localPath: resolvedMediaPath(file.localPath, in: paths),
+                        localPath: resolvedMediaPath(file.localPath),
                         fileName: file.fileName,
                         fileExtension: file.fileExtension,
                         sizeBytes: file.sizeBytes,
@@ -262,8 +265,8 @@ nonisolated struct MessageDAO: Sendable {
                         packageID: emoji.packageID,
                         emojiType: emoji.emojiType,
                         name: emoji.name,
-                        localPath: emoji.localPath.map { resolvedMediaPath($0, in: paths) },
-                        thumbPath: emoji.thumbPath.map { resolvedMediaPath($0, in: paths) },
+                        localPath: emoji.localPath.map { resolvedMediaPath($0) },
+                        thumbPath: emoji.thumbPath.map { resolvedMediaPath($0) },
                         cdnURL: emoji.cdnURL,
                         width: emoji.width,
                         height: emoji.height,
@@ -272,37 +275,22 @@ nonisolated struct MessageDAO: Sendable {
                 )
             }
         case .system:
-            return .system(textContent(contentID: record.contentID, db: db))
+            return .system(Self.textContent(contentID: record.contentID, db: db))
         case .quote:
-            return .quote(textContent(contentID: record.contentID, db: db))
+            return .quote(Self.textContent(contentID: record.contentID, db: db))
         case .revoked:
             return .revoked(revokeRecord?.replaceText)
         }
 
-        return .text(textContent(contentID: record.contentID, db: db) ?? "")
+        return .text(Self.textContent(contentID: record.contentID, db: db) ?? "")
     }
 
     private static func textContent(contentID: String, db: Database) -> String? {
         try? MessageTextDatabaseRecord.fetchOne(db, key: contentID)?.text
     }
 
-    private static func resolvedMediaPath(_ storedPath: String, in paths: AccountStoragePaths) -> String {
-        let fileManager = FileManager.default
-        guard !fileManager.fileExists(atPath: storedPath) else {
-            return storedPath
-        }
-
-        let standardizedPath = URL(fileURLWithPath: storedPath).standardizedFileURL.path
-        guard let mediaRange = standardizedPath.range(of: "/media/") else {
-            return storedPath
-        }
-
-        let relativeMediaPath = String(standardizedPath[mediaRange.upperBound...])
-        let currentPath = paths.mediaDirectory.appendingPathComponent(relativeMediaPath).path
-        guard fileManager.fileExists(atPath: currentPath) else {
-            return storedPath
-        }
-        return currentPath
+    private func resolvedMediaPath(_ storedPath: String) -> String {
+        mediaPathResolver.resolvedMediaPath(storedPath, mediaDirectory: paths.mediaDirectory)
     }
 
     /// 更新消息发送状态

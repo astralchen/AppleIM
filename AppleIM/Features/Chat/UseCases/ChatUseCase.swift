@@ -5,7 +5,6 @@
 //  聊天用例
 //  封装聊天页的业务逻辑，包括消息加载、发送、重试等
 
-import Combine
 import Foundation
 
 /// 聊天消息分页结果
@@ -75,7 +74,7 @@ protocol ChatUseCase: Sendable {
     /// 加载更早的消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage
     /// 观察最新消息窗口。
-    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>?
+    func observeLatestMessages(limit: Int) async throws -> DatabaseObservationStream<[ChatMessageRowState]>?
     /// 加载草稿
     func loadDraft() async throws -> String?
     /// 保存草稿
@@ -123,7 +122,7 @@ extension ChatUseCase {
         nil
     }
 
-    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>? {
+    func observeLatestMessages(limit: Int) async throws -> DatabaseObservationStream<[ChatMessageRowState]>? {
         nil
     }
 
@@ -209,6 +208,14 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private let retryPolicy: MessageRetryPolicy
     /// 统一模拟后台推送服务
     private let simulatedIncomingPushService: (any SimulatedIncomingPushing)?
+    /// 消息行映射器
+    private let rowMapper: ChatMessageRowMapper
+    /// 消息时间线读取协作者
+    private let timelineLoader: ChatTimelineLoading
+    /// 草稿与文本消息发送协作者
+    private let messageSender: ChatMessageSending
+    /// 媒体消息发送协作者
+    private let mediaMessageSender: ChatMediaMessageSending
     /// 聊天链路耗时日志
     private let logger = AppLogger(category: .chat)
 
@@ -238,6 +245,42 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         self.mediaFileStore = mediaFileStore
         self.mediaUploadService = mediaUploadService
         self.retryPolicy = retryPolicy
+        let rowMapper = ChatMessageRowMapper(
+            userID: userID,
+            currentUserAvatarURL: currentUserAvatarURL,
+            conversationAvatarURL: conversationAvatarURL
+        )
+        self.rowMapper = rowMapper
+        self.timelineLoader = ChatTimelineLoading(
+            userID: userID,
+            conversationID: conversationID,
+            messageRepository: repository,
+            observationRepository: repository as? any MessageObservationRepository,
+            conversationRepository: conversationRepository,
+            rowMapper: rowMapper
+        )
+        self.messageSender = ChatMessageSending(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            conversationRepository: conversationRepository,
+            pendingJobRepository: pendingJobRepository,
+            recoveryRepository: repository as? any MessageSendRecoveryRepository,
+            sendService: sendService,
+            retryPolicy: retryPolicy,
+            rowMapper: rowMapper
+        )
+        self.mediaMessageSender = ChatMediaMessageSending(
+            userID: userID,
+            conversationID: conversationID,
+            repository: repository,
+            pendingJobRepository: pendingJobRepository,
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService,
+            sendService: sendService,
+            retryPolicy: retryPolicy,
+            rowMapper: rowMapper
+        )
         if let simulatedIncomingPushService {
             self.simulatedIncomingPushService = simulatedIncomingPushService
         } else if let pushRepository = repository as? any SimulatedIncomingPushRepository {
@@ -257,64 +300,27 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
     /// 加载首屏消息并标记会话已读
     func loadInitialMessages() async throws -> ChatMessagePage {
-        try await conversationRepository?.markConversationRead(conversationID: conversationID, userID: userID)
-
-        return try await loadMessagePage(limit: Self.initialMessageLimit, beforeSortSequence: nil)
+        try await timelineLoader.loadInitialMessages(limit: Self.initialMessageLimit)
     }
 
     /// 按游标加载更早消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
-        try await loadMessagePage(limit: limit, beforeSortSequence: beforeSortSequence)
-    }
-
-    /// 加载消息分页
-    ///
-    /// - Parameters:
-    ///   - limit: 每页数量
-    ///   - beforeSortSequence: 游标（在此序号之前的消息）
-    /// - Returns: 消息分页结果
-    private func loadMessagePage(limit: Int, beforeSortSequence: Int64?) async throws -> ChatMessagePage {
-        let boundedLimit = max(1, limit)
-        let messages = try await repository.listMessages(
-            conversationID: conversationID,
-            limit: boundedLimit + 1,
-            beforeSortSeq: beforeSortSequence
-        )
-        let visibleMessages = Array(messages.prefix(boundedLimit))
-        let rows = visibleMessages
-            .sorted { $0.timeline.sortSequence < $1.timeline.sortSequence }
-            .map { row(from: $0, currentUserID: userID) }
-
-        return ChatMessagePage(
-            rows: rows,
-            hasMore: messages.count > boundedLimit,
-            nextBeforeSortSequence: rows.first?.sortSequence
-        )
+        try await timelineLoader.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
     }
 
     /// 观察当前会话最新消息窗口。
-    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>? {
-        guard let observationRepository = repository as? any MessageObservationRepository else {
-            return nil
-        }
-        return try await observationRepository
-            .observeLatestMessages(conversationID: conversationID, limit: max(1, limit))
-            .map { messages in
-                messages
-                    .sorted { $0.timeline.sortSequence < $1.timeline.sortSequence }
-                    .map { row(from: $0, currentUserID: userID) }
-            }
-            .eraseToAnyPublisher()
+    func observeLatestMessages(limit: Int) async throws -> DatabaseObservationStream<[ChatMessageRowState]>? {
+        try await timelineLoader.observeLatestMessages(limit: limit)
     }
 
     /// 加载当前会话草稿
     func loadDraft() async throws -> String? {
-        try await repository.draft(conversationID: conversationID, userID: userID)
+        try await messageSender.loadDraft()
     }
 
     /// 保存当前会话草稿
     func saveDraft(_ text: String) async throws {
-        try await repository.saveDraft(conversationID: conversationID, userID: userID, text: text)
+        try await messageSender.saveDraft(text)
     }
 
     /// 加载群聊上下文
@@ -356,125 +362,12 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
 
     /// 发送文本消息并携带群聊 @ 元数据
     func sendText(_ text: String, mentionedUserIDs: [UserID], mentionsAll: Bool) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        return AsyncThrowingStream { continuation in
-            guard !trimmedText.isEmpty else {
-                continuation.finish()
-                return
-            }
-
-            let task = Task {
-                let startUptime = ProcessInfo.processInfo.systemUptime
-                do {
-                    if mentionsAll {
-                        let role = try await conversationRepository?.currentMemberRole(conversationID: conversationID, userID: userID)
-                        guard role?.canManageAnnouncement == true else {
-                            throw GroupChatError.permissionDenied
-                        }
-                    }
-
-                    let now = Int64(Date().timeIntervalSince1970)
-                    let insertStartUptime = ProcessInfo.processInfo.systemUptime
-                    let insertedMessage = try await repository.insertOutgoingTextMessage(
-                        OutgoingTextMessageInput(
-                            userID: userID,
-                            conversationID: conversationID,
-                            senderID: userID,
-                            text: trimmedText,
-                            localTime: now,
-                            mentionedUserIDs: mentionedUserIDs,
-                            mentionsAll: mentionsAll,
-                            sortSequence: now
-                        )
-                    )
-                    logger.info(
-                        "Chat sendText inserted messageID=\(Self.shortLogID(insertedMessage.id.rawValue)) elapsed=\(AppLogger.elapsedMilliseconds(since: insertStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-                    )
-
-                    continuation.yield(row(from: insertedMessage, currentUserID: userID))
-                    logger.info(
-                        "Chat sendText firstRowYielded messageID=\(Self.shortLogID(insertedMessage.id.rawValue)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-                    )
-
-                    let sendStartUptime = ProcessInfo.processInfo.systemUptime
-                    let result = await sendService.sendText(message: insertedMessage)
-                    logger.info(
-                        "Chat sendText serviceCompleted messageID=\(Self.shortLogID(insertedMessage.id.rawValue)) elapsed=\(AppLogger.elapsedMilliseconds(since: sendStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-                    )
-                    let finalStatus: MessageSendStatus
-                    let ack: MessageSendAck?
-
-                    switch result {
-                    case let .success(successAck):
-                        finalStatus = .success
-                        ack = successAck
-                    case .failure:
-                        finalStatus = .failed
-                        ack = nil
-                    }
-
-                    let draftClearStartUptime = ProcessInfo.processInfo.systemUptime
-                    try await repository.clearDraft(conversationID: conversationID, userID: userID)
-                    logger.info(
-                        "Chat sendText draftCleared messageID=\(Self.shortLogID(insertedMessage.id.rawValue)) elapsed=\(AppLogger.elapsedMilliseconds(since: draftClearStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-                    )
-
-                    let statusStartUptime = ProcessInfo.processInfo.systemUptime
-                    try await updateSendStatus(
-                        messageID: insertedMessage.id,
-                        status: finalStatus,
-                        ack: ack,
-                        pendingJob: finalStatus == .failed ? try makeResendJobInput(for: insertedMessage, failureReason: result.failureReason) : nil
-                    )
-                    logger.info(
-                        "Chat sendText statusUpdated messageID=\(Self.shortLogID(insertedMessage.id.rawValue)) status=\(finalStatus.rawValue) elapsed=\(AppLogger.elapsedMilliseconds(since: statusStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-                    )
-
-                    if let updatedMessage = try await repository.message(messageID: insertedMessage.id) {
-                        continuation.yield(row(from: updatedMessage, currentUserID: userID))
-                        logger.info(
-                            "Chat sendText finalRowYielded messageID=\(Self.shortLogID(insertedMessage.id.rawValue)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-                        )
-                    }
-
-                    continuation.finish()
-                } catch {
-                    logger.error("Chat sendText failed total=\(AppLogger.elapsedMilliseconds(since: startUptime)) error=\(String(describing: type(of: error)))")
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
-        }
+        messageSender.sendText(text, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll)
     }
 
     /// 发送图片消息并流式返回上传和发送状态
     func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        sendPreparedMediaMessage(operation: .image) {
-            guard let mediaFileStore else {
-                return nil
-            }
-
-            let now = Self.currentTimestamp()
-            try await repository.clearDraft(conversationID: conversationID, userID: userID)
-            let storedImage = try await mediaFileStore.saveImage(
-                data: data,
-                preferredFileExtension: preferredFileExtension
-            )
-            return try await repository.insertOutgoingImageMessage(
-                OutgoingImageMessageInput(
-                    userID: userID,
-                    conversationID: conversationID,
-                    senderID: userID,
-                    image: storedImage.content,
-                    localTime: now,
-                    sortSequence: now
-                )
-            )
-        }
+        mediaMessageSender.sendImage(data: data, preferredFileExtension: preferredFileExtension)
     }
 
     /// 发送语音消息并流式返回上传和发送状态
@@ -485,78 +378,17 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             }
         }
 
-        return sendPreparedMediaMessage(operation: .voice) {
-            guard let mediaFileStore else {
-                return nil
-            }
-
-            let now = Self.currentTimestamp()
-            try await repository.clearDraft(conversationID: conversationID, userID: userID)
-            let storedVoice = try await mediaFileStore.saveVoice(
-                recordingURL: recording.fileURL,
-                durationMilliseconds: recording.durationMilliseconds,
-                preferredFileExtension: recording.fileExtension
-            )
-            return try await repository.insertOutgoingVoiceMessage(
-                OutgoingVoiceMessageInput(
-                    userID: userID,
-                    conversationID: conversationID,
-                    senderID: userID,
-                    voice: storedVoice.content,
-                    localTime: now,
-                    sortSequence: now
-                )
-            )
-        }
+        return mediaMessageSender.sendVoice(recording: recording)
     }
 
     /// 发送视频消息并流式返回上传和发送状态
     func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        sendPreparedMediaMessage(operation: .video) {
-            guard let mediaFileStore else {
-                return nil
-            }
-
-            let now = Self.currentTimestamp()
-            try await repository.clearDraft(conversationID: conversationID, userID: userID)
-            let storedVideo = try await mediaFileStore.saveVideo(
-                fileURL: fileURL,
-                preferredFileExtension: preferredFileExtension
-            )
-            return try await repository.insertOutgoingVideoMessage(
-                OutgoingVideoMessageInput(
-                    userID: userID,
-                    conversationID: conversationID,
-                    senderID: userID,
-                    video: storedVideo.content,
-                    localTime: now,
-                    sortSequence: now
-                )
-            )
-        }
+        mediaMessageSender.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
     }
 
     /// 发送文件消息并流式返回上传和发送状态
     func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
-        sendPreparedMediaMessage(operation: .file) {
-            guard let mediaFileStore else {
-                return nil
-            }
-
-            let now = Self.currentTimestamp()
-            try await repository.clearDraft(conversationID: conversationID, userID: userID)
-            let storedFile = try await mediaFileStore.saveFile(fileURL: fileURL)
-            return try await repository.insertOutgoingFileMessage(
-                OutgoingFileMessageInput(
-                    userID: userID,
-                    conversationID: conversationID,
-                    senderID: userID,
-                    file: storedFile.content,
-                    localTime: now,
-                    sortSequence: now
-                )
-            )
-        }
+        mediaMessageSender.sendFile(fileURL: fileURL)
     }
 
     private func sendPreparedMediaMessage(
@@ -706,7 +538,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             return []
         }
 
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         let request = SimulatedIncomingPushRequest(target: .conversation(conversationID))
         guard let pushResult = try await pushService.simulateIncomingPush(request) else {
             return []
@@ -724,7 +556,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             let resultConversationID = pushResult.conversationID
             let resultMessageID = pushResult.messages.last?.messageID
             Task {
-                let readStartUptime = ProcessInfo.processInfo.systemUptime
+                let readStartUptime = AppLogger.performanceSpan()
                 do {
                     try await conversationRepository.markConversationRead(conversationID: resultConversationID, userID: userID)
                     logger.info(
@@ -1418,7 +1250,7 @@ nonisolated private struct PendingJobAttemptResult: Equatable, Sendable {
 }
 
 /// 媒体上传操作类型，集中描述不同媒体的上传、发送和状态更新差异。
-nonisolated private enum MediaUploadOperation: Sendable {
+nonisolated enum MediaUploadOperation: Sendable {
     case image
     case voice
     case video
@@ -1654,6 +1486,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     private let mediaUploadService: any MediaUploadService
     /// 统一模拟后台推送服务
     private let simulatedIncomingPushService: any SimulatedIncomingPushing
+    /// 本地用例缓存 Provider，避免每次调用重复构造完整依赖图。
+    private let localUseCaseProvider: StoreBackedLocalChatUseCaseProvider
 
     var observedUserID: UserID? {
         userID
@@ -1675,6 +1509,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
         simulatedIncomingPushService: (any SimulatedIncomingPushing)? = nil
     ) {
+        let resolvedSimulatedIncomingPushService = simulatedIncomingPushService
+            ?? SimulatedIncomingPushService(userID: userID, storeProvider: storeProvider)
         self.userID = userID
         self.conversationID = conversationID
         self.currentUserAvatarURL = currentUserAvatarURL
@@ -1683,8 +1519,17 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         self.sendService = sendService
         self.mediaFileStore = mediaFileStore
         self.mediaUploadService = mediaUploadService
-        self.simulatedIncomingPushService = simulatedIncomingPushService
-            ?? SimulatedIncomingPushService(userID: userID, storeProvider: storeProvider)
+        self.simulatedIncomingPushService = resolvedSimulatedIncomingPushService
+        self.localUseCaseProvider = StoreBackedLocalChatUseCaseProvider(
+            userID: userID,
+            conversationID: conversationID,
+            currentUserAvatarURL: currentUserAvatarURL,
+            conversationAvatarURL: conversationAvatarURL,
+            sendService: sendService,
+            mediaFileStore: mediaFileStore,
+            mediaUploadService: mediaUploadService,
+            simulatedIncomingPushService: resolvedSimulatedIncomingPushService
+        )
     }
 
     /// 加载首屏消息
@@ -1702,7 +1547,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     }
 
     /// 观察当前会话最新消息窗口。
-    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>? {
+    func observeLatestMessages(limit: Int) async throws -> DatabaseObservationStream<[ChatMessageRowState]>? {
         try await withLocalUseCase { useCase in
             try await useCase.observeLatestMessages(limit: limit)
         }
@@ -1833,8 +1678,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     private func withLocalUseCase<Result>(
         _ operation: (LocalChatUseCase) async throws -> Result
     ) async throws -> Result {
-        let repository = try await storeProvider.repository()
-        let useCase = makeLocalUseCase(repository: repository)
+        let useCase = try await localUseCaseProvider.localUseCase(storeProvider: storeProvider)
         return try await operation(useCase)
     }
 
@@ -1866,9 +1710,47 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         }
     }
 
-    /// 基于最新 repository 创建本地聊天用例
-    private func makeLocalUseCase(repository: LocalChatRepository) -> LocalChatUseCase {
-        LocalChatUseCase(
+}
+
+/// 为 StoreBackedChatUseCase 缓存本地聊天用例。
+private actor StoreBackedLocalChatUseCaseProvider {
+    private let userID: UserID
+    private let conversationID: ConversationID
+    private let currentUserAvatarURL: String?
+    private let conversationAvatarURL: String?
+    private let sendService: any MessageSendService
+    private let mediaFileStore: any MediaFileStoring
+    private let mediaUploadService: any MediaUploadService
+    private let simulatedIncomingPushService: any SimulatedIncomingPushing
+    private var cachedUseCase: LocalChatUseCase?
+
+    init(
+        userID: UserID,
+        conversationID: ConversationID,
+        currentUserAvatarURL: String?,
+        conversationAvatarURL: String?,
+        sendService: any MessageSendService,
+        mediaFileStore: any MediaFileStoring,
+        mediaUploadService: any MediaUploadService,
+        simulatedIncomingPushService: any SimulatedIncomingPushing
+    ) {
+        self.userID = userID
+        self.conversationID = conversationID
+        self.currentUserAvatarURL = currentUserAvatarURL
+        self.conversationAvatarURL = conversationAvatarURL
+        self.sendService = sendService
+        self.mediaFileStore = mediaFileStore
+        self.mediaUploadService = mediaUploadService
+        self.simulatedIncomingPushService = simulatedIncomingPushService
+    }
+
+    func localUseCase(storeProvider: ChatStoreProvider) async throws -> LocalChatUseCase {
+        if let cachedUseCase {
+            return cachedUseCase
+        }
+
+        let repository = try await storeProvider.repository()
+        let useCase = LocalChatUseCase(
             userID: userID,
             conversationID: conversationID,
             currentUserAvatarURL: currentUserAvatarURL,
@@ -1881,5 +1763,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
             mediaUploadService: mediaUploadService,
             simulatedIncomingPushService: simulatedIncomingPushService
         )
+        cachedUseCase = useCase
+        return useCase
     }
 }

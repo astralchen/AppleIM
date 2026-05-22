@@ -107,7 +107,7 @@ actor ChatStoreProvider {
     }
 
     private func makeRepository() async throws -> LocalChatRepository {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatStoreProvider repository create started")
         let paths = try await bootstrappedAccountStorage()
         let repository = LocalChatRepository(
@@ -117,7 +117,7 @@ actor ChatStoreProvider {
             applicationBadgeManager: applicationBadgeManager
         )
         if shouldSeedDemoData {
-            let seedStartUptime = ProcessInfo.processInfo.systemUptime
+            let seedStartUptime = AppLogger.performanceSpan()
             try await DemoDataSeeder.seedIfNeeded(
                 repository: repository,
                 userID: accountID,
@@ -138,7 +138,7 @@ actor ChatStoreProvider {
             return cachedSearchIndex
         }
 
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatStoreProvider searchIndex create started")
         let paths = try await bootstrappedAccountStorage()
         let searchIndex = SearchIndexActor(database: database, paths: paths)
@@ -149,7 +149,7 @@ actor ChatStoreProvider {
 
     /// 获取后台数据修复服务。
     func dataRepairService() async throws -> DataRepairService {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatStoreProvider dataRepairService create started")
         let paths = try await bootstrappedAccountStorage()
         let repository = try await repository()
@@ -188,10 +188,10 @@ actor ChatStoreProvider {
             return cachedBootstrappedPaths
         }
 
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatStoreProvider bootstrap started")
         let paths = try await prepareAccountStorage()
-        let bootstrapStartUptime = ProcessInfo.processInfo.systemUptime
+        let bootstrapStartUptime = AppLogger.performanceSpan()
         _ = try await database.bootstrap(paths: paths)
         logger.info("ChatStoreProvider database bootstrap completed elapsed=\(AppLogger.elapsedMilliseconds(since: bootstrapStartUptime))")
         cachedBootstrappedPaths = paths
@@ -201,12 +201,12 @@ actor ChatStoreProvider {
 
     /// 准备账号存储并确保账号密钥已经存在
     private func prepareAccountStorage() async throws -> AccountStoragePaths {
-        let startUptime = ProcessInfo.processInfo.systemUptime
+        let startUptime = AppLogger.performanceSpan()
         logger.info("ChatStoreProvider prepare storage started")
-        let keyStartUptime = ProcessInfo.processInfo.systemUptime
+        let keyStartUptime = AppLogger.performanceSpan()
         let databaseKey = try await databaseKeyStore.databaseKey(for: accountID)
         logger.info("ChatStoreProvider database key ready elapsed=\(AppLogger.elapsedMilliseconds(since: keyStartUptime))")
-        let storageStartUptime = ProcessInfo.processInfo.systemUptime
+        let storageStartUptime = AppLogger.performanceSpan()
         let paths = try await storageService.prepareStorage(for: accountID)
         logger.info("ChatStoreProvider account storage paths ready elapsed=\(AppLogger.elapsedMilliseconds(since: storageStartUptime))")
         await database.configureEncryptionKey(databaseKey, for: paths)

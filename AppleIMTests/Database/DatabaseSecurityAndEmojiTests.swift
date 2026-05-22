@@ -374,7 +374,7 @@ extension AppleIMTests {
         #expect(await databaseActor.cachedConnectionCount(for: paths) == 1)
     }
 
-    @Test func databaseBootstrapCreatesCurrentBaselineWithoutMigrationState() async throws {
+    @Test func databaseBootstrapCreatesCurrentDevelopmentBaselineWithoutMigrationState() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -421,7 +421,7 @@ extension AppleIMTests {
         #expect(setting.badgeIncludeMuted == true)
     }
 
-    @Test func databaseBootstrapRecreatesLegacyNotificationBadgeSettingSchema() async throws {
+    @Test func databaseBootstrapRecreatesLegacyNotificationBadgeSettingSchemaDuringUnreleasedDevelopment() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)

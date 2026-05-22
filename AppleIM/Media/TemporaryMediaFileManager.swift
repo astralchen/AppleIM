@@ -21,34 +21,28 @@ nonisolated protocol TemporaryMediaFileManaging: Sendable {
 }
 
 /// 基于 FileManager 的临时媒体文件管理器。
-///
-/// `FileManager` 未声明 Sendable；此实现只调用系统文件操作，不保存可变业务状态。
-nonisolated struct DefaultTemporaryMediaFileManager: TemporaryMediaFileManaging, @unchecked Sendable {
+nonisolated struct DefaultTemporaryMediaFileManager: TemporaryMediaFileManaging {
     static let shared = DefaultTemporaryMediaFileManager()
 
-    private let fileManager: FileManager
-
-    init(fileManager: FileManager = .default) {
-        self.fileManager = fileManager
-    }
+    init() {}
 
     func makeTemporaryFileURL(prefix: String, fileExtension: String) -> URL {
-        fileManager.temporaryDirectory
+        FileManager.default.temporaryDirectory
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
             .appendingPathExtension(fileExtension)
     }
 
     @discardableResult
     func createEmptyFile(at url: URL) -> Bool {
-        fileManager.createFile(atPath: url.path, contents: nil)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
     }
 
     func removeFileIfExists(at url: URL) {
-        guard fileManager.fileExists(atPath: url.path) else { return }
-        try? fileManager.removeItem(at: url)
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     func fileExists(at url: URL) -> Bool {
-        fileManager.fileExists(atPath: url.path)
+        FileManager.default.fileExists(atPath: url.path)
     }
 }

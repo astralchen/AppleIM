@@ -5,12 +5,7 @@
 //  聊天存储模型
 //  定义数据库操作相关的数据结构和错误类型
 
-import Combine
 import Foundation
-
-/// Combine 的 `AnyPublisher` 没有声明 Sendable，但本工程只把它作为不可变订阅描述跨层传递；
-/// 实际事件交付由 Combine/GRDB 调度器管理，生命周期由持有方的 cancellable 控制。
-extension AnyPublisher: @unchecked @retroactive Sendable where Output: Sendable {}
 
 /// 聊天存储错误
 nonisolated enum ChatStoreError: Error, Equatable, Sendable {
@@ -1228,12 +1223,12 @@ protocol ConversationRepository: Sendable {
 
 /// 会话观察仓储协议。
 ///
-/// 只暴露业务模型 publisher，避免 UI 或 UseCase 直接依赖 GRDB。
+/// 只暴露业务模型观察流，避免 UI 或 UseCase 直接依赖 GRDB/Combine。
 protocol ConversationObservationRepository: Sendable {
     /// 观察指定账号首屏会话列表。
-    func observeConversations(for userID: UserID, limit: Int) async throws -> AnyPublisher<[Conversation], Error>
+    func observeConversations(for userID: UserID, limit: Int) async throws -> DatabaseObservationStream<[Conversation]>
     /// 观察指定账号的应用角标未读数。
-    func observeUnreadBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error>
+    func observeUnreadBadgeCount(for userID: UserID) async throws -> DatabaseObservationStream<Int>
 }
 
 extension ConversationRepository {
@@ -1255,12 +1250,12 @@ extension ConversationRepository {
 }
 
 extension ConversationObservationRepository {
-    func observeConversations(for userID: UserID, limit: Int) async throws -> AnyPublisher<[Conversation], Error> {
-        Empty(completeImmediately: false).eraseToAnyPublisher()
+    func observeConversations(for userID: UserID, limit: Int) async throws -> DatabaseObservationStream<[Conversation]> {
+        DatabaseObservationStream(AsyncThrowingStream { _ in })
     }
 
-    func observeUnreadBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error> {
-        Empty(completeImmediately: false).eraseToAnyPublisher()
+    func observeUnreadBadgeCount(for userID: UserID) async throws -> DatabaseObservationStream<Int> {
+        DatabaseObservationStream(AsyncThrowingStream { _ in })
     }
 }
 
@@ -1276,8 +1271,26 @@ protocol NotificationSettingsRepository: Sendable {
     func refreshApplicationBadge(userID: UserID) async throws -> Int
 }
 
-/// 消息仓储协议
-protocol MessageRepository: Sendable {
+/// 消息时间线读取协议。
+protocol MessageTimelineRepository: Sendable {
+    /// 查询消息列表
+    func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
+    /// 查询单条消息
+    func message(messageID: MessageID) async throws -> StoredMessage?
+}
+
+/// 消息草稿协议。
+protocol MessageDraftRepository: Sendable {
+    /// 保存草稿
+    func saveDraft(conversationID: ConversationID, userID: UserID, text: String) async throws
+    /// 查询草稿
+    func draft(conversationID: ConversationID, userID: UserID) async throws -> String?
+    /// 清空草稿
+    func clearDraft(conversationID: ConversationID, userID: UserID) async throws
+}
+
+/// 消息写入协议。
+protocol MessageMutationRepository: Sendable {
     /// 插入发出的文本消息
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage
     /// 插入发出的图片消息
@@ -1290,12 +1303,12 @@ protocol MessageRepository: Sendable {
     func insertOutgoingFileMessage(_ input: OutgoingFileMessageInput) async throws -> StoredMessage
     /// 插入发出的表情消息
     func insertOutgoingEmojiMessage(_ input: OutgoingEmojiMessageInput) async throws -> StoredMessage
-    /// 查询消息列表
-    func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage]
-    /// 查询单条消息
-    func message(messageID: MessageID) async throws -> StoredMessage?
     /// 更新消息发送状态
     func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws
+}
+
+/// 消息发送恢复协议。
+protocol MessageRecoveryRepository: Sendable {
     /// 重发文本消息
     func resendTextMessage(messageID: MessageID) async throws -> StoredMessage
     /// 重发图片消息
@@ -1304,6 +1317,10 @@ protocol MessageRepository: Sendable {
     func resendVideoMessage(messageID: MessageID) async throws -> StoredMessage
     /// 重发文件消息
     func resendFileMessage(messageID: MessageID) async throws -> StoredMessage
+}
+
+/// 媒体消息状态协议。
+protocol MessageMediaMetadataRepository: Sendable {
     /// 更新图片上传和消息发送状态
     func updateImageUploadStatus(
         messageID: MessageID,
@@ -1339,29 +1356,30 @@ protocol MessageRepository: Sendable {
         sendAck: MessageSendAck?,
         pendingJob: PendingJobInput?
     ) async throws
+}
+
+/// 消息交互协议。
+protocol MessageInteractionRepository: Sendable {
     /// 标记语音消息已播放
     func markVoicePlayed(messageID: MessageID) async throws
     /// 标记消息已删除
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws
     /// 撤回消息
     func revokeMessage(messageID: MessageID, userID: UserID, replacementText: String) async throws -> StoredMessage
-    /// 保存草稿
-    func saveDraft(conversationID: ConversationID, userID: UserID, text: String) async throws
-    /// 查询草稿
-    func draft(conversationID: ConversationID, userID: UserID) async throws -> String?
-    /// 清空草稿
-    func clearDraft(conversationID: ConversationID, userID: UserID) async throws
 }
+
+/// 消息仓储协议。
+protocol MessageRepository: MessageTimelineRepository, MessageDraftRepository, MessageMutationRepository, MessageRecoveryRepository, MessageMediaMetadataRepository, MessageInteractionRepository {}
 
 /// 消息观察仓储协议。
 protocol MessageObservationRepository: Sendable {
     /// 观察指定会话的最新消息窗口；历史分页仍走显式查询。
-    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error>
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> DatabaseObservationStream<[StoredMessage]>
 }
 
 extension MessageObservationRepository {
-    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error> {
-        Empty(completeImmediately: false).eraseToAnyPublisher()
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> DatabaseObservationStream<[StoredMessage]> {
+        DatabaseObservationStream(AsyncThrowingStream { _ in })
     }
 }
 
