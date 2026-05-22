@@ -2,6 +2,7 @@ import Testing
 import AVFoundation
 import Combine
 import Foundation
+import GRDB
 import CoreGraphics
 import ImageIO
 import UIKit
@@ -2990,67 +2991,64 @@ func seedPerformanceMessages(
         )
     """
 
-    try await databaseContext.databaseActor.execute(
-        """
-        \(numbersCTE)
-        INSERT INTO message_text (content_id, text, mentions_json, at_all, rich_text_json)
-        SELECT
-            'perf_text_' || value,
-            'Perf Message ' || value,
-            NULL,
-            0,
-            NULL
-        FROM numbers
-        WHERE value <= \(count);
-        """,
-        paths: databaseContext.paths
-    )
-
-    try await databaseContext.databaseActor.execute(
-        """
-        \(numbersCTE)
-        INSERT INTO message (
-            message_id,
-            conversation_id,
-            sender_id,
-            client_msg_id,
-            msg_type,
-            direction,
-            send_status,
-            delivery_status,
-            read_status,
-            revoke_status,
-            is_deleted,
-            content_table,
-            content_id,
-            sort_seq,
-            local_time
+    _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+        try db.execute(
+            sql: """
+            \(numbersCTE)
+            INSERT INTO message_text (content_id, text, mentions_json, at_all, rich_text_json)
+            SELECT
+                'perf_text_' || value,
+                'Perf Message ' || value,
+                NULL,
+                0,
+                NULL
+            FROM numbers
+            WHERE value <= \(count);
+            """
         )
-        SELECT
-            'perf_message_' || value,
-            ?,
-            ?,
-            'perf_client_' || value,
-            \(MessageType.text.rawValue),
-            \(MessageDirection.outgoing.rawValue),
-            \(MessageSendStatus.success.rawValue),
-            0,
-            \(MessageReadStatus.read.rawValue),
-            0,
-            0,
-            'message_text',
-            'perf_text_' || value,
-            value,
-            value
-        FROM numbers
-        WHERE value <= \(count);
-        """,
-        parameters: [
-            .text(conversationID.rawValue),
-            .text(userID.rawValue)
-        ],
-        paths: databaseContext.paths
-    )
+
+        try db.execute(
+            sql: """
+            \(numbersCTE)
+            INSERT INTO message (
+                message_id,
+                conversation_id,
+                sender_id,
+                client_msg_id,
+                msg_type,
+                direction,
+                send_status,
+                delivery_status,
+                read_status,
+                revoke_status,
+                is_deleted,
+                content_table,
+                content_id,
+                sort_seq,
+                local_time
+            )
+            SELECT
+                'perf_message_' || value,
+                ?,
+                ?,
+                'perf_client_' || value,
+                \(MessageType.text.rawValue),
+                \(MessageDirection.outgoing.rawValue),
+                \(MessageSendStatus.success.rawValue),
+                0,
+                \(MessageReadStatus.read.rawValue),
+                0,
+                0,
+                'message_text',
+                'perf_text_' || value,
+                value,
+                value
+            FROM numbers
+            WHERE value <= \(count);
+            """,
+            arguments: [conversationID.rawValue, userID.rawValue]
+        )
+    }
 }
 
 func databaseReadFails(using databaseActor: DatabaseActor, paths: AccountStoragePaths) async -> Bool {
@@ -3328,6 +3326,18 @@ actor CapturingApplicationBadgeManager: ApplicationBadgeManaging {
     }
 
     func values() -> [Int] {
+        capturedValues
+    }
+}
+
+actor CapturingPublisherValues<Value: Sendable> {
+    private var capturedValues: [Value] = []
+
+    func append(_ value: Value) {
+        capturedValues.append(value)
+    }
+
+    func values() -> [Value] {
         capturedValues
     }
 }

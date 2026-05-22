@@ -47,11 +47,6 @@ nonisolated struct DataRepairService: Sendable {
             integrityResults = results
 
             if results.allSatisfy(\.isOK) {
-                _ = try await database.recordMaintenanceMetadata(
-                    paths: paths,
-                    integrityCheckedAt: Self.currentTimestamp(),
-                    ftsRebuildVersion: nil
-                )
                 steps.append(Self.success(.integrityCheck))
             } else {
                 steps.append(
@@ -67,12 +62,6 @@ nonisolated struct DataRepairService: Sendable {
 
         do {
             try await searchIndex.rebuildAll(userID: userID)
-            let previousMetadata = try? await database.loadMigrationMetadata(paths: paths)
-            _ = try await database.recordMaintenanceMetadata(
-                paths: paths,
-                integrityCheckedAt: nil,
-                ftsRebuildVersion: (previousMetadata?.ftsRebuildVersion ?? 0) + 1
-            )
             steps.append(Self.success(.ftsRebuild))
         } catch {
             steps.append(Self.failure(.ftsRebuild, error: error))
@@ -94,14 +83,10 @@ nonisolated struct DataRepairService: Sendable {
         )
     }
 
-    /// 启动时按维护元数据判断是否需要运行修复
+    /// 启动时直接运行轻量修复。
+    ///
+    /// 项目尚未上架，不再维护旧迁移元数据；启动修复保持幂等即可。
     func runStartupIfNeeded() async -> DataRepairReport? {
-        if let metadata = try? await database.loadMigrationMetadata(paths: paths),
-           metadata.lastIntegrityCheckAt != nil,
-           metadata.ftsRebuildVersion > 0 {
-            return nil
-        }
-
         return await run()
     }
 
@@ -129,8 +114,4 @@ nonisolated struct DataRepairService: Sendable {
         return String(describing: type(of: error))
     }
 
-    /// 当前秒级时间戳
-    private static func currentTimestamp() -> Int64 {
-        Int64(Date().timeIntervalSince1970)
-    }
 }

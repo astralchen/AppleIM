@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 
 @testable import AppleIM
 
@@ -11,11 +12,10 @@ extension AppleIMTests {
         }
 
         let (_, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "sql_index_user")
-        let rows = try await databaseContext.databaseActor.query(
-            "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name;",
-            paths: databaseContext.paths
-        )
-        let indexNames = Set(rows.compactMap { $0.string("name") })
+        let indexNames = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name;")
+            return Set(rows.compactMap { $0["name"] as String? })
+        }
 
         #expect(indexNames.contains("idx_pending_job_user_recoverable"))
         #expect(indexNames.contains("idx_media_resource_user_updated"))
@@ -45,11 +45,11 @@ extension AppleIMTests {
             AND (next_retry_at IS NULL OR next_retry_at <= ?)
             ORDER BY COALESCE(next_retry_at, created_at), created_at;
             """,
-            parameters: [
-                .text("sql_plan_user"),
-                .integer(Int64(PendingJobStatus.pending.rawValue)),
-                .integer(Int64(PendingJobStatus.running.rawValue)),
-                .integer(500)
+            arguments: [
+                "sql_plan_user",
+                PendingJobStatus.pending.rawValue,
+                PendingJobStatus.running.rawValue,
+                500
             ],
             databaseContext: databaseContext
         )
@@ -67,7 +67,7 @@ extension AppleIMTests {
             AND TRIM(remote_url) <> ''
             ORDER BY updated_at DESC, created_at DESC;
             """,
-            parameters: [.text("sql_plan_user")],
+            arguments: ["sql_plan_user"],
             databaseContext: databaseContext
         )
         expectPlan(missingMediaPlan, contains: "idx_media_resource_user_updated")
@@ -79,10 +79,10 @@ extension AppleIMTests {
             SET upload_status = ?, updated_at = ?
             WHERE owner_message_id = ?;
             """,
-            parameters: [
-                .integer(Int64(MediaUploadStatus.success.rawValue)),
-                .integer(500),
-                .text("sql_plan_message_10")
+            arguments: [
+                MediaUploadStatus.success.rawValue,
+                500,
+                "sql_plan_message_10"
             ],
             databaseContext: databaseContext
         )
@@ -99,13 +99,13 @@ extension AppleIMTests {
                 OR (conversation_id = ? AND seq = ?)
             LIMIT 1;
             """,
-            parameters: [
-                .optionalText(nil),
-                .optionalText(nil),
-                .optionalText(nil),
-                .optionalText(nil),
-                .text("sql_plan_conversation"),
-                .integer(10)
+            arguments: [
+                nil,
+                nil,
+                nil,
+                nil,
+                "sql_plan_conversation",
+                10
             ],
             databaseContext: databaseContext
         )
@@ -121,11 +121,11 @@ extension AppleIMTests {
             AND read_status = ?
             AND is_deleted = 0;
             """,
-            parameters: [
-                .integer(Int64(MessageReadStatus.read.rawValue)),
-                .text("sql_plan_conversation"),
-                .integer(Int64(MessageDirection.incoming.rawValue)),
-                .integer(Int64(MessageReadStatus.unread.rawValue))
+            arguments: [
+                MessageReadStatus.read.rawValue,
+                "sql_plan_conversation",
+                MessageDirection.incoming.rawValue,
+                MessageReadStatus.unread.rawValue
             ],
             databaseContext: databaseContext
         )
@@ -143,10 +143,10 @@ extension AppleIMTests {
             AND message.is_deleted = 0
             ORDER BY message.local_time ASC, message.sort_seq ASC;
             """,
-            parameters: [
-                .text("sql_plan_user"),
-                .integer(Int64(MessageDirection.outgoing.rawValue)),
-                .integer(Int64(MessageSendStatus.sending.rawValue))
+            arguments: [
+                "sql_plan_user",
+                MessageDirection.outgoing.rawValue,
+                MessageSendStatus.sending.rawValue
             ],
             databaseContext: databaseContext
         )
@@ -166,18 +166,16 @@ extension AppleIMTests {
         try await repository.upsertConversation(
             makeConversationRecord(id: "sql_extra_without_mention", userID: "sql_extra_user", title: "Normal", sortTimestamp: 10)
         )
-        try await databaseContext.databaseActor.execute(
-            """
-            UPDATE conversation
-            SET extra_json = ?
-            WHERE conversation_id = ?;
-            """,
-            parameters: [
-                .text(#"{"has_unread_mention":true}"#),
-                .text("sql_extra_with_mention")
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: """
+                UPDATE conversation
+                SET extra_json = ?
+                WHERE conversation_id = ?;
+                """,
+                arguments: [#"{"has_unread_mention":true}"#, "sql_extra_with_mention"]
+            )
+        }
 
         let conversations = try await repository.listConversations(for: "sql_extra_user", limit: 20, after: nil)
 
@@ -188,15 +186,13 @@ extension AppleIMTests {
 
 private func queryPlan(
     _ statement: String,
-    parameters: [SQLiteValue],
+    arguments: StatementArguments,
     databaseContext: DatabaseTestContext
 ) async throws -> String {
-    let rows = try await databaseContext.databaseActor.query(
-        statement,
-        parameters: parameters,
-        paths: databaseContext.paths
-    )
-    return rows.compactMap { $0.string("detail") }.joined(separator: "\n")
+    try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+        let rows = try Row.fetchAll(db, sql: statement, arguments: arguments)
+        return rows.compactMap { $0["detail"] as String? }.joined(separator: "\n")
+    }
 }
 
 private func expectPlan(_ plan: String, contains indexName: String) {
@@ -207,42 +203,44 @@ private func seedSQLPerformanceDataset(
     databaseContext: DatabaseTestContext,
     userID: UserID
 ) async throws {
-    try await databaseContext.databaseActor.execute(
-        """
-        INSERT INTO conversation (
-            conversation_id, user_id, biz_type, target_id, title, last_message_digest,
-            unread_count, is_pinned, is_muted, is_hidden, sort_ts, updated_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, 0, 1000, 1000, 1000);
-        """,
-        parameters: [
-            .text("sql_plan_conversation"),
-            .text(userID.rawValue),
-            .integer(Int64(ConversationType.single.rawValue)),
-            .text("sql_plan_target"),
-            .text("SQL Plan")
-        ],
-        paths: databaseContext.paths
-    )
+    _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+        try db.execute(
+            sql: """
+            INSERT INTO conversation (
+                conversation_id, user_id, biz_type, target_id, title, last_message_digest,
+                unread_count, is_pinned, is_muted, is_hidden, sort_ts, updated_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, 0, 1000, 1000, 1000);
+            """,
+            arguments: [
+                "sql_plan_conversation",
+                userID.rawValue,
+                ConversationType.single.rawValue,
+                "sql_plan_target",
+                "SQL Plan"
+            ]
+        )
+    }
     try await seedPerformanceMessages(
         databaseContext: databaseContext,
         conversationID: "sql_plan_conversation",
         userID: userID,
         count: 250
     )
-    try await databaseContext.databaseActor.execute(
-        """
-        UPDATE message
-        SET direction = ?, send_status = ?, read_status = ?, seq = sort_seq, server_msg_id = 'server_' || sort_seq
-        WHERE conversation_id = ?;
-        """,
-        parameters: [
-            .integer(Int64(MessageDirection.incoming.rawValue)),
-            .integer(Int64(MessageSendStatus.sending.rawValue)),
-            .integer(Int64(MessageReadStatus.unread.rawValue)),
-            .text("sql_plan_conversation")
-        ],
-        paths: databaseContext.paths
-    )
+    _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+        try db.execute(
+            sql: """
+            UPDATE message
+            SET direction = ?, send_status = ?, read_status = ?, seq = sort_seq, server_msg_id = 'server_' || sort_seq
+            WHERE conversation_id = ?;
+            """,
+            arguments: [
+                MessageDirection.incoming.rawValue,
+                MessageSendStatus.sending.rawValue,
+                MessageReadStatus.unread.rawValue,
+                "sql_plan_conversation"
+            ]
+        )
+    }
     try await seedSQLPerformancePendingJobs(databaseContext: databaseContext, userID: userID)
     try await seedSQLPerformanceMediaResources(databaseContext: databaseContext, userID: userID)
 }
@@ -251,52 +249,54 @@ private func seedSQLPerformancePendingJobs(
     databaseContext: DatabaseTestContext,
     userID: UserID
 ) async throws {
-    let statements = (1...40).map { index in
-        let status: PendingJobStatus = index.isMultiple(of: 2) ? .pending : .running
-        return SQLiteStatement(
-            """
-            INSERT INTO pending_job (
-                job_id, user_id, job_type, biz_key, payload_json, status,
-                retry_count, max_retry_count, next_retry_at, updated_at, created_at
-            ) VALUES (?, ?, ?, ?, '{}', ?, 0, 3, ?, ?, ?);
-            """,
-            parameters: [
-                .text("sql_plan_job_\(index)"),
-                .text(userID.rawValue),
-                .integer(Int64(PendingJobType.messageResend.rawValue)),
-                .text("sql_plan_job_\(index)"),
-                .integer(Int64(status.rawValue)),
-                .integer(Int64(index * 10)),
-                .integer(Int64(index * 10)),
-                .integer(Int64(index * 10))
-            ]
-        )
+    _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+        for index in 1...40 {
+            let status: PendingJobStatus = index.isMultiple(of: 2) ? .pending : .running
+            try db.execute(
+                sql: """
+                INSERT INTO pending_job (
+                    job_id, user_id, job_type, biz_key, payload_json, status,
+                    retry_count, max_retry_count, next_retry_at, updated_at, created_at
+                ) VALUES (?, ?, ?, ?, '{}', ?, 0, 3, ?, ?, ?);
+                """,
+                arguments: [
+                    "sql_plan_job_\(index)",
+                    userID.rawValue,
+                    PendingJobType.messageResend.rawValue,
+                    "sql_plan_job_\(index)",
+                    status.rawValue,
+                    index * 10,
+                    index * 10,
+                    index * 10
+                ]
+            )
+        }
     }
-    try await databaseContext.databaseActor.performTransaction(statements, paths: databaseContext.paths)
 }
 
 private func seedSQLPerformanceMediaResources(
     databaseContext: DatabaseTestContext,
     userID: UserID
 ) async throws {
-    let statements = (1...40).map { index in
-        SQLiteStatement(
-            """
-            INSERT INTO media_resource (
-                media_id, user_id, owner_message_id, local_path, remote_url, thumb_path,
-                size_bytes, md5, upload_status, download_status, updated_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, NULL, 128, NULL, 0, 0, ?, ?);
-            """,
-            parameters: [
-                .text("sql_plan_media_\(index)"),
-                .text(userID.rawValue),
-                .text("sql_plan_message_\(index)"),
-                .text("/tmp/sql_plan_media_\(index).dat"),
-                .text("https://example.com/sql_plan_media_\(index).dat"),
-                .integer(Int64(index * 10)),
-                .integer(Int64(index * 10))
-            ]
-        )
+    _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+        for index in 1...40 {
+            try db.execute(
+                sql: """
+                INSERT INTO media_resource (
+                    media_id, user_id, owner_message_id, local_path, remote_url, thumb_path,
+                    size_bytes, md5, upload_status, download_status, updated_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, 128, NULL, 0, 0, ?, ?);
+                """,
+                arguments: [
+                    "sql_plan_media_\(index)",
+                    userID.rawValue,
+                    "sql_plan_message_\(index)",
+                    "/tmp/sql_plan_media_\(index).dat",
+                    "https://example.com/sql_plan_media_\(index).dat",
+                    index * 10,
+                    index * 10
+                ]
+            )
+        }
     }
-    try await databaseContext.databaseActor.performTransaction(statements, paths: databaseContext.paths)
 }

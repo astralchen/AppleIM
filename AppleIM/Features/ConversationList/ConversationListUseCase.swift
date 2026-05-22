@@ -5,6 +5,7 @@
 //  会话列表用例
 //  封装会话列表的业务逻辑
 
+import Combine
 import Foundation
 
 /// 会话列表分页结果
@@ -42,6 +43,8 @@ protocol ConversationListUseCase: Sendable {
     /// - Returns: 会话列表分页结果
     /// - Throws: 加载错误
     func loadConversationPage(limit: Int, after cursor: ConversationPageCursor?) async throws -> ConversationListPage
+    /// 观察首屏会话列表。
+    func observeConversationPage(limit: Int) async throws -> AnyPublisher<ConversationListPage, Error>?
     /// 更新会话置顶状态
     ///
     /// - Parameters:
@@ -64,6 +67,10 @@ protocol ConversationListUseCase: Sendable {
 }
 
 extension ConversationListUseCase {
+    func observeConversationPage(limit: Int) async throws -> AnyPublisher<ConversationListPage, Error>? {
+        nil
+    }
+
     func simulateIncomingMessages() async throws -> ConversationListSimulationResult? {
         nil
     }
@@ -155,6 +162,23 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
             hasMore: hasMore,
             nextCursor: nextCursor
         )
+    }
+
+    /// 观察首屏会话列表，供 ViewModel 实时刷新可见窗口。
+    func observeConversationPage(limit: Int) async throws -> AnyPublisher<ConversationListPage, Error>? {
+        let repository = try await storeProvider.repository()
+        let requestedLimit = max(limit, 1)
+        return try await repository
+            .observeConversations(for: userID, limit: requestedLimit + 1)
+            .map { conversations in
+                let pageConversations = Array(conversations.prefix(requestedLimit))
+                return ConversationListPage(
+                    rows: Self.rowStates(from: pageConversations),
+                    hasMore: conversations.count > requestedLimit,
+                    nextCursor: pageConversations.last.map(ConversationPageCursor.init(conversation:))
+                )
+            }
+            .eraseToAnyPublisher()
     }
 
     /// 更新会话置顶状态

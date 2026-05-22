@@ -5,6 +5,7 @@
 //  聊天用例
 //  封装聊天页的业务逻辑，包括消息加载、发送、重试等
 
+import Combine
 import Foundation
 
 /// 聊天消息分页结果
@@ -73,6 +74,8 @@ protocol ChatUseCase: Sendable {
     func loadInitialMessages() async throws -> ChatMessagePage
     /// 加载更早的消息
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage
+    /// 观察最新消息窗口。
+    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>?
     /// 加载草稿
     func loadDraft() async throws -> String?
     /// 保存草稿
@@ -117,6 +120,10 @@ extension ChatUseCase {
     }
 
     var observedConversationID: ConversationID? {
+        nil
+    }
+
+    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>? {
         nil
     }
 
@@ -283,6 +290,21 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
             hasMore: messages.count > boundedLimit,
             nextBeforeSortSequence: rows.first?.sortSequence
         )
+    }
+
+    /// 观察当前会话最新消息窗口。
+    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>? {
+        guard let observationRepository = repository as? any MessageObservationRepository else {
+            return nil
+        }
+        return try await observationRepository
+            .observeLatestMessages(conversationID: conversationID, limit: max(1, limit))
+            .map { messages in
+                messages
+                    .sorted { $0.timeline.sortSequence < $1.timeline.sortSequence }
+                    .map { row(from: $0, currentUserID: userID) }
+            }
+            .eraseToAnyPublisher()
     }
 
     /// 加载当前会话草稿
@@ -1676,6 +1698,13 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
         try await withLocalUseCase { useCase in
             try await useCase.loadOlderMessages(beforeSortSequence: beforeSortSequence, limit: limit)
+        }
+    }
+
+    /// 观察当前会话最新消息窗口。
+    func observeLatestMessages(limit: Int) async throws -> AnyPublisher<[ChatMessageRowState], Error>? {
+        try await withLocalUseCase { useCase in
+            try await useCase.observeLatestMessages(limit: limit)
         }
     }
 

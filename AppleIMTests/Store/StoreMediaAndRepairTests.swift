@@ -1,6 +1,8 @@
 import Testing
 import AVFoundation
+import Combine
 import Foundation
+import GRDB
 import UIKit
 
 @testable import AppleIM
@@ -90,6 +92,149 @@ extension AppleIMTests {
         let unreadCount = try await repository.unreadConversationCount(for: "unread_zero_user")
 
         #expect(unreadCount == 0)
+    }
+
+    @Test func localChatRepositoryObservesConversationListChanges() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "observe_conversation_user")
+        let values = CapturingPublisherValues<[Conversation]>()
+        let cancellable = try await repository
+            .observeConversations(for: "observe_conversation_user", limit: 10)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { conversations in
+                    Task {
+                        await values.append(conversations)
+                    }
+                }
+            )
+        defer {
+            cancellable.cancel()
+        }
+
+        try await waitForCondition {
+            await values.values().contains(where: \.isEmpty)
+        }
+
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "observed_conversation",
+                userID: "observe_conversation_user",
+                title: "Observed",
+                sortTimestamp: 100
+            )
+        )
+
+        try await waitForCondition {
+            await values.values().contains { conversations in
+                conversations.first?.id == "observed_conversation"
+            }
+        }
+    }
+
+    @Test func localChatRepositoryObservesUnreadBadgeSettingChanges() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "observe_badge_user")
+        let values = CapturingPublisherValues<Int>()
+        let cancellable = try await repository
+            .observeUnreadBadgeCount(for: "observe_badge_user")
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { count in
+                    Task {
+                        await values.append(count)
+                    }
+                }
+            )
+        defer {
+            cancellable.cancel()
+        }
+
+        try await waitForCondition {
+            await values.values().contains(0)
+        }
+
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "observed_badge_muted",
+                userID: "observe_badge_user",
+                isMuted: true,
+                unreadCount: 4,
+                sortTimestamp: 20
+            )
+        )
+        try await waitForCondition {
+            await values.values().contains(4)
+        }
+
+        try await repository.updateBadgeIncludeMuted(userID: "observe_badge_user", includeMuted: false)
+        try await waitForCondition {
+            await values.values().last == 0
+        }
+    }
+
+    @Test func localChatRepositoryObservesLatestMessages() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "observe_message_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(
+                id: "observe_message_conversation",
+                userID: "observe_message_user",
+                title: "Observed Message",
+                sortTimestamp: 1
+            )
+        )
+
+        let values = CapturingPublisherValues<[StoredMessage]>()
+        let cancellable = try await repository
+            .observeLatestMessages(conversationID: "observe_message_conversation", limit: 10)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { messages in
+                    Task {
+                        await values.append(messages)
+                    }
+                }
+            )
+        defer {
+            cancellable.cancel()
+        }
+
+        try await waitForCondition {
+            await values.values().contains(where: \.isEmpty)
+        }
+
+        _ = try await repository.insertOutgoingTextMessage(
+            OutgoingTextMessageInput(
+                userID: "observe_message_user",
+                conversationID: "observe_message_conversation",
+                senderID: "observe_message_user",
+                text: "Observed latest message",
+                localTime: 300,
+                messageID: "observed_message",
+                clientMessageID: "observed_client",
+                sortSequence: 300
+            )
+        )
+
+        try await waitForCondition {
+            let snapshots = await values.values()
+            return try snapshots.contains { messages in
+                try requireTextContent(messages.first) == "Observed latest message"
+            }
+        }
     }
 
     @Test func conversationDAOPagesVisibleConversationsAfterCursorWhenNewConversationMovesAhead() async throws {
@@ -322,10 +467,10 @@ extension AppleIMTests {
             )
         )
         let messages = try await repository.listMessages(conversationID: "image_conversation", limit: 20, beforeSortSeq: nil)
-        let contentRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS content_count FROM message_image WHERE content_id = ?;",
-            parameters: [.text("image_image_message_1")],
-            paths: databaseContext.paths
+        let contentCount = try await databaseCount(
+            "SELECT COUNT(*) FROM message_image WHERE content_id = ?;",
+            arguments: ["image_image_message_1"],
+            databaseContext: databaseContext
         )
         let conversations = try await repository.listConversations(for: "image_user")
 
@@ -333,7 +478,7 @@ extension AppleIMTests {
         #expect(message.state.sendStatus == .sending)
         #expect(try requireImageContent(message) == image)
         #expect(try requireImageContent(messages.first) == image)
-        #expect(contentRows.first?.int("content_count") == 1)
+        #expect(contentCount == 1)
         #expect(conversations.first?.lastMessageDigest == "[图片]")
     }
 
@@ -368,15 +513,15 @@ extension AppleIMTests {
             )
         )
         let messages = try await repository.listMessages(conversationID: "voice_conversation", limit: 20, beforeSortSeq: nil)
-        let contentRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS content_count FROM message_voice WHERE content_id = ?;",
-            parameters: [.text("voice_voice_message_1")],
-            paths: databaseContext.paths
+        let contentCount = try await databaseCount(
+            "SELECT COUNT(*) FROM message_voice WHERE content_id = ?;",
+            arguments: ["voice_voice_message_1"],
+            databaseContext: databaseContext
         )
-        let resourceRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS resource_count FROM media_resource WHERE owner_message_id = ?;",
-            parameters: [.text(message.id.rawValue)],
-            paths: databaseContext.paths
+        let resourceCount = try await databaseCount(
+            "SELECT COUNT(*) FROM media_resource WHERE owner_message_id = ?;",
+            arguments: [message.id.rawValue],
+            databaseContext: databaseContext
         )
         let conversations = try await repository.listConversations(for: "voice_user")
 
@@ -384,8 +529,8 @@ extension AppleIMTests {
         #expect(message.state.sendStatus == .sending)
         #expect(try requireVoiceContent(message) == voice)
         #expect(try requireVoiceContent(messages.first) == voice)
-        #expect(contentRows.first?.int("content_count") == 1)
-        #expect(resourceRows.first?.int("resource_count") == 1)
+        #expect(contentCount == 1)
+        #expect(resourceCount == 1)
         #expect(conversations.first?.lastMessageDigest == "[语音]")
     }
 
@@ -422,15 +567,15 @@ extension AppleIMTests {
             )
         )
         let messages = try await repository.listMessages(conversationID: "video_conversation", limit: 20, beforeSortSeq: nil)
-        let contentRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS content_count FROM message_video WHERE content_id = ?;",
-            parameters: [.text("video_video_message_1")],
-            paths: databaseContext.paths
+        let contentCount = try await databaseCount(
+            "SELECT COUNT(*) FROM message_video WHERE content_id = ?;",
+            arguments: ["video_video_message_1"],
+            databaseContext: databaseContext
         )
-        let resourceRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS resource_count FROM media_resource WHERE owner_message_id = ?;",
-            parameters: [.text(message.id.rawValue)],
-            paths: databaseContext.paths
+        let resourceCount = try await databaseCount(
+            "SELECT COUNT(*) FROM media_resource WHERE owner_message_id = ?;",
+            arguments: [message.id.rawValue],
+            databaseContext: databaseContext
         )
         let conversations = try await repository.listConversations(for: "video_user")
 
@@ -438,8 +583,8 @@ extension AppleIMTests {
         #expect(message.state.sendStatus == .sending)
         #expect(try requireVideoContent(message) == video)
         #expect(try requireVideoContent(messages.first) == video)
-        #expect(contentRows.first?.int("content_count") == 1)
-        #expect(resourceRows.first?.int("resource_count") == 1)
+        #expect(contentCount == 1)
+        #expect(resourceCount == 1)
         #expect(conversations.first?.lastMessageDigest == "[视频]")
     }
 
@@ -474,10 +619,10 @@ extension AppleIMTests {
             )
         )
         let messages = try await repository.listMessages(conversationID: "file_conversation", limit: 20, beforeSortSeq: nil)
-        let contentRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS content_count FROM message_file WHERE content_id = ?;",
-            parameters: [.text("file_file_message_1")],
-            paths: databaseContext.paths
+        let contentCount = try await databaseCount(
+            "SELECT COUNT(*) FROM message_file WHERE content_id = ?;",
+            arguments: ["file_file_message_1"],
+            databaseContext: databaseContext
         )
         let conversations = try await repository.listConversations(for: "file_user")
 
@@ -485,7 +630,7 @@ extension AppleIMTests {
         #expect(message.state.sendStatus == .sending)
         #expect(try requireFileContent(message) == file)
         #expect(try requireFileContent(messages.first) == file)
-        #expect(contentRows.first?.int("content_count") == 1)
+        #expect(contentCount == 1)
         #expect(conversations.first?.lastMessageDigest == "[文件] report.pdf")
     }
 
@@ -758,32 +903,33 @@ extension AppleIMTests {
                 sortSequence: 550
             )
         )
-        try await databaseContext.databaseActor.execute(
-            """
-            UPDATE media_resource
-            SET remote_url = ?, download_status = ?
-            WHERE media_id = ?;
-            """,
-            parameters: [
-                .text("https://mock-cdn.chatbridge.local/image/missing_media"),
-                .integer(Int64(MediaUploadStatus.success.rawValue)),
-                .text("missing_media")
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: """
+                UPDATE media_resource
+                SET remote_url = ?, download_status = ?
+                WHERE media_id = ?;
+                """,
+                arguments: [
+                    "https://mock-cdn.chatbridge.local/image/missing_media",
+                    MediaUploadStatus.success.rawValue,
+                    "missing_media"
+                ]
+            )
+        }
 
         let missingResources = try await repository.scanMissingMediaResources(userID: "missing_media_user")
         let firstJobs = try await repository.enqueueMediaDownloadJobsForMissingResources(userID: "missing_media_user")
         let secondJobs = try await repository.enqueueMediaDownloadJobsForMissingResources(userID: "missing_media_user")
-        let pendingJobRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS job_count FROM pending_job WHERE job_type = ?;",
-            parameters: [.integer(Int64(PendingJobType.mediaDownload.rawValue))],
-            paths: databaseContext.paths
+        let pendingJobCount = try await databaseCount(
+            "SELECT COUNT(*) FROM pending_job WHERE job_type = ?;",
+            arguments: [PendingJobType.mediaDownload.rawValue],
+            databaseContext: databaseContext
         )
-        let resourceRows = try await databaseContext.databaseActor.query(
+        let downloadStatus = try await databaseInt(
             "SELECT download_status FROM media_resource WHERE media_id = ?;",
-            parameters: [.text("missing_media")],
-            paths: databaseContext.paths
+            arguments: ["missing_media"],
+            databaseContext: databaseContext
         )
 
         #expect(missingResources.map(\.mediaID) == ["missing_media"])
@@ -792,8 +938,8 @@ extension AppleIMTests {
         #expect(firstJobs.first?.type == .mediaDownload)
         #expect(firstJobs.first?.payloadJSON.contains(#""localPath":"\#(missingLocalPath)""#) == true)
         #expect(secondJobs.count == 1)
-        #expect(pendingJobRows.first?.int("job_count") == 1)
-        #expect(resourceRows.first?.int("download_status") == MediaUploadStatus.pending.rawValue)
+        #expect(pendingJobCount == 1)
+        #expect(downloadStatus == MediaUploadStatus.pending.rawValue)
     }
 
     @Test func mediaIndexRebuildRestoresExistingImageAndVoiceFiles() async throws {
@@ -858,12 +1004,9 @@ extension AppleIMTests {
                 sortSequence: 571
             )
         )
-        try await databaseContext.databaseActor.execute(
-            "DELETE FROM file_index WHERE user_id = ?;",
-            parameters: [.text("repair_media_user")],
-            in: .fileIndex,
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(in: .fileIndex, paths: databaseContext.paths) { db in
+            try db.execute(sql: "DELETE FROM file_index WHERE user_id = ?;", arguments: ["repair_media_user"])
+        }
 
         let result = try await repository.rebuildMediaIndex(userID: "repair_media_user")
         let imageIndex = try await repository.mediaIndexRecord(mediaID: "repair_image", userID: "repair_media_user")
@@ -907,14 +1050,12 @@ extension AppleIMTests {
                 sortSequence: 520
             )
         )
-        try await databaseContext.databaseActor.execute(
-            "UPDATE message SET read_status = ? WHERE message_id = ?;",
-            parameters: [
-                .integer(Int64(MessageReadStatus.unread.rawValue)),
-                .text(message.id.rawValue)
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: "UPDATE message SET read_status = ? WHERE message_id = ?;",
+                arguments: [MessageReadStatus.unread.rawValue, message.id.rawValue]
+            )
+        }
 
         let unreadMessage = try await repository.message(messageID: message.id)
         try await repository.markVoicePlayed(messageID: message.id)
@@ -967,15 +1108,15 @@ extension AppleIMTests {
             didThrow = true
         }
 
-        let leakedContentRows = try await databaseContext.databaseActor.query(
-            "SELECT COUNT(*) AS content_count FROM message_text WHERE content_id = ?;",
-            parameters: [.text("text_rollback_duplicate")],
-            paths: databaseContext.paths
+        let leakedContentCount = try await databaseCount(
+            "SELECT COUNT(*) FROM message_text WHERE content_id = ?;",
+            arguments: ["text_rollback_duplicate"],
+            databaseContext: databaseContext
         )
         let conversations = try await repository.listConversations(for: "rollback_user")
 
         #expect(didThrow)
-        #expect(leakedContentRows.first?.int("content_count") == 0)
+        #expect(leakedContentCount == 0)
         #expect(conversations.first?.lastMessageDigest == "Original")
     }
 
@@ -1034,29 +1175,26 @@ extension AppleIMTests {
             count: 100
         )
 
-        let initialPlanRows = try await databaseContext.databaseActor.query(
-            "EXPLAIN QUERY PLAN \(MessageDAO.listMessagesQuery(beforeSortSeq: nil))",
-            parameters: [
-                .text("chat_plan_conversation"),
-                .integer(51)
-            ],
-            paths: databaseContext.paths
+        let initialMessages = try await repository.listMessages(
+            conversationID: "chat_plan_conversation",
+            limit: 51,
+            beforeSortSeq: nil
         )
-        let olderPlanRows = try await databaseContext.databaseActor.query(
-            "EXPLAIN QUERY PLAN \(MessageDAO.listMessagesQuery(beforeSortSeq: 51))",
-            parameters: [
-                .text("chat_plan_conversation"),
-                .integer(51),
-                .integer(51)
-            ],
-            paths: databaseContext.paths
+        let olderMessages = try await repository.listMessages(
+            conversationID: "chat_plan_conversation",
+            limit: 51,
+            beforeSortSeq: 51
         )
+        let indexNames = try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_message_conversation_visible_sort';"
+            )
+        }
 
-        let initialPlan = initialPlanRows.compactMap { $0.string("detail") }.joined(separator: "\n")
-        let olderPlan = olderPlanRows.compactMap { $0.string("detail") }.joined(separator: "\n")
-
-        #expect(initialPlan.contains("idx_message_conversation_visible_sort"))
-        #expect(olderPlan.contains("idx_message_conversation_visible_sort"))
+        #expect(initialMessages.count == 51)
+        #expect(olderMessages.allSatisfy { $0.timeline.sortSequence < 51 })
+        #expect(indexNames == ["idx_message_conversation_visible_sort"])
     }
 
     @Test func localChatRepositoryMarksIncomingMessagesReadWhenConversationIsRead() async throws {
@@ -1087,15 +1225,16 @@ extension AppleIMTests {
                 sortSequence: 10
             )
         )
-        try await databaseContext.databaseActor.execute(
-            "UPDATE message SET direction = ?, read_status = ? WHERE message_id = ?;",
-            parameters: [
-                .integer(Int64(MessageDirection.incoming.rawValue)),
-                .integer(Int64(MessageReadStatus.unread.rawValue)),
-                .text(message.id.rawValue)
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: "UPDATE message SET direction = ?, read_status = ? WHERE message_id = ?;",
+                arguments: [
+                    MessageDirection.incoming.rawValue,
+                    MessageReadStatus.unread.rawValue,
+                    message.id.rawValue
+                ]
+            )
+        }
 
         let unreadMessage = try await repository.message(messageID: message.id)
         try await repository.markConversationRead(conversationID: "message_read_conversation", userID: "message_read_user")
@@ -1105,5 +1244,36 @@ extension AppleIMTests {
         #expect(unreadMessage?.state.readStatus == .unread)
         #expect(conversations.first?.unreadCount == 0)
         #expect(storedMessage?.state.readStatus == .read)
+    }
+}
+
+private func databaseCount(
+    _ sql: String,
+    arguments: StatementArguments = [],
+    databaseContext: DatabaseTestContext
+) async throws -> Int {
+    try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+        try Int.fetchOne(db, sql: sql, arguments: arguments) ?? 0
+    }
+}
+
+private func databaseInt(
+    _ sql: String,
+    arguments: StatementArguments = [],
+    databaseContext: DatabaseTestContext
+) async throws -> Int? {
+    try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+        try Int.fetchOne(db, sql: sql, arguments: arguments)
+    }
+}
+
+private func databasePlanDetails(
+    _ sql: String,
+    arguments: StatementArguments = [],
+    databaseContext: DatabaseTestContext
+) async throws -> String {
+    try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+        let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
+        return rows.compactMap { $0["detail"] as String? }.joined(separator: "\n")
     }
 }

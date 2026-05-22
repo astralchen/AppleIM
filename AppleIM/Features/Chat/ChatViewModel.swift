@@ -50,6 +50,10 @@ final class ChatViewModel {
     private var simulatedIncomingTasks: [UUID: Task<Void, Never>] = [:]
     /// 仓储变更触发的轻量刷新任务
     private var storeRefreshTask: Task<Void, Never>?
+    /// 最新消息观察启动任务
+    private var latestMessagesObservationTask: Task<Void, Never>?
+    /// 最新消息观察订阅
+    private var latestMessagesObservationCancellable: AnyCancellable?
     /// 语音播放状态回写任务
     private var voicePlaybackTask: Task<Void, Never>?
     /// 当前语音播放会话的 UI 临时状态；数据库行不保存播放中状态。
@@ -164,6 +168,7 @@ final class ChatViewModel {
                     state.isLoadingOlderMessages = false
                     state.paginationErrorMessage = nil
                 }
+                startLatestMessagesObservationIfNeeded()
             } catch is CancellationError {
                 return
             } catch {
@@ -920,6 +925,8 @@ final class ChatViewModel {
         voicePlaybackTask?.cancel()
         emojiPanelTask?.cancel()
         storeRefreshTask?.cancel()
+        latestMessagesObservationTask?.cancel()
+        latestMessagesObservationCancellable?.cancel()
         simulatedIncomingTasks.values.forEach { $0.cancel() }
         activeVoicePlayback = nil
         loadTask = nil
@@ -930,6 +937,8 @@ final class ChatViewModel {
         voicePlaybackTask = nil
         emojiPanelTask = nil
         storeRefreshTask = nil
+        latestMessagesObservationTask = nil
+        latestMessagesObservationCancellable = nil
         simulatedIncomingTasks.removeAll()
     }
 
@@ -968,6 +977,62 @@ final class ChatViewModel {
             }
 
             state.rows = rowsByStableSendOrderIfNeeded(state.rows)
+            state.rows = Self.rowsWithTimeSeparators(state.rows)
+            state.phase = .loaded
+        }
+    }
+
+    private func startLatestMessagesObservationIfNeeded() {
+        guard latestMessagesObservationCancellable == nil, latestMessagesObservationTask == nil else {
+            return
+        }
+
+        latestMessagesObservationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let publisher = try await useCase.observeLatestMessages(limit: pageSize) else {
+                    latestMessagesObservationTask = nil
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                bindLatestMessagesObservation(publisher)
+                latestMessagesObservationTask = nil
+            } catch is CancellationError {
+                latestMessagesObservationTask = nil
+            } catch {
+                latestMessagesObservationTask = nil
+                logger.error("ChatViewModel latest observation failed error=\(String(describing: type(of: error)))")
+            }
+        }
+    }
+
+    private func bindLatestMessagesObservation(_ publisher: AnyPublisher<[ChatMessageRowState], Error>) {
+        latestMessagesObservationCancellable = publisher
+            .sink(
+                receiveCompletion: { [weak self] completion in
+                    guard case let .failure(error) = completion else { return }
+                    self?.logger.error("ChatViewModel latest observation completed error=\(String(describing: type(of: error)))")
+                    self?.latestMessagesObservationCancellable = nil
+                },
+                receiveValue: { [weak self] rows in
+                    guard let self else { return }
+                    guard paginationTask == nil else { return }
+                    applyLatestObservedRows(rows)
+                }
+            )
+    }
+
+    private func applyLatestObservedRows(_ latestRows: [ChatMessageRowState]) {
+        publish { state in
+            let preservedRows = rowsPreservingActiveVoicePlayback(latestRows)
+            if state.hasMoreOlderMessages {
+                let latestIDs = Set(preservedRows.map(\.id))
+                let olderRows = state.rows.filter { !latestIDs.contains($0.id) && $0.sortSequence < (preservedRows.first?.sortSequence ?? Int64.max) }
+                state.rows = olderRows + preservedRows
+            } else {
+                state.rows = preservedRows
+            }
+            state.rows.sort(by: Self.messageTimelineOrder)
             state.rows = Self.rowsWithTimeSeparators(state.rows)
             state.phase = .loaded
         }

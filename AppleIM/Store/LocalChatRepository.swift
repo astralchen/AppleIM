@@ -5,7 +5,9 @@
 //  本地聊天仓储
 //  实现多个仓储协议，统一管理会话、消息、同步等数据操作
 
+import Combine
 import Foundation
+import GRDB
 
 /// 通知会话上下文
 ///
@@ -72,6 +74,26 @@ nonisolated private struct InterruptedOutgoingMessage: Equatable, Sendable {
     let mediaID: String?
 }
 
+/// 崩溃恢复写入操作。
+///
+/// 恢复过程先在内存里计算动作，再一次性进入 GRDB 写事务，避免中途部分提交。
+nonisolated private enum MessageRecoveryDatabaseOperation: Sendable {
+    case sendStatus(MessageID, MessageSendStatus)
+    case uploadStatus(MessageID, MediaUploadStatus, MediaUploadAck?, LocalChatRepository.MediaUploadTableSpec)
+    case pendingJob(PendingJobInput)
+
+    func apply(updatedAt: Int64, in db: Database) throws {
+        switch self {
+        case let .sendStatus(messageID, status):
+            try LocalChatRepository.updateMessageSendStatus(messageID: messageID, status: status, ack: nil, in: db)
+        case let .uploadStatus(messageID, status, ack, tableSpec):
+            try LocalChatRepository.updateMediaUploadStatus(messageID: messageID, status: status, uploadAck: ack, updatedAt: updatedAt, tableSpec: tableSpec, in: db)
+        case let .pendingJob(input):
+            try LocalChatRepository.upsertPendingJob(input, status: .pending, retryCount: 0, updatedAt: updatedAt, createdAt: updatedAt, in: db)
+        }
+    }
+}
+
 /// 同步入库去重键集合。
 nonisolated private struct ExistingMessageDedupKeys: Equatable, Sendable {
     var clientMessageIDs: Set<String> = []
@@ -95,11 +117,32 @@ nonisolated private struct ExistingMessageDedupKeys: Equatable, Sendable {
     }
 }
 
+/// 同步去重查询的轻量行模型。
+nonisolated private struct ExistingMessageDedupKeyRecord: Sendable {
+    let clientMessageID: String?
+    let serverMessageID: String?
+    let conversationID: ConversationID?
+    let sequence: Int64?
+
+    init(
+        clientMessageID: String?,
+        serverMessageID: String?,
+        conversationID: ConversationID?,
+        sequence: Int64?
+    ) {
+        self.clientMessageID = clientMessageID
+        self.serverMessageID = serverMessageID
+        self.conversationID = conversationID
+        self.sequence = sequence
+    }
+}
+
+
 /// 本地聊天仓储
 ///
 /// 聚合多个 DAO，实现会话、消息、同步等多个仓储协议
 /// 所有操作通过 DatabaseActor 串行化执行
-nonisolated struct LocalChatRepository: ConversationRepository, ContactRepository, NotificationSettingsRepository, MessageRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, EmojiRepository, SyncStore {
+nonisolated struct LocalChatRepository: ConversationRepository, ConversationObservationRepository, ContactRepository, NotificationSettingsRepository, MessageRepository, MessageObservationRepository, MessageSendRecoveryRepository, MessageCrashRecoveryRepository, PendingJobRepository, MediaIndexRepository, EmojiRepository, SyncStore {
     /// 数据库 Actor
     private let database: DatabaseActor
     /// 账号存储路径
@@ -112,6 +155,8 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     private let messageDAO: MessageDAO
     /// 表情 DAO
     private let emojiDAO: EmojiDAO
+    /// 通知设置与角标存储协作者
+    private let notificationSettingsStore: NotificationSettingsStore
     /// 事务后事件分发器
     private let eventDispatcher: any ChatStoreEventDispatching
 
@@ -128,6 +173,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         self.contactDAO = ContactDAO(database: database, paths: paths)
         self.messageDAO = MessageDAO(database: database, paths: paths)
         self.emojiDAO = EmojiDAO(database: database, paths: paths)
+        self.notificationSettingsStore = NotificationSettingsStore(database: database, paths: paths)
         self.eventDispatcher = eventDispatcher ?? DefaultChatStoreEventDispatcher(
             database: database,
             paths: paths,
@@ -163,22 +209,28 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         return records.map { Self.conversation(from: $0, extra: extras[$0.id]) }
     }
 
+    /// 观察账号首屏会话列表。
+    func observeConversations(for userID: UserID, limit: Int) async throws -> AnyPublisher<[Conversation], Error> {
+        let boundedLimit = max(1, limit)
+        let observation = try await database.observe(paths: paths) { db in
+            let records = try ConversationDAO.visibleConversations(for: userID)
+                .limit(boundedLimit)
+                .fetchAll(db)
+            return try Self.conversations(from: records)
+        }
+        return observation.publisher
+    }
+
     /// 查询账号下所有可见会话的未读总数。
     func unreadConversationCount(for userID: UserID) async throws -> Int {
-        let rows = try await database.query(
-            """
-            SELECT COALESCE(SUM(unread_count), 0) AS unread_count
-            FROM conversation
-            WHERE user_id = ?
-            AND is_hidden = 0;
-            """,
-            parameters: [
-                .text(userID.rawValue)
-            ],
-            paths: paths
-        )
+        try await database.read(paths: paths) { db in
+            try Self.unreadConversationCount(userID: userID, db: db)
+        }
+    }
 
-        return max(0, rows.first?.int("unread_count") ?? 0)
+    /// 观察账号级未读角标数。
+    func observeUnreadBadgeCount(for userID: UserID) async throws -> AnyPublisher<Int, Error> {
+        try await notificationSettingsStore.observeBadgeCount(for: userID)
     }
 
     /// 插入或更新会话
@@ -215,20 +267,23 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     func insertInitialConversations(_ records: [ConversationRecord]) async throws {
         guard !records.isEmpty else { return }
 
-        try await database.performTransaction(
-            records.map(ConversationDAO.insertOrUpdateStatement(for:)),
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            for record in records {
+                try ConversationDatabaseRecord.upsertRecord(record, in: db)
+            }
+        }
     }
 
     /// 批量插入首次演示文本消息。
     func insertInitialTextMessages(_ messages: [InitialTextMessageInput]) async throws {
         guard !messages.isEmpty else { return }
 
-        try await database.performTransaction(
-            messages.flatMap(MessageDAO.insertInitialTextStatements),
-            paths: paths
-        )
+        let plans = messages.map(MessageDAO.makeInitialTextWritePlan)
+        _ = try await database.write(paths: paths) { db in
+            for plan in plans {
+                try plan.write(in: db)
+            }
+        }
     }
 
     /// 标记会话已读
@@ -246,19 +301,26 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             mutable.hasUnreadMention = false
             return mutable
         }
-        let extraStatements: [SQLiteStatement]
-        if let extra {
-            extraStatements = [try Self.updateConversationExtraStatement(conversationID: conversationID, extra: extra, updatedAt: now)]
-        } else {
-            extraStatements = []
+        _ = try await database.write(paths: paths) { db in
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .updateAll(db, [
+                    ConversationDatabaseRecord.Columns.unreadCount.set(to: 0),
+                    ConversationDatabaseRecord.Columns.updatedAt.set(to: now)
+                ])
+
+            try MessageDatabaseRecord
+                .filter(MessageDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(MessageDatabaseRecord.Columns.direction == MessageDirection.incoming.rawValue)
+                .filter(MessageDatabaseRecord.Columns.readStatus == MessageReadStatus.unread.rawValue)
+                .filter(MessageDatabaseRecord.Columns.isDeleted == false)
+                .updateAll(db, MessageDatabaseRecord.Columns.readStatus.set(to: MessageReadStatus.read.rawValue))
+
+            if let extra {
+                try Self.updateConversationExtra(conversationID: conversationID, extra: extra, updatedAt: now, in: db)
+            }
         }
-        try await database.performTransaction(
-            [
-                ConversationDAO.markReadStatement(conversationID: conversationID, userID: userID, updatedAt: now),
-                MessageDAO.markIncomingMessagesReadStatement(conversationID: conversationID)
-            ] + extraStatements,
-            paths: paths
-        )
         _ = try await refreshApplicationBadge(userID: userID)
         eventDispatcher.postConversationsDidChange(userID: userID, conversationIDs: [conversationID])
     }
@@ -292,71 +354,38 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     func upsertGroupMembers(_ members: [GroupMember]) async throws {
         guard !members.isEmpty else { return }
 
-        let statements = members.map { member in
-            SQLiteStatement(
-                """
-                INSERT INTO conversation_member (
-                    conversation_id,
-                    member_id,
-                    display_name,
-                    role,
-                    join_time,
-                    extra_json
-                ) VALUES (?, ?, ?, ?, ?, NULL)
-                ON CONFLICT(conversation_id, member_id) DO UPDATE SET
-                    display_name = excluded.display_name,
-                    role = excluded.role,
-                    join_time = excluded.join_time;
-                """,
-                parameters: [
-                    .text(member.conversationID.rawValue),
-                    .text(member.memberID.rawValue),
-                    .text(member.displayName),
-                    .integer(Int64(member.role.rawValue)),
-                    .optionalInteger(member.joinTime)
-                ]
-            )
+        _ = try await database.write(paths: paths) { db in
+            for member in members {
+                try GroupMemberDatabaseRecord.upsertRecord(member, in: db)
+            }
         }
-
-        try await database.performTransaction(statements, paths: paths)
     }
 
     /// 查询群成员
     func groupMembers(conversationID: ConversationID) async throws -> [GroupMember] {
-        let rows = try await database.query(
-            """
-            SELECT conversation_id, member_id, display_name, role, join_time
-            FROM conversation_member
-            WHERE conversation_id = ?
-            ORDER BY role DESC, join_time ASC, id ASC;
-            """,
-            parameters: [.text(conversationID.rawValue)],
-            paths: paths
-        )
-
-        return try rows.map(Self.groupMember(from:))
+        try await database.read(paths: paths) { db in
+            try GroupMemberDatabaseRecord
+                .filter(GroupMemberDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .order(
+                    GroupMemberDatabaseRecord.Columns.role.desc,
+                    GroupMemberDatabaseRecord.Columns.joinTime.asc,
+                    GroupMemberDatabaseRecord.Columns.id.asc
+                )
+                .fetchAll(db)
+                .map(\.member)
+        }
     }
 
     /// 查询当前用户群角色
     func currentMemberRole(conversationID: ConversationID, userID: UserID) async throws -> GroupMemberRole? {
-        let rows = try await database.query(
-            """
-            SELECT role
-            FROM conversation_member
-            WHERE conversation_id = ? AND member_id = ?
-            LIMIT 1;
-            """,
-            parameters: [
-                .text(conversationID.rawValue),
-                .text(userID.rawValue)
-            ],
-            paths: paths
-        )
-
-        guard let rawValue = rows.first?.int("role") else {
-            return nil
+        try await database.read(paths: paths) { db in
+            try GroupMemberDatabaseRecord
+                .filter(GroupMemberDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(GroupMemberDatabaseRecord.Columns.memberID == userID.rawValue)
+                .fetchOne(db)?
+                .member
+                .role
         }
-        return GroupMemberRole(rawValue: rawValue)
     }
 
     /// 查询群公告
@@ -469,35 +498,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     /// - Returns: 通知设置记录
     /// - Throws: 数据库查询错误
     func notificationSetting(for userID: UserID) async throws -> NotificationSettingRecord {
-        let rows = try await database.query(
-            """
-            SELECT
-                user_id,
-                is_enabled,
-                show_preview,
-                badge_enabled,
-                badge_include_muted,
-                updated_at
-            FROM notification_setting
-            WHERE user_id = ?
-            LIMIT 1;
-            """,
-            parameters: [.text(userID.rawValue)],
-            paths: paths
-        )
-
-        guard let row = rows.first else {
-            return .defaultSetting(for: userID)
-        }
-
-        return NotificationSettingRecord(
-            userID: UserID(rawValue: try row.requiredString("user_id")),
-            isEnabled: row.bool("is_enabled"),
-            showPreview: row.bool("show_preview"),
-            badgeEnabled: row.bool("badge_enabled"),
-            badgeIncludeMuted: row.bool("badge_include_muted"),
-            updatedAt: row.int64("updated_at") ?? 0
-        )
+        try await notificationSettingsStore.setting(for: userID)
     }
 
     /// 更新应用角标是否启用
@@ -509,11 +510,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     ///   - isEnabled: 是否启用角标
     /// - Throws: 数据库更新错误
     func updateBadgeEnabled(userID: UserID, isEnabled: Bool) async throws {
-        try await upsertBadgeSetting(
-            userID: userID,
-            column: "badge_enabled",
-            value: isEnabled
-        )
+        try await notificationSettingsStore.updateBadgeEnabled(userID: userID, isEnabled: isEnabled)
         _ = try await refreshApplicationBadge(userID: userID)
     }
 
@@ -526,11 +523,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     ///   - includeMuted: 是否包含免打扰会话的未读数
     /// - Throws: 数据库更新错误
     func updateBadgeIncludeMuted(userID: UserID, includeMuted: Bool) async throws {
-        try await upsertBadgeSetting(
-            userID: userID,
-            column: "badge_include_muted",
-            value: includeMuted
-        )
+        try await notificationSettingsStore.updateBadgeIncludeMuted(userID: userID, includeMuted: includeMuted)
         _ = try await refreshApplicationBadge(userID: userID)
     }
 
@@ -542,18 +535,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     /// - Returns: 计算后的角标数字
     /// - Throws: 数据库查询错误
     func refreshApplicationBadge(userID: UserID) async throws -> Int {
-        let setting = try await notificationSetting(for: userID)
-        let badgeCount: Int
-
-        if setting.badgeEnabled {
-            badgeCount = try await unreadBadgeCount(
-                userID: userID,
-                includeMuted: setting.badgeIncludeMuted
-            )
-        } else {
-            badgeCount = 0
-        }
-
+        let badgeCount = try await notificationSettingsStore.badgeCount(for: userID)
         await eventDispatcher.setApplicationBadgeNumber(badgeCount)
 
         return badgeCount
@@ -573,50 +555,50 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     /// - Returns: 已存储的消息
     /// - Throws: 数据库事务错误
     func insertOutgoingTextMessage(_ input: OutgoingTextMessageInput) async throws -> StoredMessage {
-        let result = MessageDAO.insertOutgoingTextStatements(input)
-        try await database.performTransaction(result.statements, paths: paths)
-        scheduleMessageIndex(messageID: result.message.id, userID: input.userID)
+        let plan = MessageDAO.makeOutgoingTextWritePlan(input)
+        try await writeMessagePlan(plan)
+        scheduleMessageIndex(messageID: plan.message.id, userID: input.userID)
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
-        return result.message
+        return plan.message
     }
 
     func insertOutgoingImageMessage(_ input: OutgoingImageMessageInput) async throws -> StoredMessage {
-        let result = MessageDAO.insertOutgoingImageStatements(input)
-        try await database.performTransaction(result.statements, paths: paths)
+        let plan = MessageDAO.makeOutgoingImageWritePlan(input)
+        try await writeMessagePlan(plan)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.image, userID: input.userID, createdAt: input.localTime))
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
-        return result.message
+        return plan.message
     }
 
     func insertOutgoingVoiceMessage(_ input: OutgoingVoiceMessageInput) async throws -> StoredMessage {
-        let result = MessageDAO.insertOutgoingVoiceStatements(input)
-        try await database.performTransaction(result.statements, paths: paths)
+        let plan = MessageDAO.makeOutgoingVoiceWritePlan(input)
+        try await writeMessagePlan(plan)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.voice, userID: input.userID, createdAt: input.localTime))
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
-        return result.message
+        return plan.message
     }
 
     func insertOutgoingVideoMessage(_ input: OutgoingVideoMessageInput) async throws -> StoredMessage {
-        let result = MessageDAO.insertOutgoingVideoStatements(input)
-        try await database.performTransaction(result.statements, paths: paths)
+        let plan = MessageDAO.makeOutgoingVideoWritePlan(input)
+        try await writeMessagePlan(plan)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.video, userID: input.userID, createdAt: input.localTime))
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
-        return result.message
+        return plan.message
     }
 
     func insertOutgoingFileMessage(_ input: OutgoingFileMessageInput) async throws -> StoredMessage {
-        let result = MessageDAO.insertOutgoingFileStatements(input)
-        try await database.performTransaction(result.statements, paths: paths)
+        let plan = MessageDAO.makeOutgoingFileWritePlan(input)
+        try await writeMessagePlan(plan)
         try await upsertMediaIndexRecords(Self.mediaIndexRecords(for: input.file, userID: input.userID, createdAt: input.localTime))
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
-        return result.message
+        return plan.message
     }
 
     func insertOutgoingEmojiMessage(_ input: OutgoingEmojiMessageInput) async throws -> StoredMessage {
-        let result = MessageDAO.insertOutgoingEmojiStatements(input)
-        try await database.performTransaction(result.statements, paths: paths)
+        let plan = MessageDAO.makeOutgoingEmojiWritePlan(input)
+        try await writeMessagePlan(plan)
         scheduleConversationIndex(conversationID: input.conversationID, userID: input.userID)
-        return result.message
+        return plan.message
     }
 
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
@@ -627,8 +609,21 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         )
     }
 
+    /// 观察聊天页最新消息窗口。
+    ///
+    /// 历史分页仍使用显式游标查询；这里仅用于同步最新一页内容，避免观察刷新重置历史分页窗口。
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error> {
+        try await messageDAO.observeLatestMessages(conversationID: conversationID, limit: max(1, limit))
+    }
+
     func message(messageID: MessageID) async throws -> StoredMessage? {
         try await messageDAO.message(messageID: messageID)
+    }
+
+    private func writeMessagePlan(_ plan: MessageWritePlan) async throws {
+        _ = try await database.write(paths: paths) { db in
+            try plan.write(in: db)
+        }
     }
 
     func updateMessageSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws {
@@ -643,24 +638,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         ack: MessageSendAck?,
         pendingJob: PendingJobInput?
     ) async throws {
-        var statements = [
-            Self.updateMessageSendStatusStatement(messageID: messageID, status: status, ack: ack)
-        ]
-
-        if let pendingJob {
-            let now = Self.currentTimestamp()
-            statements.append(
-                Self.upsertPendingJobStatement(
-                    pendingJob,
-                    status: .pending,
-                    retryCount: 0,
-                    updatedAt: now,
-                    createdAt: now
-                )
-            )
+        let now = Self.currentTimestamp()
+        _ = try await database.write(paths: paths) { db in
+            try Self.updateMessageSendStatus(messageID: messageID, status: status, ack: ack, in: db)
+            if let pendingJob {
+                try Self.upsertPendingJob(pendingJob, status: .pending, retryCount: 0, updatedAt: now, createdAt: now, in: db)
+            }
         }
-
-        try await database.performTransaction(statements, paths: paths)
     }
 
     // MARK: - MessageCrashRecoveryRepository
@@ -680,7 +664,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             )
         }
 
-        var statements: [SQLiteStatement] = []
+        var operations: [MessageRecoveryDatabaseOperation] = []
         var recoveredMessageCount = 0
         var pendingJobCount = 0
         var failedMessageCount = 0
@@ -689,7 +673,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             switch message.type {
             case .text:
                 guard let clientMessageID = message.clientMessageID else {
-                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                    operations.append(.sendStatus(message.messageID, .failed))
                     failedMessageCount += 1
                     continue
                 }
@@ -703,27 +687,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     maxRetryCount: retryPolicy.maxRetryCount,
                     nextRetryAt: now
                 )
-                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
-                statements.append(
-                    Self.upsertPendingJobStatement(
-                        pendingJob,
-                        status: .pending,
-                        retryCount: 0,
-                        updatedAt: now,
-                        createdAt: now
-                    )
-                )
+                operations.append(.sendStatus(message.messageID, .pending))
+                operations.append(.pendingJob(pendingJob))
                 recoveredMessageCount += 1
                 pendingJobCount += 1
             case .image:
                 guard let clientMessageID = message.clientMessageID, let mediaID = message.mediaID else {
-                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
-                    statements += Self.updateImageUploadStatusStatements(
-                        messageID: message.messageID,
-                        status: .failed,
-                        uploadAck: nil,
-                        updatedAt: now
-                    )
+                    operations.append(.sendStatus(message.messageID, .failed))
+                    operations.append(.uploadStatus(message.messageID, .failed, nil, .image))
                     failedMessageCount += 1
                     continue
                 }
@@ -738,33 +709,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     maxRetryCount: retryPolicy.maxRetryCount,
                     nextRetryAt: now
                 )
-                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
-                statements += Self.updateImageUploadStatusStatements(
-                    messageID: message.messageID,
-                    status: .pending,
-                    uploadAck: nil,
-                    updatedAt: now
-                )
-                statements.append(
-                    Self.upsertPendingJobStatement(
-                        pendingJob,
-                        status: .pending,
-                        retryCount: 0,
-                        updatedAt: now,
-                        createdAt: now
-                    )
-                )
+                operations.append(.sendStatus(message.messageID, .pending))
+                operations.append(.uploadStatus(message.messageID, .pending, nil, .image))
+                operations.append(.pendingJob(pendingJob))
                 recoveredMessageCount += 1
                 pendingJobCount += 1
             case .video:
                 guard let clientMessageID = message.clientMessageID, let mediaID = message.mediaID else {
-                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
-                    statements += Self.updateVideoUploadStatusStatements(
-                        messageID: message.messageID,
-                        status: .failed,
-                        uploadAck: nil,
-                        updatedAt: now
-                    )
+                    operations.append(.sendStatus(message.messageID, .failed))
+                    operations.append(.uploadStatus(message.messageID, .failed, nil, .video))
                     failedMessageCount += 1
                     continue
                 }
@@ -779,33 +732,15 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     maxRetryCount: retryPolicy.maxRetryCount,
                     nextRetryAt: now
                 )
-                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
-                statements += Self.updateVideoUploadStatusStatements(
-                    messageID: message.messageID,
-                    status: .pending,
-                    uploadAck: nil,
-                    updatedAt: now
-                )
-                statements.append(
-                    Self.upsertPendingJobStatement(
-                        pendingJob,
-                        status: .pending,
-                        retryCount: 0,
-                        updatedAt: now,
-                        createdAt: now
-                    )
-                )
+                operations.append(.sendStatus(message.messageID, .pending))
+                operations.append(.uploadStatus(message.messageID, .pending, nil, .video))
+                operations.append(.pendingJob(pendingJob))
                 recoveredMessageCount += 1
                 pendingJobCount += 1
             case .file:
                 guard let clientMessageID = message.clientMessageID, let mediaID = message.mediaID else {
-                    statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
-                    statements += Self.updateFileUploadStatusStatements(
-                        messageID: message.messageID,
-                        status: .failed,
-                        uploadAck: nil,
-                        updatedAt: now
-                    )
+                    operations.append(.sendStatus(message.messageID, .failed))
+                    operations.append(.uploadStatus(message.messageID, .failed, nil, .file))
                     failedMessageCount += 1
                     continue
                 }
@@ -820,40 +755,27 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     maxRetryCount: retryPolicy.maxRetryCount,
                     nextRetryAt: now
                 )
-                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .pending, ack: nil))
-                statements += Self.updateFileUploadStatusStatements(
-                    messageID: message.messageID,
-                    status: .pending,
-                    uploadAck: nil,
-                    updatedAt: now
-                )
-                statements.append(
-                    Self.upsertPendingJobStatement(
-                        pendingJob,
-                        status: .pending,
-                        retryCount: 0,
-                        updatedAt: now,
-                        createdAt: now
-                    )
-                )
+                operations.append(.sendStatus(message.messageID, .pending))
+                operations.append(.uploadStatus(message.messageID, .pending, nil, .file))
+                operations.append(.pendingJob(pendingJob))
                 recoveredMessageCount += 1
                 pendingJobCount += 1
             case .voice:
-                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
-                statements += Self.updateVoiceUploadStatusStatements(
-                    messageID: message.messageID,
-                    status: .failed,
-                    uploadAck: nil,
-                    updatedAt: now
-                )
+                operations.append(.sendStatus(message.messageID, .failed))
+                operations.append(.uploadStatus(message.messageID, .failed, nil, .voice))
                 failedMessageCount += 1
             default:
-                statements.append(Self.updateMessageSendStatusStatement(messageID: message.messageID, status: .failed, ack: nil))
+                operations.append(.sendStatus(message.messageID, .failed))
                 failedMessageCount += 1
             }
         }
 
-        try await database.performTransaction(statements, paths: paths)
+        let operationsForTransaction = operations
+        _ = try await database.write(paths: paths) { db in
+            for operation in operationsForTransaction {
+                try operation.apply(updatedAt: now, in: db)
+            }
+        }
 
         return MessageCrashRecoveryResult(
             scannedMessageCount: interruptedMessages.count,
@@ -871,7 +793,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         return try await prepareMediaMessageForResend(
             messageID: messageID,
             expectedType: .image,
-            uploadStatements: Self.updateImageUploadStatusStatements
+            tableSpec: .image
         )
     }
 
@@ -879,7 +801,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         try await prepareMediaMessageForResend(
             messageID: messageID,
             expectedType: .video,
-            uploadStatements: Self.updateVideoUploadStatusStatements
+            tableSpec: .video
         )
     }
 
@@ -887,14 +809,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         try await prepareMediaMessageForResend(
             messageID: messageID,
             expectedType: .file,
-            uploadStatements: Self.updateFileUploadStatusStatements
+            tableSpec: .file
         )
     }
 
     private func prepareMediaMessageForResend(
         messageID: MessageID,
         expectedType: MessageType,
-        uploadStatements: (MessageID, MediaUploadStatus, MediaUploadAck?, Int64) -> [SQLiteStatement]
+        tableSpec: MediaUploadTableSpec
     ) async throws -> StoredMessage {
         guard let existingMessage = try await messageDAO.message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)
@@ -909,11 +831,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             throw ChatStoreError.messageCannotBeResent(messageID)
         }
 
-        try await database.performTransaction(
-            [Self.updateMessageSendStatusStatement(messageID: messageID, status: .sending, ack: nil)]
-                + uploadStatements(messageID, .uploading, nil, Self.currentTimestamp()),
-            paths: paths
-        )
+        let now = Self.currentTimestamp()
+        _ = try await database.write(paths: paths) { db in
+            try Self.updateMessageSendStatus(messageID: messageID, status: .sending, ack: nil, in: db)
+            try Self.updateMediaUploadStatus(messageID: messageID, status: .uploading, uploadAck: nil, updatedAt: now, tableSpec: tableSpec, in: db)
+        }
 
         guard let updatedMessage = try await messageDAO.message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)
@@ -937,7 +859,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             sendStatus: sendStatus,
             sendAck: sendAck,
             pendingJob: pendingJob,
-            uploadStatements: Self.updateImageUploadStatusStatements
+            tableSpec: .image
         )
     }
 
@@ -955,7 +877,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             sendStatus: sendStatus,
             sendAck: sendAck,
             pendingJob: nil,
-            uploadStatements: Self.updateVoiceUploadStatusStatements
+            tableSpec: .voice
         )
     }
 
@@ -974,7 +896,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             sendStatus: sendStatus,
             sendAck: sendAck,
             pendingJob: pendingJob,
-            uploadStatements: Self.updateVideoUploadStatusStatements
+            tableSpec: .video
         )
     }
 
@@ -993,7 +915,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             sendStatus: sendStatus,
             sendAck: sendAck,
             pendingJob: pendingJob,
-            uploadStatements: Self.updateFileUploadStatusStatements
+            tableSpec: .file
         )
     }
 
@@ -1004,26 +926,16 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         sendStatus: MessageSendStatus,
         sendAck: MessageSendAck?,
         pendingJob: PendingJobInput?,
-        uploadStatements: (MessageID, MediaUploadStatus, MediaUploadAck?, Int64) -> [SQLiteStatement]
+        tableSpec: MediaUploadTableSpec
     ) async throws {
         let now = Self.currentTimestamp()
-        var statements = [
-            Self.updateMessageSendStatusStatement(messageID: messageID, status: sendStatus, ack: sendAck)
-        ] + uploadStatements(messageID, uploadStatus, uploadAck, now)
-
-        if let pendingJob {
-            statements.append(
-                Self.upsertPendingJobStatement(
-                    pendingJob,
-                    status: .pending,
-                    retryCount: 0,
-                    updatedAt: now,
-                    createdAt: now
-                )
-            )
+        _ = try await database.write(paths: paths) { db in
+            try Self.updateMessageSendStatus(messageID: messageID, status: sendStatus, ack: sendAck, in: db)
+            try Self.updateMediaUploadStatus(messageID: messageID, status: uploadStatus, uploadAck: uploadAck, updatedAt: now, tableSpec: tableSpec, in: db)
+            if let pendingJob {
+                try Self.upsertPendingJob(pendingJob, status: .pending, retryCount: 0, updatedAt: now, createdAt: now, in: db)
+            }
         }
-
-        try await database.performTransaction(statements, paths: paths)
     }
 
     func markVoicePlayed(messageID: MessageID) async throws {
@@ -1035,20 +947,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             return
         }
 
-        try await database.execute(
-            """
-            UPDATE message
-            SET read_status = ?
-            WHERE message_id = ?
-            AND msg_type = ?;
-            """,
-            parameters: [
-                .integer(Int64(MessageReadStatus.read.rawValue)),
-                .text(messageID.rawValue),
-                .integer(Int64(MessageType.voice.rawValue))
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            try MessageDatabaseRecord
+                .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+                .filter(MessageDatabaseRecord.Columns.messageType == MessageType.voice.rawValue)
+                .updateAll(db, MessageDatabaseRecord.Columns.readStatus.set(to: MessageReadStatus.read.rawValue))
+        }
     }
 
     func markMessageDeleted(messageID: MessageID, userID: UserID) async throws {
@@ -1057,20 +961,18 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         }
 
         let now = Self.currentTimestamp()
-        try await database.performTransaction(
-            [
-                SQLiteStatement(
-                    "UPDATE message SET is_deleted = 1 WHERE message_id = ?;",
-                    parameters: [.text(messageID.rawValue)]
-                ),
-                Self.refreshConversationSummaryStatement(
-                    conversationID: storedMessage.conversationID,
-                    userID: userID,
-                    updatedAt: now
-                )
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            try MessageDatabaseRecord
+                .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+                .updateAll(db, MessageDatabaseRecord.Columns.isDeleted.set(to: true))
+
+            try Self.refreshConversationSummary(
+                conversationID: storedMessage.conversationID,
+                userID: userID,
+                updatedAt: now,
+                in: db
+            )
+        }
         scheduleMessageRemoval(messageID: messageID, userID: userID)
         scheduleConversationIndex(conversationID: storedMessage.conversationID, userID: userID)
     }
@@ -1081,41 +983,29 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         }
 
         let now = Self.currentTimestamp()
-        try await database.performTransaction(
-            [
-                SQLiteStatement(
-                    "UPDATE message SET revoke_status = 1 WHERE message_id = ? AND is_deleted = 0;",
-                    parameters: [.text(messageID.rawValue)]
+        _ = try await database.write(paths: paths) { db in
+            try MessageDatabaseRecord
+                .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+                .filter(MessageDatabaseRecord.Columns.isDeleted == false)
+                .updateAll(db, MessageDatabaseRecord.Columns.revokeStatus.set(to: 1))
+
+            try MessageRevokeDatabaseRecord.upsertRecord(
+                MessageRevokeDatabaseRecord(
+                    messageID: messageID,
+                    operatorID: userID,
+                    revokeTime: now,
+                    replaceText: replacementText
                 ),
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_revoke (
-                        message_id,
-                        operator_id,
-                        revoke_time,
-                        reason,
-                        replace_text
-                    ) VALUES (?, ?, ?, NULL, ?)
-                    ON CONFLICT(message_id) DO UPDATE SET
-                        operator_id = excluded.operator_id,
-                        revoke_time = excluded.revoke_time,
-                        replace_text = excluded.replace_text;
-                    """,
-                    parameters: [
-                        .text(messageID.rawValue),
-                        .text(userID.rawValue),
-                        .integer(now),
-                        .text(replacementText)
-                    ]
-                ),
-                Self.refreshConversationSummaryStatement(
-                    conversationID: storedMessage.conversationID,
-                    userID: userID,
-                    updatedAt: now
-                )
-            ],
-            paths: paths
-        )
+                in: db
+            )
+
+            try Self.refreshConversationSummary(
+                conversationID: storedMessage.conversationID,
+                userID: userID,
+                updatedAt: now,
+                in: db
+            )
+        }
 
         guard let updatedMessage = try await messageDAO.message(messageID: messageID) else {
             throw ChatStoreError.messageNotFound(messageID)
@@ -1135,94 +1025,57 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         }
 
         let now = Self.currentTimestamp()
-        try await database.performTransaction(
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO draft (
-                        conversation_id,
-                        text,
-                        updated_at
-                    ) VALUES (?, ?, ?)
-                    ON CONFLICT(conversation_id) DO UPDATE SET
-                        text = excluded.text,
-                        updated_at = excluded.updated_at;
-                    """,
-                    parameters: [
-                        .text(conversationID.rawValue),
-                        .text(text),
-                        .integer(now)
-                    ]
-                ),
-                SQLiteStatement(
-                    """
-                    UPDATE conversation
-                    SET
-                        draft_text = ?,
-                        sort_ts = (
-                            SELECT COALESCE(MAX(existing.sort_ts), ?) + 1
-                            FROM conversation AS existing
-                            WHERE existing.user_id = ?
-                        ),
-                        updated_at = ?
-                    WHERE conversation_id = ? AND user_id = ?;
-                    """,
-                    parameters: [
-                        .text(text),
-                        .integer(now),
-                        .text(userID.rawValue),
-                        .integer(now),
-                        .text(conversationID.rawValue),
-                        .text(userID.rawValue)
-                    ]
-                )
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            try DraftDatabaseRecord.upsertRecord(
+                DraftDatabaseRecord(conversationID: conversationID, text: text, updatedAt: now),
+                in: db
+            )
+
+            let maxSortTimestamp = try Int64.fetchOne(
+                db,
+                ConversationDatabaseRecord
+                    .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                    .select(max(ConversationDatabaseRecord.Columns.sortTimestamp))
+            ) ?? now
+
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .updateAll(db, [
+                    ConversationDatabaseRecord.Columns.draftText.set(to: text),
+                    ConversationDatabaseRecord.Columns.sortTimestamp.set(to: maxSortTimestamp + 1),
+                    ConversationDatabaseRecord.Columns.updatedAt.set(to: now)
+                ])
+        }
         scheduleConversationIndex(conversationID: conversationID, userID: userID)
     }
 
     func draft(conversationID: ConversationID, userID: UserID) async throws -> String? {
-        let rows = try await database.query(
-            """
-            SELECT draft_text
-            FROM conversation
-            WHERE conversation_id = ? AND user_id = ?
-            LIMIT 1;
-            """,
-            parameters: [
-                .text(conversationID.rawValue),
-                .text(userID.rawValue)
-            ],
-            paths: paths
-        )
-
-        return rows.first?.string("draft_text")
+        try await database.read(paths: paths) { db in
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .fetchOne(db)?
+                .record
+                .draftText
+        }
     }
 
     func clearDraft(conversationID: ConversationID, userID: UserID) async throws {
         let now = Self.currentTimestamp()
-        try await database.performTransaction(
-            [
-                SQLiteStatement(
-                    "DELETE FROM draft WHERE conversation_id = ?;",
-                    parameters: [.text(conversationID.rawValue)]
-                ),
-                SQLiteStatement(
-                    """
-                    UPDATE conversation
-                    SET draft_text = NULL, updated_at = ?
-                    WHERE conversation_id = ? AND user_id = ?;
-                    """,
-                    parameters: [
-                        .integer(now),
-                        .text(conversationID.rawValue),
-                        .text(userID.rawValue)
-                    ]
-                )
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            try Table("draft")
+                .filter(Column("conversation_id") == conversationID.rawValue)
+                .deleteAll(db)
+
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .updateAll(db, [
+                    ConversationDatabaseRecord.Columns.draftText.set(to: nil as String?),
+                    ConversationDatabaseRecord.Columns.updatedAt.set(to: now)
+                ])
+        }
         scheduleConversationIndex(conversationID: conversationID, userID: userID)
     }
 
@@ -1230,132 +1083,77 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
 
     func upsertPendingJob(_ input: PendingJobInput) async throws -> PendingJob {
         let now = Self.currentTimestamp()
-        let statement = Self.upsertPendingJobStatement(input, status: .pending, retryCount: 0, updatedAt: now, createdAt: now)
-        try await database.execute(
-            statement.sql,
-            parameters: statement.parameters,
-            paths: paths
-        )
-
-        guard let job = try await pendingJob(id: input.id) else {
-            throw ChatStoreError.missingColumn("pending_job")
+        return try await database.write(paths: paths) { db in
+            let job = PendingJob(
+                id: input.id,
+                userID: input.userID,
+                type: input.type,
+                bizKey: input.bizKey,
+                payloadJSON: input.payloadJSON,
+                status: .pending,
+                retryCount: 0,
+                maxRetryCount: input.maxRetryCount,
+                nextRetryAt: input.nextRetryAt,
+                updatedAt: now,
+                createdAt: now
+            )
+            return try PendingJobDatabaseRecord.upsertNonTerminalJob(job, in: db)
         }
-
-        return job
     }
 
     func pendingJob(id: String) async throws -> PendingJob? {
-        let rows = try await database.query(
-            """
-            SELECT
-                job_id,
-                user_id,
-                job_type,
-                biz_key,
-                payload_json,
-                status,
-                retry_count,
-                max_retry_count,
-                next_retry_at,
-                updated_at,
-                created_at
-            FROM pending_job
-            WHERE job_id = ?
-            LIMIT 1;
-            """,
-            parameters: [.text(id)],
-            paths: paths
-        )
-
-        guard let row = rows.first else {
-            return nil
+        try await database.read(paths: paths) { db in
+            try PendingJobDatabaseRecord
+                .filter(PendingJobDatabaseRecord.Columns.jobID == id)
+                .fetchOne(db)?
+                .job
         }
-
-        return try Self.pendingJob(from: row)
     }
 
     func recoverablePendingJobs(userID: UserID, now: Int64) async throws -> [PendingJob] {
-        let rows = try await database.query(
-            """
-            SELECT
-                job_id,
-                user_id,
-                job_type,
-                biz_key,
-                payload_json,
-                status,
-                retry_count,
-                max_retry_count,
-                next_retry_at,
-                updated_at,
-                created_at
-            FROM pending_job
-            WHERE user_id = ?
-            AND status IN (?, ?)
-            AND retry_count < max_retry_count
-            AND (next_retry_at IS NULL OR next_retry_at <= ?)
-            ORDER BY COALESCE(next_retry_at, created_at), created_at;
-            """,
-            parameters: [
-                .text(userID.rawValue),
-                .integer(Int64(PendingJobStatus.pending.rawValue)),
-                .integer(Int64(PendingJobStatus.running.rawValue)),
-                .integer(now)
-            ],
-            paths: paths
-        )
-
-        return try rows.map(Self.pendingJob(from:))
+        try await database.read(paths: paths) { db in
+            try PendingJobDatabaseRecord
+                .filter(PendingJobDatabaseRecord.Columns.userID == userID.rawValue)
+                .filter([PendingJobStatus.pending.rawValue, PendingJobStatus.running.rawValue].contains(PendingJobDatabaseRecord.Columns.status))
+                .filter(PendingJobDatabaseRecord.Columns.retryCount < PendingJobDatabaseRecord.Columns.maxRetryCount)
+                .filter((PendingJobDatabaseRecord.Columns.nextRetryAt == nil) || (PendingJobDatabaseRecord.Columns.nextRetryAt <= now))
+                .order(literal: "COALESCE(next_retry_at, created_at), created_at")
+                .fetchAll(db)
+                .map(\.job)
+        }
     }
 
     func schedulePendingJobRetry(jobID: String, nextRetryAt: Int64) async throws {
         let now = Self.currentTimestamp()
-        try await database.execute(
-            """
-            UPDATE pending_job
-            SET
-                status = ?,
-                retry_count = retry_count + 1,
-                next_retry_at = ?,
-                updated_at = ?
-            WHERE job_id = ?
-            AND retry_count < max_retry_count;
-            """,
-            parameters: [
-                .integer(Int64(PendingJobStatus.pending.rawValue)),
-                .integer(nextRetryAt),
-                .integer(now),
-                .text(jobID)
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            try PendingJobDatabaseRecord
+                .filter(PendingJobDatabaseRecord.Columns.jobID == jobID)
+                .filter(PendingJobDatabaseRecord.Columns.retryCount < PendingJobDatabaseRecord.Columns.maxRetryCount)
+                .updateAll(db, [
+                    PendingJobDatabaseRecord.Columns.status.set(to: PendingJobStatus.pending.rawValue),
+                    PendingJobDatabaseRecord.Columns.retryCount += 1,
+                    PendingJobDatabaseRecord.Columns.nextRetryAt.set(to: nextRetryAt),
+                    PendingJobDatabaseRecord.Columns.updatedAt.set(to: now)
+                ])
+        }
     }
 
     func updatePendingJobStatus(jobID: String, status: PendingJobStatus, nextRetryAt: Int64?) async throws {
         let now = Self.currentTimestamp()
-        try await database.execute(
-            """
-            UPDATE pending_job
-            SET
-                status = ?,
-                retry_count = CASE
-                    WHEN ? = ? THEN retry_count + 1
-                    ELSE retry_count
-                END,
-                next_retry_at = ?,
-                updated_at = ?
-            WHERE job_id = ?;
-            """,
-            parameters: [
-                .integer(Int64(status.rawValue)),
-                .integer(Int64(status.rawValue)),
-                .integer(Int64(PendingJobStatus.failed.rawValue)),
-                .optionalInteger(nextRetryAt),
-                .integer(now),
-                .text(jobID)
-            ],
-            paths: paths
-        )
+        _ = try await database.write(paths: paths) { db in
+            var assignments: [ColumnAssignment] = [
+                PendingJobDatabaseRecord.Columns.status.set(to: status.rawValue),
+                PendingJobDatabaseRecord.Columns.nextRetryAt.set(to: nextRetryAt),
+                PendingJobDatabaseRecord.Columns.updatedAt.set(to: now)
+            ]
+            if status == .failed {
+                assignments.append(PendingJobDatabaseRecord.Columns.retryCount += 1)
+            }
+
+            try PendingJobDatabaseRecord
+                .filter(PendingJobDatabaseRecord.Columns.jobID == jobID)
+                .updateAll(db, assignments)
+        }
     }
 
     func hasConversations(for userID: UserID) async throws -> Bool {
@@ -1369,96 +1167,43 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     }
 
     func mediaIndexRecord(mediaID: String, userID: UserID) async throws -> MediaIndexRecord? {
-        let rows = try await database.query(
-            """
-            SELECT
-                media_id,
-                user_id,
-                local_path,
-                file_name,
-                file_ext,
-                size_bytes,
-                md5,
-                last_access_at,
-                created_at
-            FROM file_index
-            WHERE media_id = ?
-            AND user_id = ?
-            LIMIT 1;
-            """,
-            parameters: [
-                .text(mediaID),
-                .text(userID.rawValue)
-            ],
-            in: .fileIndex,
-            paths: paths
-        )
-
-        guard let row = rows.first else {
-            return nil
+        try await database.read(in: .fileIndex, paths: paths) { db in
+            try MediaIndexDatabaseRecord
+                .filter(MediaIndexDatabaseRecord.Columns.mediaID == mediaID)
+                .filter(MediaIndexDatabaseRecord.Columns.userID == userID.rawValue)
+                .fetchOne(db)?
+                .record
         }
-
-        return try Self.mediaIndexRecord(from: row)
     }
 
     func touchMediaIndexRecord(mediaID: String, userID: UserID, accessedAt: Int64) async throws {
-        try await database.execute(
-            """
-            UPDATE file_index
-            SET last_access_at = ?
-            WHERE media_id = ?
-            AND user_id = ?;
-            """,
-            parameters: [
-                .integer(accessedAt),
-                .text(mediaID),
-                .text(userID.rawValue)
-            ],
-            in: .fileIndex,
-            paths: paths
-        )
+        _ = try await database.write(in: .fileIndex, paths: paths) { db in
+            try MediaIndexDatabaseRecord
+                .filter(MediaIndexDatabaseRecord.Columns.mediaID == mediaID)
+                .filter(MediaIndexDatabaseRecord.Columns.userID == userID.rawValue)
+                .updateAll(db, MediaIndexDatabaseRecord.Columns.lastAccessAt.set(to: accessedAt))
+        }
     }
 
     func scanMissingMediaResources(userID: UserID) async throws -> [MissingMediaResource] {
-        let rows = try await database.query(
-            """
-            SELECT
-                media_id,
-                user_id,
-                owner_message_id,
-                local_path,
-                remote_url
-            FROM media_resource
-            WHERE user_id = ?
-            AND local_path IS NOT NULL
-            AND TRIM(local_path) <> ''
-            AND remote_url IS NOT NULL
-            AND TRIM(remote_url) <> ''
-            ORDER BY updated_at DESC, created_at DESC;
-            """,
-            parameters: [.text(userID.rawValue)],
-            paths: paths
-        )
-
-        var missingResources: [MissingMediaResource] = []
-        for row in rows {
-            let localPath = try row.requiredString("local_path")
-            guard !FileManager.default.fileExists(atPath: localPath) else {
-                continue
-            }
-
-            missingResources.append(
-                MissingMediaResource(
-                    mediaID: try row.requiredString("media_id"),
-                    userID: UserID(rawValue: try row.requiredString("user_id")),
-                    ownerMessageID: row.string("owner_message_id").map(MessageID.init(rawValue:)),
-                    localPath: localPath,
-                    remoteURL: try row.requiredString("remote_url")
+        let resources = try await database.read(paths: paths) { db in
+            try MissingMediaResourceDatabaseRecord
+                .filter(MissingMediaResourceDatabaseRecord.Columns.userID == userID.rawValue)
+                .filter(MissingMediaResourceDatabaseRecord.Columns.localPath != nil)
+                .filter(literal: "TRIM(local_path) <> ''")
+                .filter(MissingMediaResourceDatabaseRecord.Columns.remoteURL != nil)
+                .filter(literal: "TRIM(remote_url) <> ''")
+                .order(
+                    MissingMediaResourceDatabaseRecord.Columns.updatedAt.desc,
+                    MissingMediaResourceDatabaseRecord.Columns.createdAt.desc
                 )
-            )
+                .fetchAll(db)
+                .map(\.resource)
         }
 
-        return missingResources
+        return resources.filter { resource in
+            !FileManager.default.fileExists(atPath: resource.localPath)
+        }
     }
 
     func enqueueMediaDownloadJobsForMissingResources(userID: UserID) async throws -> [PendingJob] {
@@ -1471,16 +1216,14 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         let rebuiltRecords = resourceRows.flatMap(Self.mediaIndexRecordsForExistingFiles)
         let missingResources = try await scanMissingMediaResources(userID: userID)
 
-        try await database.performTransaction(
-            [
-                SQLiteStatement(
-                    "DELETE FROM file_index WHERE user_id = ?;",
-                    parameters: [.text(userID.rawValue)]
-                )
-            ] + rebuiltRecords.map(Self.upsertMediaIndexStatement),
-            in: .fileIndex,
-            paths: paths
-        )
+        _ = try await database.write(in: .fileIndex, paths: paths) { db in
+            try MediaIndexDatabaseRecord
+                .filter(MediaIndexDatabaseRecord.Columns.userID == userID.rawValue)
+                .deleteAll(db)
+            for record in rebuiltRecords {
+                try MediaIndexDatabaseRecord.upsertRecord(record, in: db)
+            }
+        }
 
         let downloadJobs = try await enqueueMediaDownloadJobs(for: missingResources)
 
@@ -1501,28 +1244,17 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         let pendingJobInputs = try missingResources.map {
             try Self.mediaDownloadJobInput(for: $0, createdAt: now)
         }
-        let statements = missingResources.map {
-            Self.markMediaDownloadPendingStatement($0, updatedAt: now)
-        } + pendingJobInputs.map {
-            Self.upsertPendingJobStatement(
-                $0,
-                status: .pending,
-                retryCount: 0,
-                updatedAt: now,
-                createdAt: now
-            )
-        }
-
-        try await database.performTransaction(statements, paths: paths)
-
-        var jobs: [PendingJob] = []
-        for input in pendingJobInputs {
-            if let job = try await pendingJob(id: input.id) {
+        return try await database.write(paths: paths) { db in
+            var jobs: [PendingJob] = []
+            for resource in missingResources {
+                try Self.markMediaDownloadPending(resource, updatedAt: now, in: db)
+            }
+            for input in pendingJobInputs {
+                let job = try Self.upsertPendingJob(input, status: .pending, retryCount: 0, updatedAt: now, createdAt: now, in: db)
                 jobs.append(job)
             }
+            return jobs
         }
-
-        return jobs
     }
 
     // MARK: - EmojiRepository
@@ -1566,27 +1298,12 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     // MARK: - SyncStore
 
     func syncCheckpoint(for bizKey: String) async throws -> SyncCheckpoint? {
-        let rows = try await database.query(
-            """
-            SELECT biz_key, cursor, seq, updated_at
-            FROM sync_checkpoint
-            WHERE biz_key = ?
-            LIMIT 1;
-            """,
-            parameters: [.text(bizKey)],
-            paths: paths
-        )
-
-        guard let row = rows.first else {
-            return nil
+        try await database.read(paths: paths) { db in
+            try SyncCheckpointDatabaseRecord
+                .filter(SyncCheckpointDatabaseRecord.Columns.bizKey == bizKey)
+                .fetchOne(db)?
+                .checkpoint
         }
-
-        return SyncCheckpoint(
-            bizKey: try row.requiredString("biz_key"),
-            cursor: row.string("cursor"),
-            sequence: row.int64("seq"),
-            updatedAt: row.int64("updated_at") ?? 0
-        )
     }
 
     func applyIncomingSyncBatch(_ batch: SyncBatch, userID: UserID) async throws -> SyncApplyResult {
@@ -1632,46 +1349,53 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         }
 
         let now = Self.currentTimestamp()
-        var statements: [SQLiteStatement] = messagesToInsert.flatMap {
-            Self.incomingTextMessageStatements($0, userID: userID, updatedAt: now)
-        }
-
         let unreadIncrements = Dictionary(grouping: messagesToInsert.filter { $0.direction == .incoming }, by: \.conversationID)
             .mapValues(\.count)
-
-        for conversationID in Set(messagesToInsert.map(\.conversationID)) {
-            statements.append(
-                Self.refreshConversationAfterSyncStatement(
-                    conversationID: conversationID,
-                    userID: userID,
-                    unreadIncrement: unreadIncrements[conversationID] ?? 0,
-                    updatedAt: now
-                )
-            )
-        }
 
         let mentionedConversationIDs = Set(
             messagesToInsert
                 .filter { $0.direction == .incoming && ($0.mentionsAll || $0.mentionedUserIDs.contains(userID)) }
                 .map(\.conversationID)
         )
+        var mentionedExtras: [ConversationID: ConversationExtraContext] = [:]
         for conversationID in mentionedConversationIDs {
             var extra = try await conversationExtra(conversationID: conversationID) ?? ConversationExtraContext()
             extra.hasUnreadMention = true
-            statements.append(try Self.updateConversationExtraStatement(conversationID: conversationID, extra: extra, updatedAt: now))
+            mentionedExtras[conversationID] = extra
         }
 
         let nextSequence = batch.nextSequence ?? sortedMessages.last?.sequence
-        statements.append(
-            Self.upsertSyncCheckpointStatement(
-                bizKey: batch.bizKey,
-                cursor: batch.nextCursor,
-                sequence: nextSequence,
-                updatedAt: now
-            )
+        let checkpoint = SyncCheckpoint(
+            bizKey: batch.bizKey,
+            cursor: batch.nextCursor,
+            sequence: nextSequence,
+            updatedAt: now
         )
+        let insertedMessages = messagesToInsert
+        let changedConversationIDs = Set(insertedMessages.map(\.conversationID))
+        let extrasForMentionedConversations = mentionedExtras
 
-        try await database.performTransaction(statements, paths: paths)
+        _ = try await database.write(paths: paths) { db in
+            for message in insertedMessages {
+                try Self.insertIncomingTextMessage(message, userID: userID, updatedAt: now, in: db)
+            }
+
+            for conversationID in changedConversationIDs {
+                try Self.refreshConversationAfterSync(
+                    conversationID: conversationID,
+                    userID: userID,
+                    unreadIncrement: unreadIncrements[conversationID] ?? 0,
+                    updatedAt: now,
+                    in: db
+                )
+            }
+
+            for (conversationID, extra) in extrasForMentionedConversations {
+                try Self.updateConversationExtra(conversationID: conversationID, extra: extra, updatedAt: now, in: db)
+            }
+
+            try SyncCheckpointDatabaseRecord.upsertRecord(checkpoint, in: db)
+        }
         let badgeCount = try await refreshApplicationBadge(userID: userID)
 
         await notifyIncomingMessages(
@@ -1680,28 +1404,23 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             badgeCount: badgeCount
         )
 
-        for message in messagesToInsert {
+        for message in insertedMessages {
             scheduleMessageIndex(messageID: message.messageID, userID: userID)
         }
 
-        for conversationID in Set(messagesToInsert.map(\.conversationID)) {
+        for conversationID in changedConversationIDs {
             scheduleConversationIndex(conversationID: conversationID, userID: userID)
         }
         eventDispatcher.postConversationsDidChange(
             userID: userID,
-            conversationIDs: Set(messagesToInsert.map(\.conversationID))
+            conversationIDs: changedConversationIDs
         )
 
         return SyncApplyResult(
             fetchedCount: batch.messages.count,
-            insertedCount: messagesToInsert.count,
+            insertedCount: insertedMessages.count,
             skippedDuplicateCount: skippedDuplicateCount,
-            checkpoint: SyncCheckpoint(
-                bizKey: batch.bizKey,
-                cursor: batch.nextCursor,
-                sequence: nextSequence,
-                updatedAt: now
-            )
+            checkpoint: checkpoint
         )
     }
 
@@ -1722,6 +1441,18 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             sortTimestamp: record.sortTimestamp,
             hasUnreadMention: extra?.hasUnreadMention == true
         )
+    }
+
+    private static func conversations(from records: [ConversationDatabaseRecord]) throws -> [Conversation] {
+        try records.map { databaseRecord in
+            let extra: ConversationExtraContext?
+            if let json = databaseRecord.extraJSON, let data = json.data(using: .utf8) {
+                extra = try JSONDecoder().decode(ConversationExtraContext.self, from: data)
+            } else {
+                extra = nil
+            }
+            return conversation(from: databaseRecord.record, extra: extra)
+        }
     }
 
     private static func conversationID(for contact: ContactRecord) -> ConversationID {
@@ -1748,23 +1479,17 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         for startIndex in stride(from: uniqueIDs.startIndex, to: uniqueIDs.endIndex, by: chunkSize) {
             let endIndex = uniqueIDs.index(startIndex, offsetBy: chunkSize, limitedBy: uniqueIDs.endIndex) ?? uniqueIDs.endIndex
             let chunk = Array(uniqueIDs[startIndex..<endIndex])
-            let placeholders = Array(repeating: "?", count: chunk.count).joined(separator: ", ")
-            let rows = try await database.query(
-                """
-                SELECT conversation_id, extra_json
-                FROM conversation
-                WHERE conversation_id IN (\(placeholders));
-                """,
-                parameters: chunk.map { .text($0.rawValue) },
-                paths: paths
-            )
+            let records = try await database.read(paths: paths) { db in
+                try ConversationDatabaseRecord
+                    .filter(chunk.map(\.rawValue).contains(ConversationDatabaseRecord.Columns.conversationID))
+                    .fetchAll(db)
+            }
 
-            for row in rows {
-                let conversationID = ConversationID(rawValue: try row.requiredString("conversation_id"))
-                guard let json = row.string("extra_json"), let data = json.data(using: .utf8) else {
+            for record in records {
+                guard let json = record.extraJSON, let data = json.data(using: .utf8) else {
                     continue
                 }
-                extras[conversationID] = try JSONDecoder().decode(ConversationExtraContext.self, from: data)
+                extras[record.record.id] = try JSONDecoder().decode(ConversationExtraContext.self, from: data)
             }
         }
 
@@ -1772,13 +1497,13 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
     }
 
     private func conversationExtra(conversationID: ConversationID) async throws -> ConversationExtraContext? {
-        let rows = try await database.query(
-            "SELECT extra_json FROM conversation WHERE conversation_id = ? LIMIT 1;",
-            parameters: [.text(conversationID.rawValue)],
-            paths: paths
-        )
+        let record = try await database.read(paths: paths) { db in
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .fetchOne(db)
+        }
 
-        guard let json = rows.first?.string("extra_json"), let data = json.data(using: .utf8) else {
+        guard let json = record?.extraJSON, let data = json.data(using: .utf8) else {
             return nil
         }
 
@@ -1790,56 +1515,25 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         extra: ConversationExtraContext,
         updatedAt: Int64
     ) async throws {
-        let statement = try Self.updateConversationExtraStatement(conversationID: conversationID, extra: extra, updatedAt: updatedAt)
-        try await database.execute(statement.sql, parameters: statement.parameters, paths: paths)
+        _ = try await database.write(paths: paths) { db in
+            try Self.updateConversationExtra(conversationID: conversationID, extra: extra, updatedAt: updatedAt, in: db)
+        }
     }
 
-    private static func updateConversationExtraStatement(
+    private static func updateConversationExtra(
         conversationID: ConversationID,
         extra: ConversationExtraContext,
-        updatedAt: Int64
-    ) throws -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE conversation
-            SET extra_json = ?, updated_at = ?
-            WHERE conversation_id = ?;
-            """,
-            parameters: try updateConversationExtraStatementParameters(
-                conversationID: conversationID,
-                extra: extra,
-                updatedAt: updatedAt
-            )
-        )
-    }
-
-    private static func updateConversationExtraStatementParameters(
-        conversationID: ConversationID,
-        extra: ConversationExtraContext,
-        updatedAt: Int64
-    ) throws -> [SQLiteValue] {
+        updatedAt: Int64,
+        in db: Database
+    ) throws {
         let data = try JSONEncoder().encode(extra)
         let json = String(decoding: data, as: UTF8.self)
-        return [
-            .text(json),
-            .integer(updatedAt),
-            .text(conversationID.rawValue)
-        ]
-    }
-
-    private static func groupMember(from row: SQLiteRow) throws -> GroupMember {
-        let roleRawValue = try row.requiredInt("role")
-        guard let role = GroupMemberRole(rawValue: roleRawValue) else {
-            throw ChatStoreError.invalidConversationType(roleRawValue)
-        }
-
-        return GroupMember(
-            conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
-            memberID: UserID(rawValue: try row.requiredString("member_id")),
-            displayName: row.string("display_name") ?? "",
-            role: role,
-            joinTime: row.int64("join_time")
-        )
+        try ConversationDatabaseRecord
+            .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+            .updateAll(db, [
+                ConversationDatabaseRecord.Columns.extraJSON.set(to: json),
+                ConversationDatabaseRecord.Columns.updatedAt.set(to: updatedAt)
+            ])
     }
 
     private static func mentionsJSON(for userIDs: [UserID]) -> String? {
@@ -1861,105 +1555,59 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         return ChatBridgeTimeFormatter.messageTimeText(from: timestamp)
     }
 
-    private func upsertBadgeSetting(userID: UserID, column: String, value: Bool) async throws {
-        let now = Self.currentTimestamp()
-        let insertedBadgeEnabled = column == "badge_enabled" ? value : true
-        let insertedBadgeIncludeMuted = column == "badge_include_muted" ? value : true
-        try await database.execute(
-            """
-            INSERT INTO notification_setting (
-                user_id,
-                is_enabled,
-                show_preview,
-                badge_enabled,
-                badge_include_muted,
-                updated_at
-            ) VALUES (?, 1, 1, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                \(column) = ?,
-                updated_at = ?;
-            """,
-            parameters: [
-                .text(userID.rawValue),
-                .integer(insertedBadgeEnabled ? 1 : 0),
-                .integer(insertedBadgeIncludeMuted ? 1 : 0),
-                .integer(now),
-                .integer(value ? 1 : 0),
-                .integer(now)
-            ],
-            paths: paths
+    private static func unreadConversationCount(userID: UserID, db: Database) throws -> Int {
+        let unreadCount = try Int.fetchOne(
+            db,
+            ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.isHidden == false)
+                .select(sum(ConversationDatabaseRecord.Columns.unreadCount))
         )
+        return max(0, unreadCount ?? 0)
     }
 
-    private func unreadBadgeCount(userID: UserID, includeMuted: Bool) async throws -> Int {
-        let rows = try await database.query(
-            """
-            SELECT COALESCE(SUM(unread_count), 0) AS badge_count
-            FROM conversation
-            WHERE user_id = ?
-            AND is_hidden = 0
-            AND (? = 1 OR is_muted = 0);
-            """,
-            parameters: [
-                .text(userID.rawValue),
-                .integer(includeMuted ? 1 : 0)
-            ],
-            paths: paths
-        )
-
-        return max(0, rows.first?.int("badge_count") ?? 0)
-    }
-
-    private func mediaResourceRowsForIndexRebuild(userID: UserID) async throws -> [SQLiteRow] {
-        try await database.query(
-            """
-            SELECT
-                media_id,
-                user_id,
-                local_path,
-                thumb_path,
-                size_bytes,
-                md5,
-                updated_at,
-                created_at
-            FROM media_resource
-            WHERE user_id = ?
-            ORDER BY updated_at DESC, created_at DESC;
-            """,
-            parameters: [.text(userID.rawValue)],
-            paths: paths
-        )
+    private func mediaResourceRowsForIndexRebuild(userID: UserID) async throws -> [MediaResourceIndexRebuildDatabaseRecord] {
+        try await database.read(paths: paths) { db in
+            try MediaResourceIndexRebuildDatabaseRecord
+                .filter(MediaResourceIndexRebuildDatabaseRecord.Columns.userID == userID.rawValue)
+                .order(
+                    MediaResourceIndexRebuildDatabaseRecord.Columns.updatedAt.desc,
+                    MediaResourceIndexRebuildDatabaseRecord.Columns.createdAt.desc
+                )
+                .fetchAll(db)
+        }
     }
 
     private func interruptedOutgoingMessages(userID: UserID) async throws -> [InterruptedOutgoingMessage] {
-        let rows = try await database.query(
-            """
-            SELECT
-                message.message_id,
-                message.conversation_id,
-                message.client_msg_id,
-                message.msg_type,
-                COALESCE(message_image.media_id, message_video.media_id, message_file.media_id) AS media_id
-            FROM message
-            INNER JOIN conversation ON conversation.conversation_id = message.conversation_id
-            LEFT JOIN message_image ON message_image.content_id = message.content_id
-            LEFT JOIN message_video ON message_video.content_id = message.content_id
-            LEFT JOIN message_file ON message_file.content_id = message.content_id
-            WHERE conversation.user_id = ?
-            AND message.direction = ?
-            AND message.send_status = ?
-            AND message.is_deleted = 0
-            ORDER BY message.local_time ASC, message.sort_seq ASC;
-            """,
-            parameters: [
-                .text(userID.rawValue),
-                .integer(Int64(MessageDirection.outgoing.rawValue)),
-                .integer(Int64(MessageSendStatus.sending.rawValue))
-            ],
-            paths: paths
-        )
+        try await database.read(paths: paths) { db in
+            let conversations = try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .fetchAll(db)
 
-        return try rows.map(Self.interruptedOutgoingMessage(from:))
+            var messages: [InterruptedOutgoingMessage] = []
+            for conversation in conversations {
+                let records = try MessageDatabaseRecord
+                    .filter(MessageDatabaseRecord.Columns.conversationID == conversation.record.id.rawValue)
+                    .filter(MessageDatabaseRecord.Columns.direction == MessageDirection.outgoing.rawValue)
+                    .filter(MessageDatabaseRecord.Columns.sendStatus == MessageSendStatus.sending.rawValue)
+                    .filter(MessageDatabaseRecord.Columns.isDeleted == false)
+                    .order(MessageDatabaseRecord.Columns.localTime.asc, MessageDatabaseRecord.Columns.sortSequence.asc)
+                    .fetchAll(db)
+
+                for record in records {
+                    messages.append(
+                        InterruptedOutgoingMessage(
+                            messageID: record.messageID,
+                            conversationID: record.conversationID,
+                            clientMessageID: record.clientMessageID,
+                            type: record.messageType,
+                            mediaID: try Self.mediaID(for: record, in: db)
+                        )
+                    )
+                }
+            }
+            return messages
+        }
     }
 
     private func notifyIncomingMessages(_ messages: [IncomingSyncMessage], userID: UserID, badgeCount: Int) async {
@@ -2020,95 +1668,94 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         userID: UserID,
         fallbackTitle: String
     ) async throws -> NotificationConversationContext {
-        let rows = try await database.query(
-            """
-            SELECT title, is_muted
-            FROM conversation
-            WHERE conversation_id = ? AND user_id = ?
-            LIMIT 1;
-            """,
-            parameters: [
-                .text(conversationID.rawValue),
-                .text(userID.rawValue)
-            ],
-            paths: paths
-        )
+        let record = try await database.read(paths: paths) { db in
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .fetchOne(db)?
+                .record
+        }
 
-        guard let row = rows.first else {
+        guard let record else {
             return NotificationConversationContext(title: fallbackTitle, isMuted: false)
         }
 
         return NotificationConversationContext(
-            title: row.string("title") ?? fallbackTitle,
-            isMuted: row.bool("is_muted")
+            title: record.title.isEmpty ? fallbackTitle : record.title,
+            isMuted: record.isMuted
         )
     }
 
-    private static func refreshConversationSummaryStatement(
+    private static func refreshConversationSummary(
         conversationID: ConversationID,
         userID: UserID,
-        updatedAt: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE conversation
-            SET
-                last_message_id = (
-                    SELECT message.message_id
-                    FROM message
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ),
-                last_message_time = (
-                    SELECT message.local_time
-                    FROM message
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ),
-                last_message_digest = COALESCE((
-                    SELECT
-                        CASE
-                            WHEN message.revoke_status = 1 THEN COALESCE(message_revoke.replace_text, '')
-                            WHEN message.msg_type = ? THEN '[图片]'
-                            WHEN message.msg_type = ? THEN '[语音]'
-                            WHEN message.msg_type = ? THEN '[视频]'
-                            WHEN message.msg_type = ? THEN '[文件] ' || COALESCE(message_file.file_name, '')
-                            ELSE COALESCE(message_text.text, '')
-                        END
-                    FROM message
-                    LEFT JOIN message_text ON message_text.content_id = message.content_id
-                    LEFT JOIN message_file ON message_file.content_id = message.content_id
-                    LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ), ''),
-                sort_ts = COALESCE((
-                    SELECT message.sort_seq
-                    FROM message
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ), sort_ts),
-                updated_at = ?
-            WHERE conversation_id = ? AND user_id = ?;
-            """,
-            parameters: [
-                .integer(Int64(MessageType.image.rawValue)),
-                .integer(Int64(MessageType.voice.rawValue)),
-                .integer(Int64(MessageType.video.rawValue)),
-                .integer(Int64(MessageType.file.rawValue)),
-                .integer(updatedAt),
-                .text(conversationID.rawValue),
-                .text(userID.rawValue)
-            ]
-        )
+        updatedAt: Int64,
+        in db: Database
+    ) throws {
+        guard let latestMessage = try latestVisibleMessage(conversationID: conversationID, in: db) else {
+            return
+        }
+
+        try ConversationDatabaseRecord
+            .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+            .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+            .updateAll(db, [
+                ConversationDatabaseRecord.Columns.lastMessageID.set(to: latestMessage.messageID.rawValue),
+                ConversationDatabaseRecord.Columns.lastMessageTime.set(to: latestMessage.localTime),
+                ConversationDatabaseRecord.Columns.lastMessageDigest.set(to: try messageDigest(for: latestMessage, in: db)),
+                ConversationDatabaseRecord.Columns.sortTimestamp.set(to: latestMessage.sortSequence),
+                ConversationDatabaseRecord.Columns.updatedAt.set(to: updatedAt)
+            ])
+    }
+
+    private static func latestVisibleMessage(conversationID: ConversationID, in db: Database) throws -> MessageDatabaseRecord? {
+        try MessageDatabaseRecord
+            .filter(MessageDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+            .filter(MessageDatabaseRecord.Columns.isDeleted == false)
+            .order(MessageDatabaseRecord.Columns.sortSequence.desc)
+            .fetchOne(db)
+    }
+
+    private static func messageDigest(for message: MessageDatabaseRecord, in db: Database) throws -> String {
+        if message.revokeStatus != 0 {
+            return try MessageRevokeDatabaseRecord
+                .filter(MessageRevokeDatabaseRecord.Columns.messageID == message.messageID.rawValue)
+                .fetchOne(db)?
+                .replaceText ?? ""
+        }
+
+        switch message.messageType {
+        case .text, .system, .quote:
+            return try MessageTextDatabaseRecord.fetchOne(db, key: message.contentID)?.text ?? ""
+        case .image:
+            return "[图片]"
+        case .voice:
+            return "[语音]"
+        case .video:
+            return "[视频]"
+        case .file:
+            let fileName = try MessageFileDatabaseRecord.fetchOne(db, key: message.contentID)?.fileName ?? ""
+            return fileName.isEmpty ? "[文件]" : "[文件] \(fileName)"
+        case .emoji:
+            return "[表情]"
+        case .revoked:
+            return ""
+        }
+    }
+
+    private static func mediaID(for message: MessageDatabaseRecord, in db: Database) throws -> String? {
+        switch message.messageType {
+        case .image:
+            return try MessageImageDatabaseRecord.fetchOne(db, key: message.contentID)?.mediaID
+        case .voice:
+            return try MessageVoiceDatabaseRecord.fetchOne(db, key: message.contentID)?.mediaID
+        case .video:
+            return try MessageVideoDatabaseRecord.fetchOne(db, key: message.contentID)?.mediaID
+        case .file:
+            return try MessageFileDatabaseRecord.fetchOne(db, key: message.contentID)?.mediaID
+        case .text, .emoji, .system, .quote, .revoked:
+            return nil
+        }
     }
 
     private static func currentTimestamp() -> Int64 {
@@ -2120,11 +1767,11 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             return
         }
 
-        try await database.performTransaction(
-            records.map(Self.upsertMediaIndexStatement),
-            in: .fileIndex,
-            paths: paths
-        )
+        _ = try await database.write(in: .fileIndex, paths: paths) { db in
+            for record in records {
+                try MediaIndexDatabaseRecord.upsertRecord(record, in: db)
+            }
+        }
     }
 
     private func scheduleMessageIndex(messageID: MessageID, userID: UserID) {
@@ -2139,33 +1786,19 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         eventDispatcher.indexConversationBestEffort(conversationID: conversationID, userID: userID)
     }
 
-    private static func mediaIndexRecord(from row: SQLiteRow) throws -> MediaIndexRecord {
-        MediaIndexRecord(
-            mediaID: try row.requiredString("media_id"),
-            userID: UserID(rawValue: try row.requiredString("user_id")),
-            localPath: try row.requiredString("local_path"),
-            fileName: row.string("file_name"),
-            fileExtension: row.string("file_ext"),
-            sizeBytes: row.int64("size_bytes"),
-            md5: row.string("md5"),
-            lastAccessAt: row.int64("last_access_at"),
-            createdAt: try row.requiredInt64("created_at")
-        )
-    }
-
-    private static func mediaIndexRecordsForExistingFiles(from row: SQLiteRow) -> [MediaIndexRecord] {
+    private static func mediaIndexRecordsForExistingFiles(from row: MediaResourceIndexRebuildDatabaseRecord) -> [MediaIndexRecord] {
         guard
-            let mediaID = row.string("media_id"),
-            let userID = row.string("user_id")
+            let mediaID = row.mediaID,
+            let userID = row.userID
         else {
             return []
         }
 
-        let timestamp = row.int64("created_at") ?? row.int64("updated_at") ?? currentTimestamp()
-        let md5 = row.string("md5")
+        let timestamp = row.createdAt ?? row.updatedAt ?? currentTimestamp()
+        let md5 = row.md5
         var records: [MediaIndexRecord] = []
 
-        if let localPath = row.string("local_path"), FileManager.default.fileExists(atPath: localPath) {
+        if let localPath = row.localPath, FileManager.default.fileExists(atPath: localPath) {
             records.append(
                 MediaIndexRecord(
                     mediaID: mediaID,
@@ -2173,7 +1806,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
                     localPath: localPath,
                     fileName: fileName(from: localPath),
                     fileExtension: fileExtension(from: localPath, fallback: nil),
-                    sizeBytes: existingFileSize(atPath: localPath) ?? row.int64("size_bytes"),
+                    sizeBytes: existingFileSize(atPath: localPath) ?? row.sizeBytes,
                     md5: md5,
                     lastAccessAt: timestamp,
                     createdAt: timestamp
@@ -2181,7 +1814,7 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             )
         }
 
-        if let thumbnailPath = row.string("thumb_path"), FileManager.default.fileExists(atPath: thumbnailPath) {
+        if let thumbnailPath = row.thumbPath, FileManager.default.fileExists(atPath: thumbnailPath) {
             records.append(
                 MediaIndexRecord(
                     mediaID: "\(mediaID)_thumb",
@@ -2198,21 +1831,6 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         }
 
         return records
-    }
-
-    private static func interruptedOutgoingMessage(from row: SQLiteRow) throws -> InterruptedOutgoingMessage {
-        let typeRawValue = try row.requiredInt("msg_type")
-        guard let type = MessageType(rawValue: typeRawValue) else {
-            throw ChatStoreError.invalidMessageType(typeRawValue)
-        }
-
-        return InterruptedOutgoingMessage(
-            messageID: MessageID(rawValue: try row.requiredString("message_id")),
-            conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
-            clientMessageID: row.string("client_msg_id"),
-            type: type,
-            mediaID: row.string("media_id")
-        )
     }
 
     private static func mediaIndexRecords(
@@ -2317,44 +1935,6 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         ]
     }
 
-    private static func upsertMediaIndexStatement(_ record: MediaIndexRecord) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO file_index (
-                media_id,
-                user_id,
-                local_path,
-                file_name,
-                file_ext,
-                size_bytes,
-                md5,
-                last_access_at,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(media_id) DO UPDATE SET
-                user_id = excluded.user_id,
-                local_path = excluded.local_path,
-                file_name = excluded.file_name,
-                file_ext = excluded.file_ext,
-                size_bytes = excluded.size_bytes,
-                md5 = excluded.md5,
-                last_access_at = excluded.last_access_at,
-                created_at = file_index.created_at;
-            """,
-            parameters: [
-                .text(record.mediaID),
-                .text(record.userID.rawValue),
-                .text(record.localPath),
-                .optionalText(record.fileName),
-                .optionalText(record.fileExtension),
-                .optionalInteger(record.sizeBytes),
-                .optionalText(record.md5),
-                .optionalInteger(record.lastAccessAt),
-                .integer(record.createdAt)
-            ]
-        )
-    }
-
     private static func mediaDownloadJobInput(
         for resource: MissingMediaResource,
         createdAt: Int64
@@ -2377,25 +1957,18 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         )
     }
 
-    private static func markMediaDownloadPendingStatement(
+    private static func markMediaDownloadPending(
         _ resource: MissingMediaResource,
-        updatedAt: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE media_resource
-            SET
-                download_status = 0,
-                updated_at = ?
-            WHERE media_id = ?
-            AND user_id = ?;
-            """,
-            parameters: [
-                .integer(updatedAt),
-                .text(resource.mediaID),
-                .text(resource.userID.rawValue)
-            ]
-        )
+        updatedAt: Int64,
+        in db: Database
+    ) throws {
+        try MediaResourceDatabaseRecord
+            .filter(MediaResourceDatabaseRecord.Columns.mediaID == resource.mediaID)
+            .filter(MediaResourceDatabaseRecord.Columns.userID == resource.userID.rawValue)
+            .updateAll(db, [
+                MediaResourceDatabaseRecord.Columns.downloadStatus.set(to: 0),
+                MediaResourceDatabaseRecord.Columns.updatedAt.set(to: updatedAt)
+            ])
     }
 
     private static func mediaDownloadJobID(mediaID: String) -> String {
@@ -2431,269 +2004,97 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         return size.int64Value
     }
 
-    private static func pendingJob(from row: SQLiteRow) throws -> PendingJob {
-        let typeRawValue = try row.requiredInt("job_type")
-        let statusRawValue = try row.requiredInt("status")
-
-        guard let type = PendingJobType(rawValue: typeRawValue) else {
-            throw ChatStoreError.invalidPendingJobType(typeRawValue)
-        }
-
-        guard let status = PendingJobStatus(rawValue: statusRawValue) else {
-            throw ChatStoreError.invalidPendingJobStatus(statusRawValue)
-        }
-
-        return PendingJob(
-            id: try row.requiredString("job_id"),
-            userID: UserID(rawValue: try row.requiredString("user_id")),
-            type: type,
-            bizKey: row.string("biz_key"),
-            payloadJSON: try row.requiredString("payload_json"),
-            status: status,
-            retryCount: try row.requiredInt("retry_count"),
-            maxRetryCount: try row.requiredInt("max_retry_count"),
-            nextRetryAt: row.int64("next_retry_at"),
-            updatedAt: try row.requiredInt64("updated_at"),
-            createdAt: try row.requiredInt64("created_at")
-        )
-    }
-
-    private static func updateMessageSendStatusStatement(
+    fileprivate static func updateMessageSendStatus(
         messageID: MessageID,
         status: MessageSendStatus,
-        ack: MessageSendAck?
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE message
-            SET
-                send_status = ?,
-                server_msg_id = ?,
-                seq = ?,
-                server_time = ?
-            WHERE message_id = ?;
-            """,
-            parameters: [
-                .integer(Int64(status.rawValue)),
-                .optionalText(ack?.serverMessageID),
-                .optionalInteger(ack?.sequence),
-                .optionalInteger(ack?.serverTime),
-                .text(messageID.rawValue)
-            ]
-        )
+        ack: MessageSendAck?,
+        in db: Database
+    ) throws {
+        try MessageDatabaseRecord
+            .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+            .updateAll(db, [
+                MessageDatabaseRecord.Columns.sendStatus.set(to: status.rawValue),
+                MessageDatabaseRecord.Columns.serverMessageID.set(to: ack?.serverMessageID),
+                MessageDatabaseRecord.Columns.sequence.set(to: ack?.sequence),
+                MessageDatabaseRecord.Columns.serverTime.set(to: ack?.serverTime)
+            ])
     }
 
-    private static func updateImageUploadStatusStatements(
-        messageID: MessageID,
-        status: MediaUploadStatus,
-        uploadAck: MediaUploadAck?,
-        updatedAt: Int64
-    ) -> [SQLiteStatement] {
-        updateMediaUploadStatusStatements(
-            messageID: messageID,
-            status: status,
-            uploadAck: uploadAck,
-            updatedAt: updatedAt,
-            tableSpec: .image
-        )
-    }
-
-    private static func updateVoiceUploadStatusStatements(
-        messageID: MessageID,
-        status: MediaUploadStatus,
-        uploadAck: MediaUploadAck?,
-        updatedAt: Int64
-    ) -> [SQLiteStatement] {
-        updateMediaUploadStatusStatements(
-            messageID: messageID,
-            status: status,
-            uploadAck: uploadAck,
-            updatedAt: updatedAt,
-            tableSpec: .voice
-        )
-    }
-
-    private static func updateVideoUploadStatusStatements(
-        messageID: MessageID,
-        status: MediaUploadStatus,
-        uploadAck: MediaUploadAck?,
-        updatedAt: Int64
-    ) -> [SQLiteStatement] {
-        updateMediaUploadStatusStatements(
-            messageID: messageID,
-            status: status,
-            uploadAck: uploadAck,
-            updatedAt: updatedAt,
-            tableSpec: .video
-        )
-    }
-
-    private static func updateFileUploadStatusStatements(
-        messageID: MessageID,
-        status: MediaUploadStatus,
-        uploadAck: MediaUploadAck?,
-        updatedAt: Int64
-    ) -> [SQLiteStatement] {
-        updateMediaUploadStatusStatements(
-            messageID: messageID,
-            status: status,
-            uploadAck: uploadAck,
-            updatedAt: updatedAt,
-            tableSpec: .file
-        )
-    }
-
-    private static func updateMediaUploadStatusStatements(
+    fileprivate static func updateMediaUploadStatus(
         messageID: MessageID,
         status: MediaUploadStatus,
         uploadAck: MediaUploadAck?,
         updatedAt: Int64,
-        tableSpec: MediaUploadTableSpec
-    ) -> [SQLiteStatement] {
-        var contentParameters: [SQLiteValue] = [
-            .integer(Int64(status.rawValue)),
-            .optionalText(uploadAck?.cdnURL)
-        ]
-        if tableSpec.writesContentMD5 {
-            contentParameters.append(.optionalText(uploadAck?.md5))
+        tableSpec: MediaUploadTableSpec,
+        in db: Database
+    ) throws {
+        guard let message = try MessageDatabaseRecord
+            .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+            .fetchOne(db) else {
+            return
         }
-        contentParameters.append(.text(messageID.rawValue))
 
-        return [
-            SQLiteStatement(
-                """
-                UPDATE \(tableSpec.contentTable)
-                SET
-                \(tableSpec.contentSetClause)
-                WHERE content_id = (
-                    SELECT content_id
-                    FROM message
-                    WHERE message_id = ?
-                    LIMIT 1
-                );
-                """,
-                parameters: contentParameters
-            ),
-            SQLiteStatement(
-                """
-                UPDATE media_resource
-                SET
-                    upload_status = ?,
-                    remote_url = COALESCE(?, remote_url),
-                    md5 = COALESCE(?, md5),
-                    updated_at = ?
-                WHERE owner_message_id = ?;
-                """,
-                parameters: [
-                    .integer(Int64(status.rawValue)),
-                    .optionalText(uploadAck?.cdnURL),
-                    .optionalText(uploadAck?.md5),
-                    .integer(updatedAt),
-                    .text(messageID.rawValue)
-                ]
-            )
+        var contentAssignments = [
+            Column("upload_status").set(to: status.rawValue)
         ]
+        if let cdnURL = uploadAck?.cdnURL {
+            contentAssignments.append(Column("cdn_url").set(to: cdnURL))
+        }
+        if tableSpec.writesContentMD5, let md5 = uploadAck?.md5 {
+            contentAssignments.append(Column("md5").set(to: md5))
+        }
+        try Table(tableSpec.contentTable)
+            .filter(Column("content_id") == message.contentID)
+            .updateAll(db, contentAssignments)
+
+        var resourceAssignments = [
+            MediaResourceDatabaseRecord.Columns.uploadStatus.set(to: status.rawValue),
+            MediaResourceDatabaseRecord.Columns.updatedAt.set(to: updatedAt)
+        ]
+        if let cdnURL = uploadAck?.cdnURL {
+            resourceAssignments.append(MediaResourceDatabaseRecord.Columns.remoteURL.set(to: cdnURL))
+        }
+        if let md5 = uploadAck?.md5 {
+            resourceAssignments.append(MediaResourceDatabaseRecord.Columns.md5.set(to: md5))
+        }
+        try MediaResourceDatabaseRecord
+            .filter(MediaResourceDatabaseRecord.Columns.ownerMessageID == messageID.rawValue)
+            .updateAll(db, resourceAssignments)
     }
 
-    private struct MediaUploadTableSpec {
+    @discardableResult
+    fileprivate static func upsertPendingJob(
+        _ input: PendingJobInput,
+        status: PendingJobStatus,
+        retryCount: Int,
+        updatedAt: Int64,
+        createdAt: Int64,
+        in db: Database
+    ) throws -> PendingJob {
+        let job = PendingJob(
+            id: input.id,
+            userID: input.userID,
+            type: input.type,
+            bizKey: input.bizKey,
+            payloadJSON: input.payloadJSON,
+            status: status,
+            retryCount: retryCount,
+            maxRetryCount: input.maxRetryCount,
+            nextRetryAt: input.nextRetryAt,
+            updatedAt: updatedAt,
+            createdAt: createdAt
+        )
+        return try PendingJobDatabaseRecord.upsertNonTerminalJob(job, in: db)
+    }
+
+    fileprivate struct MediaUploadTableSpec {
         let contentTable: String
         let writesContentMD5: Bool
-
-        var contentSetClause: String {
-            if writesContentMD5 {
-                """
-                    upload_status = ?,
-                    cdn_url = COALESCE(?, cdn_url),
-                    md5 = COALESCE(?, md5)
-                """
-            } else {
-                """
-                    upload_status = ?,
-                    cdn_url = COALESCE(?, cdn_url)
-                """
-            }
-        }
 
         static let image = MediaUploadTableSpec(contentTable: "message_image", writesContentMD5: true)
         static let voice = MediaUploadTableSpec(contentTable: "message_voice", writesContentMD5: false)
         static let video = MediaUploadTableSpec(contentTable: "message_video", writesContentMD5: true)
         static let file = MediaUploadTableSpec(contentTable: "message_file", writesContentMD5: true)
-    }
-
-    private static func upsertPendingJobStatement(
-        _ input: PendingJobInput,
-        status: PendingJobStatus,
-        retryCount: Int,
-        updatedAt: Int64,
-        createdAt: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO pending_job (
-                job_id,
-                user_id,
-                job_type,
-                biz_key,
-                payload_json,
-                status,
-                retry_count,
-                max_retry_count,
-                next_retry_at,
-                updated_at,
-                created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                payload_json = CASE
-                    WHEN pending_job.status IN (?, ?) THEN pending_job.payload_json
-                    ELSE excluded.payload_json
-                END,
-                status = CASE
-                    WHEN pending_job.status IN (?, ?) THEN pending_job.status
-                    ELSE excluded.status
-                END,
-                retry_count = CASE
-                    WHEN pending_job.status IN (?, ?) THEN pending_job.retry_count
-                    ELSE excluded.retry_count
-                END,
-                max_retry_count = CASE
-                    WHEN pending_job.status IN (?, ?) THEN pending_job.max_retry_count
-                    ELSE excluded.max_retry_count
-                END,
-                next_retry_at = CASE
-                    WHEN pending_job.status IN (?, ?) THEN pending_job.next_retry_at
-                    ELSE excluded.next_retry_at
-                END,
-                updated_at = CASE
-                    WHEN pending_job.status IN (?, ?) THEN pending_job.updated_at
-                    ELSE excluded.updated_at
-                END;
-            """,
-            parameters: [
-                .text(input.id),
-                .text(input.userID.rawValue),
-                .integer(Int64(input.type.rawValue)),
-                .optionalText(input.bizKey),
-                .text(input.payloadJSON),
-                .integer(Int64(status.rawValue)),
-                .integer(Int64(retryCount)),
-                .integer(Int64(input.maxRetryCount)),
-                .optionalInteger(input.nextRetryAt),
-                .integer(updatedAt),
-                .integer(createdAt),
-                .integer(Int64(PendingJobStatus.success.rawValue)),
-                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
-                .integer(Int64(PendingJobStatus.success.rawValue)),
-                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
-                .integer(Int64(PendingJobStatus.success.rawValue)),
-                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
-                .integer(Int64(PendingJobStatus.success.rawValue)),
-                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
-                .integer(Int64(PendingJobStatus.success.rawValue)),
-                .integer(Int64(PendingJobStatus.cancelled.rawValue)),
-                .integer(Int64(PendingJobStatus.success.rawValue)),
-                .integer(Int64(PendingJobStatus.cancelled.rawValue))
-            ]
-        )
     }
 
     private static func recordMessageDedupKeys(
@@ -2738,54 +2139,31 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
             Array(Set($0.map(\.sequence))).sorted()
         }
 
-        var clauses: [String] = []
-        var parameters: [SQLiteValue] = []
-        appendInClause(
-            column: "client_msg_id",
-            values: clientMessageIDs,
-            clauses: &clauses,
-            parameters: &parameters
-        )
-        appendInClause(
-            column: "server_msg_id",
-            values: serverMessageIDs,
-            clauses: &clauses,
-            parameters: &parameters
-        )
-
-        for (conversationID, sequences) in sequencesByConversation.sorted(by: { $0.key.rawValue < $1.key.rawValue }) where !sequences.isEmpty {
-            let placeholders = Array(repeating: "?", count: sequences.count).joined(separator: ", ")
-            clauses.append("(conversation_id = ? AND seq IN (\(placeholders)))")
-            parameters.append(.text(conversationID.rawValue))
-            parameters.append(contentsOf: sequences.map(SQLiteValue.integer))
-        }
-
-        guard !clauses.isEmpty else {
+        guard !clientMessageIDs.isEmpty || !serverMessageIDs.isEmpty || !sequencesByConversation.isEmpty else {
             return ExistingMessageDedupKeys()
         }
 
-        let rows = try await database.query(
-            """
-            SELECT client_msg_id, server_msg_id, conversation_id, seq
-            FROM message
-            WHERE \(clauses.joined(separator: "\nOR "));
-            """,
-            parameters: parameters,
-            paths: paths
-        )
+        let rows = try await database.read(paths: paths) { db in
+            try Self.existingMessageDedupRecords(
+                clientMessageIDs: clientMessageIDs,
+                serverMessageIDs: serverMessageIDs,
+                sequencesByConversation: sequencesByConversation,
+                in: db
+            )
+        }
 
         var keys = ExistingMessageDedupKeys()
         for row in rows {
-            if let clientMessageID = row.string("client_msg_id") {
+            if let clientMessageID = row.clientMessageID {
                 keys.clientMessageIDs.insert(clientMessageID)
             }
-            if let serverMessageID = row.string("server_msg_id") {
+            if let serverMessageID = row.serverMessageID {
                 keys.serverMessageIDs.insert(serverMessageID)
             }
-            if let conversationID = row.string("conversation_id"), let sequence = row.int64("seq") {
+            if let conversationID = row.conversationID, let sequence = row.sequence {
                 keys.conversationSequences.insert(
                     ExistingMessageDedupKeys.sequenceKey(
-                        conversationID: ConversationID(rawValue: conversationID),
+                        conversationID: conversationID,
                         sequence: sequence
                     )
                 )
@@ -2795,186 +2173,148 @@ nonisolated struct LocalChatRepository: ConversationRepository, ContactRepositor
         return keys
     }
 
-    private func appendInClause(
-        column: String,
-        values: [String],
-        clauses: inout [String],
-        parameters: inout [SQLiteValue]
-    ) {
-        let uniqueValues = Array(Set(values)).sorted()
-        guard !uniqueValues.isEmpty else {
-            return
+    private static func existingMessageDedupRecords(
+        clientMessageIDs: [String],
+        serverMessageIDs: [String],
+        sequencesByConversation: [ConversationID: [Int64]],
+        in db: Database
+    ) throws -> [ExistingMessageDedupKeyRecord] {
+        var records: [MessageDatabaseRecord] = []
+
+        for clientMessageID in Set(clientMessageIDs) {
+            records.append(
+                contentsOf: try MessageDatabaseRecord
+                    .filter(MessageDatabaseRecord.Columns.clientMessageID == clientMessageID)
+                    .fetchAll(db)
+            )
         }
 
-        let placeholders = Array(repeating: "?", count: uniqueValues.count).joined(separator: ", ")
-        clauses.append("\(column) IN (\(placeholders))")
-        parameters.append(contentsOf: uniqueValues.map(SQLiteValue.text))
+        for serverMessageID in Set(serverMessageIDs) {
+            records.append(
+                contentsOf: try MessageDatabaseRecord
+                    .filter(MessageDatabaseRecord.Columns.serverMessageID == serverMessageID)
+                    .fetchAll(db)
+            )
+        }
+
+        for (conversationID, sequences) in sequencesByConversation {
+            for sequence in Set(sequences) {
+                records.append(
+                    contentsOf: try MessageDatabaseRecord
+                        .filter(MessageDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                        .filter(MessageDatabaseRecord.Columns.sequence == sequence)
+                        .fetchAll(db)
+                )
+            }
+        }
+
+        var seenMessageIDs: Set<MessageID> = []
+        return records.compactMap { record in
+            guard seenMessageIDs.insert(record.messageID).inserted else {
+                return nil
+            }
+
+            return ExistingMessageDedupKeyRecord(
+                clientMessageID: record.clientMessageID,
+                serverMessageID: record.serverMessageID,
+                conversationID: record.conversationID,
+                sequence: record.sequence
+            )
+        }
     }
 
-    private static func incomingTextMessageStatements(
+    private static func insertIncomingTextMessage(
         _ message: IncomingSyncMessage,
         userID: UserID,
-        updatedAt: Int64
-    ) -> [SQLiteStatement] {
+        updatedAt: Int64,
+        in db: Database
+    ) throws {
         let contentID = "sync_text_\(message.messageID.rawValue)"
 
-        return [
-            SQLiteStatement(
-                """
-                INSERT OR IGNORE INTO conversation (
-                    conversation_id,
-                    user_id,
-                    biz_type,
-                    target_id,
-                    title,
-                    last_message_digest,
-                    unread_count,
-                    is_pinned,
-                    is_muted,
-                    is_hidden,
-                    extra_json,
-                    sort_ts,
-                    updated_at,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, '', 0, 0, 0, 0, NULL, ?, ?, ?);
-                """,
-                parameters: [
-                    .text(message.conversationID.rawValue),
-                    .text(userID.rawValue),
-                    .integer(Int64(message.conversationType.rawValue)),
-                    .text(message.senderID.rawValue),
-                    .text(message.conversationTitle ?? message.senderID.rawValue),
-                    .integer(message.sequence),
-                    .integer(updatedAt),
-                    .integer(updatedAt)
-                ]
-            ),
-            SQLiteStatement(
-                """
-                INSERT INTO message_text (
-                    content_id,
-                    text,
-                    mentions_json,
-                    at_all,
-                    rich_text_json
-                ) VALUES (?, ?, ?, ?, NULL);
-                """,
-                parameters: [
-                    .text(contentID),
-                    .text(message.text),
-                    .optionalText(Self.mentionsJSON(for: message.mentionedUserIDs)),
-                    .integer(message.mentionsAll ? 1 : 0)
-                ]
-            ),
-            MessageDAO.insertMessageRecordStatement(
-                messageID: message.messageID,
-                conversationID: message.conversationID,
-                senderID: message.senderID,
-                clientMessageID: message.clientMessageID,
-                serverMessageID: message.serverMessageID,
-                sequence: message.sequence,
-                type: .text,
-                direction: message.direction,
-                sendStatus: .success,
-                deliveryStatus: 0,
-                readStatus: .unread,
-                revokeStatus: 0,
-                isDeleted: false,
-                contentTable: "message_text",
-                contentID: contentID,
-                sortSequence: message.sequence,
-                serverTime: message.serverTime,
-                localTime: message.localTime
-            )
-        ]
+        if try ConversationDatabaseRecord
+            .filter(ConversationDatabaseRecord.Columns.conversationID == message.conversationID.rawValue)
+            .fetchOne(db) == nil {
+            try ConversationDatabaseRecord(
+                record: ConversationRecord(
+                    id: message.conversationID,
+                    userID: userID,
+                    type: message.conversationType,
+                    targetID: message.senderID.rawValue,
+                    title: message.conversationTitle ?? message.senderID.rawValue,
+                    avatarURL: nil,
+                    lastMessageID: nil,
+                    lastMessageTime: nil,
+                    lastMessageDigest: "",
+                    unreadCount: 0,
+                    draftText: nil,
+                    isPinned: false,
+                    isMuted: false,
+                    isHidden: false,
+                    sortTimestamp: message.sequence,
+                    updatedAt: updatedAt,
+                    createdAt: updatedAt
+                )
+            ).insert(db)
+        }
+
+        try MessageTextDatabaseRecord(
+            contentID: contentID,
+            text: message.text,
+            mentionsJSON: Self.mentionsJSON(for: message.mentionedUserIDs),
+            atAll: message.mentionsAll,
+            richTextJSON: nil
+        ).insert(db)
+
+        try MessageDatabaseRecord(
+            messageID: message.messageID,
+            conversationID: message.conversationID,
+            senderID: message.senderID,
+            clientMessageID: message.clientMessageID,
+            serverMessageID: message.serverMessageID,
+            sequence: message.sequence,
+            messageType: .text,
+            direction: message.direction,
+            sendStatus: .success,
+            deliveryStatus: 0,
+            readStatus: .unread,
+            revokeStatus: 0,
+            isDeleted: false,
+            contentTable: "message_text",
+            contentID: contentID,
+            sortSequence: message.sequence,
+            serverTime: message.serverTime,
+            localTime: message.localTime
+        ).insert(db)
     }
 
-    private static func refreshConversationAfterSyncStatement(
+    private static func refreshConversationAfterSync(
         conversationID: ConversationID,
         userID: UserID,
         unreadIncrement: Int,
-        updatedAt: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE conversation
-            SET
-                last_message_id = (
-                    SELECT message.message_id
-                    FROM message
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ),
-                last_message_time = (
-                    SELECT COALESCE(message.server_time, message.local_time)
-                    FROM message
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ),
-                last_message_digest = COALESCE((
-                    SELECT
-                        CASE
-                            WHEN message.revoke_status = 1 THEN COALESCE(message_revoke.replace_text, '')
-                            ELSE COALESCE(message_text.text, '')
-                        END
-                    FROM message
-                    LEFT JOIN message_text ON message_text.content_id = message.content_id
-                    LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ), ''),
-                sort_ts = COALESCE((
-                    SELECT message.sort_seq
-                    FROM message
-                    WHERE message.conversation_id = conversation.conversation_id
-                    AND message.is_deleted = 0
-                    ORDER BY message.sort_seq DESC
-                    LIMIT 1
-                ), sort_ts),
-                unread_count = unread_count + ?,
-                updated_at = ?
-            WHERE conversation_id = ? AND user_id = ?;
-            """,
-            parameters: [
-                .integer(Int64(unreadIncrement)),
-                .integer(updatedAt),
-                .text(conversationID.rawValue),
-                .text(userID.rawValue)
-            ]
-        )
-    }
+        updatedAt: Int64,
+        in db: Database
+    ) throws {
+        guard let latestMessage = try latestVisibleMessage(conversationID: conversationID, in: db) else {
+            try ConversationDatabaseRecord
+                .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+                .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+                .updateAll(db, [
+                    ConversationDatabaseRecord.Columns.unreadCount += unreadIncrement,
+                    ConversationDatabaseRecord.Columns.updatedAt.set(to: updatedAt)
+                ])
+            return
+        }
 
-    private static func upsertSyncCheckpointStatement(
-        bizKey: String,
-        cursor: String?,
-        sequence: Int64?,
-        updatedAt: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO sync_checkpoint (
-                biz_key,
-                cursor,
-                seq,
-                updated_at
-            ) VALUES (?, ?, ?, ?)
-            ON CONFLICT(biz_key) DO UPDATE SET
-                cursor = excluded.cursor,
-                seq = excluded.seq,
-                updated_at = excluded.updated_at;
-            """,
-            parameters: [
-                .text(bizKey),
-                .optionalText(cursor),
-                .optionalInteger(sequence),
-                .integer(updatedAt)
-            ]
-        )
+        try ConversationDatabaseRecord
+            .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+            .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+            .updateAll(db, [
+                ConversationDatabaseRecord.Columns.lastMessageID.set(to: latestMessage.messageID.rawValue),
+                ConversationDatabaseRecord.Columns.lastMessageTime.set(to: latestMessage.serverTime ?? latestMessage.localTime),
+                ConversationDatabaseRecord.Columns.lastMessageDigest.set(to: try messageDigest(for: latestMessage, in: db)),
+                ConversationDatabaseRecord.Columns.sortTimestamp.set(to: latestMessage.sortSequence),
+                ConversationDatabaseRecord.Columns.unreadCount += unreadIncrement,
+                ConversationDatabaseRecord.Columns.updatedAt.set(to: updatedAt)
+            ])
     }
 }

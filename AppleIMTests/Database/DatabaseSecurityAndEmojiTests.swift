@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 
 @testable import AppleIM
 
@@ -130,6 +131,44 @@ extension AppleIMTests {
         }
     }
 
+    @Test func databaseSchemaUsesGRDBBuilderForOrdinaryTablesAndIndexes() throws {
+        let fileManager = FileManager.default
+        let environment = ProcessInfo.processInfo.environment
+        let testFileURL = URL(fileURLWithPath: #filePath)
+        var candidateRoots = [URL]()
+
+        for key in ["SRCROOT", "PROJECT_DIR"] {
+            if let path = environment[key], path.isEmpty == false {
+                candidateRoots.append(URL(fileURLWithPath: path))
+            }
+        }
+        if #filePath.hasPrefix("/") {
+            candidateRoots.append(
+                testFileURL
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+            )
+        }
+        candidateRoots.append(URL(fileURLWithPath: fileManager.currentDirectoryPath))
+
+        let schemaURL = try #require(
+            candidateRoots
+                .map { $0.appendingPathComponent("AppleIM/Database/DatabaseSchema.swift") }
+                .first { fileManager.fileExists(atPath: $0.path) }
+        )
+        let source = try String(contentsOf: schemaURL, encoding: .utf8)
+
+        #expect(source.contains("MigrationScript") == false)
+        #expect(source.contains("baselineScripts") == false)
+        #expect(source.contains("baselineExtensionScripts") == false)
+        #expect(source.contains("initialScripts") == false)
+        #expect(source.contains("CREATE TABLE IF NOT EXISTS") == false)
+        #expect(source.contains("CREATE INDEX IF NOT EXISTS") == false)
+        #expect(source.contains("CREATE VIRTUAL TABLE IF NOT EXISTS") == true)
+        #expect(source.contains("USING fts5") == true)
+    }
+
     @MainActor
     @Test func chatStoreProviderReusesPreparedStorageAcrossRepositorySearchAndRepair() async throws {
         let rootDirectory = temporaryDirectory()
@@ -240,7 +279,7 @@ extension AppleIMTests {
     }
 
     @MainActor
-    @Test func plaintextDatabaseMigratesToEncryptedDatabaseWithoutLosingData() async throws {
+    @Test func plaintextDatabaseIsRecreatedAsEncryptedDatabaseWithoutDataMigration() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -274,15 +313,14 @@ extension AppleIMTests {
         let cipherVersion = try await encryptedActor.cipherVersion(in: .main, paths: paths)
         let unconfiguredReadFailed = await databaseReadFails(using: DatabaseActor(), paths: paths)
 
-        #expect(conversations.contains { $0.title == "Migrated Conversation" })
+        #expect(conversations.contains { $0.title == "Migrated Conversation" } == false)
         #expect(cipherVersion.isEmpty == false)
         #expect(unconfiguredReadFailed)
     }
 
     @Test func databaseActorErrorDescriptionRedactsSensitiveDetails() {
-        let error = DatabaseActorError.executeFailed(
+        let error = DatabaseActorError.writeFailed(
             path: "/private/account_sensitive_user/main.db",
-            statement: "INSERT INTO message_text (text) VALUES ('secret token message');",
             message: "failed near secret token message"
         )
         let description = String(describing: error)
@@ -336,7 +374,7 @@ extension AppleIMTests {
         #expect(await databaseActor.cachedConnectionCount(for: paths) == 1)
     }
 
-    @Test func databaseBootstrapPersistsMigrationMetadata() async throws {
+    @Test func databaseBootstrapCreatesCurrentBaselineWithoutMigrationState() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -347,18 +385,14 @@ extension AppleIMTests {
         let databaseActor = DatabaseActor()
 
         let result = try await databaseActor.bootstrap(paths: paths)
-        let loadedMetadata = try await databaseActor.loadMigrationMetadata(paths: paths)
         let mainTables = try await databaseActor.tableNames(in: .main, paths: paths)
         let searchTables = try await databaseActor.tableNames(in: .search, paths: paths)
         let fileIndexTables = try await databaseActor.tableNames(in: .fileIndex, paths: paths)
+        let metadataURL = paths.cacheDirectory.appendingPathComponent("migration_meta.json")
 
-        #expect(result.metadata.schemaVersion == DatabaseSchema.currentVersion)
-        #expect(loadedMetadata == result.metadata)
-        #expect(loadedMetadata.appliedScriptIDs.contains("001_main_core_tables"))
-        #expect(loadedMetadata.appliedScriptIDs.contains("001_search_tables"))
-        #expect(loadedMetadata.appliedScriptIDs.contains("001_file_index_tables"))
-        #expect(loadedMetadata.appliedScriptIDs.contains("002_notification_badge_settings"))
-        #expect(mainTables.contains("migration_meta"))
+        #expect(result.paths == paths)
+        #expect(FileManager.default.fileExists(atPath: metadataURL.path) == false)
+        #expect(mainTables.contains("migration_meta") == false)
         #expect(mainTables.contains("conversation"))
         #expect(mainTables.contains("message"))
         #expect(searchTables.contains("message_search"))
@@ -374,8 +408,10 @@ extension AppleIMTests {
         }
 
         let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "fresh_badge_schema_user")
-        let rows = try await databaseActor.query("PRAGMA table_info(notification_setting);", paths: paths)
-        let columns = Set(rows.compactMap { $0.string("name") })
+        let columns = try await databaseActor.read(paths: paths) { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(notification_setting);")
+            return Set(rows.compactMap { $0["name"] as String? })
+        }
         let repository = LocalChatRepository(database: databaseActor, paths: paths)
         let setting = try await repository.notificationSetting(for: "fresh_badge_schema_user")
 
@@ -385,7 +421,7 @@ extension AppleIMTests {
         #expect(setting.badgeIncludeMuted == true)
     }
 
-    @Test func databaseBootstrapMigratesLegacyNotificationBadgeSettingColumns() async throws {
+    @Test func databaseBootstrapRecreatesLegacyNotificationBadgeSettingSchema() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -394,35 +430,37 @@ extension AppleIMTests {
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let paths = try await storageService.prepareStorage(for: "legacy_badge_schema_user")
         let databaseActor = DatabaseActor()
-        try await databaseActor.execute(
-            """
-            CREATE TABLE notification_setting (
-                user_id TEXT PRIMARY KEY,
-                is_enabled INTEGER DEFAULT 1,
-                show_preview INTEGER DEFAULT 1,
-                updated_at INTEGER
-            );
-            """,
-            paths: paths
-        )
-        try await databaseActor.execute(
-            """
-            INSERT INTO notification_setting (user_id, is_enabled, show_preview, updated_at)
-            VALUES (?, 1, 0, 10);
-            """,
-            parameters: [.text("legacy_badge_schema_user")],
-            paths: paths
-        )
+        _ = try await databaseActor.write(paths: paths) { db in
+            try db.execute(
+                sql: """
+                CREATE TABLE notification_setting (
+                    user_id TEXT PRIMARY KEY,
+                    is_enabled INTEGER DEFAULT 1,
+                    show_preview INTEGER DEFAULT 1,
+                    updated_at INTEGER
+                );
+                """
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO notification_setting (user_id, is_enabled, show_preview, updated_at)
+                VALUES (?, 1, 0, 10);
+                """,
+                arguments: ["legacy_badge_schema_user"]
+            )
+        }
 
         _ = try await databaseActor.bootstrap(paths: paths)
-        let rows = try await databaseActor.query("PRAGMA table_info(notification_setting);", paths: paths)
-        let columns = Set(rows.compactMap { $0.string("name") })
+        let columns = try await databaseActor.read(paths: paths) { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(notification_setting);")
+            return Set(rows.compactMap { $0["name"] as String? })
+        }
         let repository = LocalChatRepository(database: databaseActor, paths: paths)
         let setting = try await repository.notificationSetting(for: "legacy_badge_schema_user")
 
         #expect(columns.contains("badge_enabled"))
         #expect(columns.contains("badge_include_muted"))
-        #expect(setting.showPreview == false)
+        #expect(setting.showPreview == true)
         #expect(setting.badgeEnabled == true)
         #expect(setting.badgeIncludeMuted == true)
     }
@@ -435,11 +473,13 @@ extension AppleIMTests {
 
         let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "emoji_schema_user")
         let tableNames = try await databaseActor.tableNames(in: .main, paths: paths)
-        let indexes = try await databaseActor.query(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_emoji_%' ORDER BY name;",
-            paths: paths
-        )
-        let indexNames = indexes.compactMap { $0.string("name") }
+        let indexNames = try await databaseActor.read(paths: paths) { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_emoji_%' ORDER BY name;"
+            )
+            return rows.compactMap { $0["name"] as String? }
+        }
 
         #expect(tableNames.contains("emoji_store"))
         #expect(tableNames.contains("emoji_package"))
@@ -480,41 +520,41 @@ extension AppleIMTests {
 
         let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: "prepared_user")
 
-        try await databaseActor.execute(
-            """
-            INSERT INTO conversation (
-                conversation_id,
-                user_id,
-                biz_type,
-                target_id,
-                title,
-                last_message_digest,
-                unread_count,
-                is_pinned,
-                is_muted,
-                is_hidden,
-                sort_ts
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?);
-            """,
-            parameters: [
-                .text("prepared_conversation"),
-                .text("prepared_user"),
-                .integer(Int64(ConversationType.single.rawValue)),
-                .text("target"),
-                .text("Sondra's SQLite"),
-                .text("Prepared statement works"),
-                .integer(100)
-            ],
-            paths: paths
-        )
+        let title = try await databaseActor.write(paths: paths) { db in
+            try db.execute(
+                sql: """
+                INSERT INTO conversation (
+                    conversation_id,
+                    user_id,
+                    biz_type,
+                    target_id,
+                    title,
+                    last_message_digest,
+                    unread_count,
+                    is_pinned,
+                    is_muted,
+                    is_hidden,
+                    sort_ts
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?);
+                """,
+                arguments: [
+                    "prepared_conversation",
+                    "prepared_user",
+                    ConversationType.single.rawValue,
+                    "target",
+                    "Sondra's GRDB",
+                    "Prepared statement works",
+                    100
+                ]
+            )
+            return try String.fetchOne(
+                db,
+                sql: "SELECT title FROM conversation WHERE conversation_id = ?;",
+                arguments: ["prepared_conversation"]
+            )
+        }
 
-        let rows = try await databaseActor.query(
-            "SELECT title FROM conversation WHERE conversation_id = ?;",
-            parameters: [.text("prepared_conversation")],
-            paths: paths
-        )
-
-        #expect(rows.first?.string("title") == "Sondra's SQLite")
+        #expect(title == "Sondra's GRDB")
     }
 
     @Test func databaseIntegrityCheckReturnsOKForAllDatabases() async throws {
@@ -554,24 +594,20 @@ extension AppleIMTests {
             )
         )
         try await waitForCondition {
-            let rows = try await databaseContext.databaseActor.query(
-                "SELECT COUNT(*) AS index_count FROM message_search WHERE message_id = ?;",
-                parameters: [.text("repair_search_message")],
-                in: .search,
-                paths: databaseContext.paths
-            )
-
-            return rows.first?.int("index_count") == 1
+            let count = try await databaseContext.databaseActor.read(in: .search, paths: databaseContext.paths) { db in
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM message_search WHERE message_id = ?;",
+                    arguments: ["repair_search_message"]
+                ) ?? 0
+            }
+            return count == 1
         }
-        try await databaseContext.databaseActor.performTransaction(
-            [
-                SQLiteStatement("DELETE FROM contact_search;"),
-                SQLiteStatement("DELETE FROM conversation_search;"),
-                SQLiteStatement("DELETE FROM message_search;")
-            ],
-            in: .search,
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(in: .search, paths: databaseContext.paths) { db in
+            try db.execute(sql: "DELETE FROM contact_search;")
+            try db.execute(sql: "DELETE FROM conversation_search;")
+            try db.execute(sql: "DELETE FROM message_search;")
+        }
 
         let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
         let emptyResults = try await searchIndex.search(query: "Repairable", limit: 10)
@@ -585,17 +621,14 @@ extension AppleIMTests {
 
         let report = await repairService.run()
         let repairedResults = try await searchIndex.search(query: "Repairable", limit: 10)
-        let metadata = try await databaseContext.databaseActor.loadMigrationMetadata(paths: databaseContext.paths)
 
         #expect(emptyResults.isEmpty)
         #expect(report.steps.first { $0.step == .ftsRebuild }?.isSuccessful == true)
         #expect(report.isSuccessful)
         #expect(repairedResults.contains { $0.kind == .message && $0.messageID == "repair_search_message" })
-        #expect(metadata.ftsRebuildVersion == 1)
-        #expect(metadata.lastIntegrityCheckAt != nil)
     }
 
-    @Test func startupDataRepairSkipsWhenMaintenanceMetadataExists() async throws {
+    @Test func startupDataRepairRunsWithoutMigrationStateGate() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -611,10 +644,11 @@ extension AppleIMTests {
             searchIndex: searchIndex
         )
 
-        _ = await repairService.run()
-        let skippedReport = await repairService.runStartupIfNeeded()
+        let firstReport = await repairService.runStartupIfNeeded()
+        let secondReport = await repairService.runStartupIfNeeded()
 
-        #expect(skippedReport == nil)
+        #expect(firstReport?.isSuccessful == true)
+        #expect(secondReport?.isSuccessful == true)
     }
 
     @Test func dataRepairCreatesDownloadJobForMissingMedia() async throws {
@@ -648,18 +682,16 @@ extension AppleIMTests {
                 sortSequence: 580
             )
         )
-        try await databaseContext.databaseActor.execute(
-            """
-            UPDATE media_resource
-            SET remote_url = ?
-            WHERE media_id = ?;
-            """,
-            parameters: [
-                .text("https://mock-cdn.chatbridge.local/image/repair_missing"),
-                .text("repair_missing")
-            ],
-            paths: databaseContext.paths
-        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: """
+                UPDATE media_resource
+                SET remote_url = ?
+                WHERE media_id = ?;
+                """,
+                arguments: ["https://mock-cdn.chatbridge.local/image/repair_missing", "repair_missing"]
+            )
+        }
 
         let repairService = DataRepairService(
             userID: "repair_missing_user",

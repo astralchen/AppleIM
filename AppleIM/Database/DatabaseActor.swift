@@ -2,30 +2,29 @@
 //  DatabaseActor.swift
 //  AppleIM
 //
-//  数据库 Actor：串行化所有数据库操作，保证线程安全
-//  使用 actor 隔离确保数据库连接、事务、迁移不会并发执行
+//  数据库 Actor：通过 GRDB DatabasePool 管理数据库访问
+//  所有新旧仓储统一通过 GRDB read/write/observe 入口访问数据库
 //  满足 Swift 6 严格并发检查要求
 
+import Combine
 import Foundation
-import SQLCipher
+import GRDB
 
 /// 数据库操作错误类型
-/// 所有错误都包含路径和详细错误信息，便于调试
+/// 错误内部保留调试信息，对外描述始终脱敏。
 nonisolated enum DatabaseActorError: Error, Equatable, Sendable {
     /// 打开数据库失败
     case openFailed(path: String, message: String)
-    /// 执行 SQL 失败
-    case executeFailed(path: String, statement: String, message: String)
-    /// 预编译 SQL 失败
-    case prepareFailed(path: String, statement: String, message: String)
-    /// 绑定参数失败
-    case bindFailed(path: String, statement: String, message: String)
     /// 读取数据失败
-    case readFailed(path: String, statement: String, message: String)
+    case readFailed(path: String, message: String)
+    /// 写入数据失败
+    case writeFailed(path: String, message: String)
     /// 关闭数据库失败
     case closeFailed(path: String, message: String)
     /// 加密或明文迁移失败
     case encryptionFailed(path: String, message: String)
+    /// 当前开发期 schema 重建失败
+    case schemaRebuildFailed(path: String, message: String)
 }
 
 nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedError {
@@ -44,47 +43,25 @@ nonisolated extension DatabaseActorError: CustomStringConvertible, LocalizedErro
         switch self {
         case .openFailed:
             "Database open failed."
-        case .executeFailed:
-            "Database execute failed."
-        case .prepareFailed:
-            "Database prepare failed."
-        case .bindFailed:
-            "Database bind failed."
         case .readFailed:
             "Database read failed."
+        case .writeFailed:
+            "Database write failed."
         case .closeFailed:
             "Database close failed."
         case .encryptionFailed:
             "Database encryption failed."
+        case .schemaRebuildFailed:
+            "Database schema rebuild failed."
         }
     }
 }
 
-/// 数据库迁移元数据
-/// 记录当前数据库版本、迁移历史、维护时间等信息
-/// 存储在 migration_meta 表和 migration_meta.json 文件中
-nonisolated struct MigrationMetadata: Codable, Equatable, Sendable {
-    /// 当前 schema 版本号
-    let schemaVersion: Int
-    /// 最后执行的迁移脚本 ID
-    let lastMigrationID: String
-    /// 最近一次 VACUUM 压缩时间
-    let lastVacuumAt: Int?
-    /// 最近一次完整性检查时间
-    let lastIntegrityCheckAt: Int?
-    /// FTS 索引重建版本
-    let ftsRebuildVersion: Int
-    /// 已应用的迁移脚本 ID 列表
-    let appliedScriptIDs: [String]
-}
-
 /// 数据库初始化结果
-/// 包含账号存储路径和迁移元数据
+/// 只返回账号存储路径；项目未上架，不再维护旧 schema 迁移元数据。
 nonisolated struct DatabaseBootstrapResult: Equatable, Sendable {
     /// 账号存储路径
     let paths: AccountStoragePaths
-    /// 迁移元数据
-    let metadata: MigrationMetadata
 }
 
 /// 数据库完整性检查结果。
@@ -100,25 +77,27 @@ nonisolated struct DatabaseIntegrityCheckResult: Equatable, Sendable {
     }
 }
 
+/// 从 DatabaseActor 跨并发边界返回的观察 publisher 包装。
+///
+/// Combine 的 `AnyPublisher` 自身未声明 Sendable，但这里的 publisher 只封装 GRDB
+/// 观察流和不可变闭包，实际订阅仍在调用方持有的 Combine 生命周期内管理。
+nonisolated struct DatabaseObservationPublisher<Output: Sendable>: @unchecked Sendable {
+    let publisher: AnyPublisher<Output, Error>
+}
+
 /// 数据库 Actor
 ///
 /// 核心职责：
-/// 1. 串行化所有数据库操作，避免并发写入冲突
-/// 2. 管理数据库连接的打开和关闭
-/// 3. 执行事务，保证原子性
-/// 4. 处理数据库迁移和版本管理
-///
-/// 重要说明：
-/// - 所有公开方法都是 async，调用时会自动切换到 actor 的串行执行队列
-/// - 数据库连接在每次操作时打开，操作完成后立即关闭，避免长时间持有连接
-/// - 事务使用 BEGIN/COMMIT/ROLLBACK 手动管理，失败时自动回滚
-/// - 参数绑定使用预编译语句，防止 SQL 注入
+/// 1. 管理按账号数据库路径缓存的 GRDB DatabasePool
+/// 2. 为 SQLCipher 数据库连接应用账号密钥
+/// 3. 用当前基线 schema 初始化数据库
+/// 4. 为 Store/DAO 提供 GRDB read/write/observe 入口
 actor DatabaseActor {
     /// 按数据库标准路径缓存的 SQLCipher 密钥
     private var encryptionKeysByDatabasePath: [String: Data] = [:]
-    /// 按数据库标准路径缓存的 SQLite 连接
-    private var connectionsByDatabasePath: [String: OpaquePointer] = [:]
-    /// 按数据库标准路径统计实际打开连接次数，便于测试和诊断缓存命中。
+    /// 按数据库标准路径缓存的 GRDB 连接池
+    private var poolsByDatabasePath: [String: DatabasePool] = [:]
+    /// 按数据库标准路径统计实际打开连接池次数，便于测试和诊断缓存命中。
     private var openCountsByDatabasePath: [String: Int] = [:]
     /// 数据库日志
     private let logger = AppLogger(category: .database)
@@ -137,14 +116,14 @@ actor DatabaseActor {
     /// 用于切换账号、登出或删除本地数据前释放 SQLite 文件句柄。
     func closeConnections(for paths: AccountStoragePaths) throws {
         for database in DatabaseFileKind.allCases {
-            try closeCachedConnection(at: url(for: database, in: paths))
+            try closeCachedPool(at: url(for: database, in: paths))
         }
     }
 
     /// 关闭当前 actor 管理的全部数据库连接。
     func closeAllConnections() throws {
-        for path in connectionsByDatabasePath.keys.sorted() {
-            try closeCachedConnection(for: path)
+        for path in poolsByDatabasePath.keys.sorted() {
+            try closeCachedPool(for: path)
         }
     }
 
@@ -152,7 +131,7 @@ actor DatabaseActor {
     func cachedConnectionCount(for paths: AccountStoragePaths) -> Int {
         DatabaseFileKind.allCases.reduce(0) { count, database in
             let path = normalizedPath(for: url(for: database, in: paths))
-            return count + (connectionsByDatabasePath[path] == nil ? 0 : 1)
+            return count + (poolsByDatabasePath[path] == nil ? 0 : 1)
         }
     }
 
@@ -162,42 +141,15 @@ actor DatabaseActor {
     }
 
     /// 初始化数据库
-    /// 执行初始建表脚本，创建 migration_meta 表和元数据文件
+    /// 按当前基线 schema 初始化数据库。
     ///
-    /// - Parameter paths: 账号存储路径
-    /// - Returns: 初始化结果，包含路径和元数据
-    /// - Throws: 数据库操作失败时抛出错误
+    /// 项目尚未上架，本地旧库不做字段迁移或数据搬运；无法用当前 SQLCipher
+    /// 密钥读取，或结构不符合当前基线时，直接删除数据库及 WAL/SHM 后重建。
     func bootstrap(paths: AccountStoragePaths) async throws -> DatabaseBootstrapResult {
-        let previousMetadata = try? await loadMigrationMetadata(paths: paths)
-        try migratePlaintextDatabasesIfNeeded(in: paths)
-        try applyInitialScripts(to: paths)
-        try applyIdempotentMigrations(to: paths)
-
-        let persistedMetadata = previousMetadata ?? (try? loadMigrationMetadataFromDatabase(in: paths))
-        let metadata = MigrationMetadata(
-            schemaVersion: DatabaseSchema.currentVersion,
-            lastMigrationID: DatabaseSchema.allScripts.last?.id ?? "",
-            lastVacuumAt: persistedMetadata?.lastVacuumAt,
-            lastIntegrityCheckAt: persistedMetadata?.lastIntegrityCheckAt,
-            ftsRebuildVersion: persistedMetadata?.ftsRebuildVersion ?? 0,
-            appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
-        )
-
-        try await persistMigrationMetadata(metadata, in: paths)
-        try persist(metadata: metadata, in: paths)
-
-        return DatabaseBootstrapResult(paths: paths, metadata: metadata)
-    }
-
-    /// 加载迁移元数据
-    /// 从 migration_meta.json 文件读取元数据
-    ///
-    /// - Parameter paths: 账号存储路径
-    /// - Returns: 迁移元数据
-    /// - Throws: 文件读取或解码失败时抛出错误
-    func loadMigrationMetadata(paths: AccountStoragePaths) async throws -> MigrationMetadata {
-        let data = try Data(contentsOf: metadataURL(in: paths))
-        return try JSONDecoder().decode(MigrationMetadata.self, from: data)
+        try resetUnreadableDatabases(in: paths)
+        try applyBaselineSchema(to: paths)
+        try rebuildDatabasesThatDoNotMatchBaseline(in: paths)
+        return DatabaseBootstrapResult(paths: paths)
     }
 
     /// 对指定数据库运行 SQLite/SQLCipher 完整性检查。
@@ -205,15 +157,10 @@ actor DatabaseActor {
         in database: DatabaseFileKind,
         paths: AccountStoragePaths
     ) async throws -> DatabaseIntegrityCheckResult {
-        let rows = try await query("PRAGMA integrity_check;", in: database, paths: paths)
-        let messages = rows.compactMap { row -> String? in
-            row.string("integrity_check") ?? row.values.values.compactMap { value -> String? in
-                guard case let .text(text) = value else {
-                    return nil
-                }
-
-                return text
-            }.first
+        let messages = try await read(in: database, paths: paths) { db in
+            try Row.fetchAll(db, sql: "PRAGMA integrity_check;").compactMap { row -> String? in
+                row["integrity_check"] as String?
+            }
         }
 
         return DatabaseIntegrityCheckResult(
@@ -233,36 +180,8 @@ actor DatabaseActor {
         return results
     }
 
-    /// 更新维护元数据，用于记录后台修复任务的检查时间和 FTS 重建版本。
-    func recordMaintenanceMetadata(
-        paths: AccountStoragePaths,
-        integrityCheckedAt: Int64?,
-        ftsRebuildVersion: Int?
-    ) async throws -> MigrationMetadata {
-        let previousMetadata = (try? await loadMigrationMetadata(paths: paths))
-            ?? (try? loadMigrationMetadataFromDatabase(in: paths))
-        let metadata = MigrationMetadata(
-            schemaVersion: DatabaseSchema.currentVersion,
-            lastMigrationID: DatabaseSchema.allScripts.last?.id ?? "",
-            lastVacuumAt: previousMetadata?.lastVacuumAt,
-            lastIntegrityCheckAt: integrityCheckedAt.map(Int.init) ?? previousMetadata?.lastIntegrityCheckAt,
-            ftsRebuildVersion: ftsRebuildVersion ?? previousMetadata?.ftsRebuildVersion ?? 0,
-            appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
-        )
-
-        try await persistMigrationMetadata(metadata, in: paths)
-        try persist(metadata: metadata, in: paths)
-        return metadata
-    }
-
     /// 获取数据库中的所有表名
     /// 用于验证数据库结构或调试
-    ///
-    /// - Parameters:
-    ///   - database: 数据库类型（main/search/fileIndex）
-    ///   - paths: 账号存储路径
-    /// - Returns: 表名集合
-    /// - Throws: 查询失败时抛出错误
     func tableNames(in database: DatabaseFileKind, paths: AccountStoragePaths) async throws -> Set<String> {
         let statement = """
         SELECT name FROM sqlite_master
@@ -271,133 +190,101 @@ actor DatabaseActor {
         ORDER BY name;
         """
 
-        let rows = try await query(statement, in: database, paths: paths)
-        return Set(rows.compactMap { $0.string("name") })
+        return try await read(in: database, paths: paths) { db in
+            let rows = try Row.fetchAll(db, sql: statement)
+            return Set(rows.compactMap { $0["name"] as String? })
+        }
     }
 
     /// 返回 SQLCipher 运行时版本，用于确认当前链接的是 SQLCipher 而非系统 SQLite。
     func cipherVersion(in database: DatabaseFileKind = .main, paths: AccountStoragePaths) async throws -> String {
-        let rows = try await query("PRAGMA cipher_version;", in: database, paths: paths)
-        return rows.first?.values.values.compactMap { value -> String? in
-            guard case let .text(text) = value else {
-                return nil
-            }
-
-            return text
-        }.first ?? ""
+        try await read(in: database, paths: paths) { db in
+            let rows = try Row.fetchAll(db, sql: "PRAGMA cipher_version;")
+            return rows.first?["cipher_version"] as String? ?? ""
+        }
     }
 
-    /// 执行单条 SQL 语句（不返回结果）
-    /// 用于 INSERT、UPDATE、DELETE 等操作
+    /// 在受控的 GRDB 只读闭包中访问数据库。
     ///
-    /// - Parameters:
-    ///   - statement: SQL 语句
-    ///   - parameters: 绑定参数
-    ///   - database: 数据库类型，默认为 main
-    ///   - paths: 账号存储路径
-    /// - Throws: 执行失败时抛出错误
-    func execute(
-        _ statement: String,
-        parameters: [SQLiteValue] = [],
+    /// DAO 可以逐步使用 GRDB Record / Query Interface，但连接缓存、SQLCipher
+    /// 加密配置和错误脱敏仍由 DatabaseActor 统一负责。
+    func read<T: Sendable>(
         in database: DatabaseFileKind = .main,
-        paths: AccountStoragePaths
-    ) async throws {
-        try executePrepared(statement, parameters: parameters, at: url(for: database, in: paths))
-    }
-
-    /// 执行查询语句（返回结果集）
-    /// 用于 SELECT 操作
-    ///
-    /// - Parameters:
-    ///   - statement: SQL 查询语句
-    ///   - parameters: 绑定参数
-    ///   - database: 数据库类型，默认为 main
-    ///   - paths: 账号存储路径
-    /// - Returns: 查询结果行数组
-    /// - Throws: 查询失败时抛出错误
-    func query(
-        _ statement: String,
-        parameters: [SQLiteValue] = [],
-        in database: DatabaseFileKind = .main,
-        paths: AccountStoragePaths
-    ) async throws -> [SQLiteRow] {
-        try query(statement, parameters: parameters, at: url(for: database, in: paths))
-    }
-
-    /// 执行事务
-    /// 将多条 SQL 语句包装在一个事务中，保证原子性
-    ///
-    /// 重要说明：
-    /// - 所有语句要么全部成功，要么全部回滚
-    /// - 失败时自动执行 ROLLBACK
-    /// - 适用于消息入库 + 会话摘要更新等需要原子性的操作
-    ///
-    /// - Parameters:
-    ///   - statements: SQL 语句数组
-    ///   - database: 数据库类型，默认为 main
-    ///   - paths: 账号存储路径
-    /// - Throws: 任何语句执行失败时抛出错误并回滚
-    func performTransaction(
-        _ statements: [SQLiteStatement],
-        in database: DatabaseFileKind = .main,
-        paths: AccountStoragePaths
-    ) async throws {
+        paths: AccountStoragePaths,
+        _ work: @Sendable @escaping (Database) throws -> T
+    ) async throws -> T {
         let databaseURL = url(for: database, in: paths)
-        let handle = try connection(for: databaseURL)
-
-        try executeRaw("BEGIN TRANSACTION;", using: handle, at: databaseURL)
+        let pool = try databasePool(for: databaseURL)
 
         do {
-            for statement in statements {
-                try executePrepared(statement.sql, parameters: statement.parameters, using: handle, at: databaseURL)
+            let grdbWork: (Database) throws -> T = { db in
+                try work(db)
             }
-
-            try executeRaw("COMMIT;", using: handle, at: databaseURL)
+            return try pool.read(grdbWork)
         } catch {
-            try? executeRaw("ROLLBACK;", using: handle, at: databaseURL)
-            throw error
+            throw Self.databaseActorError(
+                from: error,
+                path: databaseURL.path,
+                fallback: .read
+            )
         }
     }
 
-    /// 应用初始化脚本
+    /// 在受控的 GRDB 写事务中访问数据库。
     ///
-    /// 在事务中执行所有初始化脚本，创建表结构
-    ///
-    /// - Parameter paths: 账号存储路径
-    /// - Throws: 脚本执行失败时抛出错误
-    private func applyInitialScripts(to paths: AccountStoragePaths) throws {
-        for script in DatabaseSchema.initialScripts {
-            let databaseURL = url(for: script.database, in: paths)
-            let handle = try connection(for: databaseURL)
+    /// 写入仍由 GRDB 串行提交；DatabasePool 主要提升并发读和观察刷新能力。
+    func write<T: Sendable>(
+        in database: DatabaseFileKind = .main,
+        paths: AccountStoragePaths,
+        _ work: @Sendable @escaping (Database) throws -> T
+    ) async throws -> T {
+        let databaseURL = url(for: database, in: paths)
+        let pool = try databasePool(for: databaseURL)
 
-            try executeRaw("BEGIN TRANSACTION;", using: handle, at: databaseURL)
-
-            do {
-                for statement in script.statements {
-                    try executeRaw(statement, using: handle, at: databaseURL)
-                }
-
-                try executeRaw("COMMIT;", using: handle, at: databaseURL)
-            } catch {
-                try? executeRaw("ROLLBACK;", using: handle, at: databaseURL)
-                throw error
+        do {
+            let grdbWork: (Database) throws -> T = { db in
+                try work(db)
             }
+            return try pool.write(grdbWork)
+        } catch {
+            throw Self.databaseActorError(
+                from: error,
+                path: databaseURL.path,
+                fallback: .write
+            )
         }
     }
 
-    /// 将已有明文 SQLite 库迁移为 SQLCipher 加密库
+    /// 创建受控的 GRDB ValueObservation publisher。
     ///
-    /// 新安装的 0 字节数据库会直接按加密连接初始化；只有”带 key 打不开、无 key 可读”的旧库才会导出迁移
-    ///
-    /// - Parameter paths: 账号存储路径
-    /// - Throws: 迁移失败时抛出错误
-    private func migratePlaintextDatabasesIfNeeded(in paths: AccountStoragePaths) throws {
+    /// 观察入口统一复用 DatabasePool、SQLCipher 密钥和错误脱敏；UI 层只能看到业务模型 publisher，
+    /// 不直接接触数据库连接。
+    func observe<T: Sendable>(
+        in database: DatabaseFileKind = .main,
+        paths: AccountStoragePaths,
+        _ fetch: @Sendable @escaping (Database) throws -> T
+    ) async throws -> DatabaseObservationPublisher<T> {
+        let databaseURL = url(for: database, in: paths)
+        let pool = try databasePool(for: databaseURL)
+        let path = databaseURL.path
+        let observation = ValueObservation.tracking(fetch)
+        let publisher = observation
+            .publisher(in: pool)
+            .mapError { error -> Error in
+                Self.databaseActorError(
+                    from: error,
+                    path: path,
+                    fallback: .read
+                )
+            }
+            .eraseToAnyPublisher()
+        return DatabaseObservationPublisher(publisher: publisher)
+    }
+
+    /// 删除无法用当前配置读取的旧库。
+    private func resetUnreadableDatabases(in paths: AccountStoragePaths) throws {
         for database in DatabaseFileKind.allCases {
             let databaseURL = url(for: database, in: paths)
-            guard encryptionKey(for: databaseURL) != nil else {
-                continue
-            }
-
             guard FileManager.default.fileExists(atPath: databaseURL.path) else {
                 continue
             }
@@ -406,320 +293,128 @@ actor DatabaseActor {
                 continue
             }
 
-            guard canReadDatabase(at: databaseURL, applyingConfiguredKey: false) else {
-                throw DatabaseActorError.encryptionFailed(
-                    path: databaseURL.path,
-                    message: "Database cannot be opened with the configured key or as plaintext."
-                )
-            }
-
-            try migratePlaintextDatabase(at: databaseURL)
+            try resetDatabaseFiles(at: databaseURL)
         }
     }
 
-    /// 迁移单个明文数据库为加密数据库
-    ///
-    /// 流程：
-    /// 1. 创建临时加密数据库
-    /// 2. 使用 sqlcipher_export 导出数据
-    /// 3. 验证加密数据库可读
-    /// 4. 备份原数据库并替换为加密版本
-    ///
-    /// - Parameter databaseURL: 数据库文件 URL
-    /// - Throws: 迁移失败时抛出错误
-    private func migratePlaintextDatabase(at databaseURL: URL) throws {
-        guard let key = encryptionKey(for: databaseURL) else {
-            return
+    /// 应用当前完整基线 schema。
+    private func applyBaselineSchema(to paths: AccountStoragePaths) throws {
+        for database in DatabaseFileKind.allCases {
+            try applyBaselineSchema(to: database, paths: paths)
         }
+    }
+
+    /// 对单个数据库应用当前完整基线 schema。
+    private func applyBaselineSchema(to database: DatabaseFileKind, paths: AccountStoragePaths) throws {
+        let databaseURL = url(for: database, in: paths)
+        let pool = try databasePool(for: databaseURL)
+        do {
+            try pool.writeWithoutTransaction { db in
+                try DatabaseSchema.applyBaseline(to: db, kind: database)
+                try db.execute(sql: "PRAGMA user_version = \(DatabaseSchema.currentVersion);")
+            }
+        } catch {
+            throw Self.databaseActorError(
+                from: error,
+                path: databaseURL.path,
+                fallback: .schemaRebuild
+            )
+        }
+    }
+
+    /// 校验当前库是否满足完整基线；不满足就重建。
+    private func rebuildDatabasesThatDoNotMatchBaseline(in paths: AccountStoragePaths) throws {
+        for database in DatabaseFileKind.allCases {
+            let databaseURL = url(for: database, in: paths)
+            let pool = try databasePool(for: databaseURL)
+            do {
+                let matchesBaseline = try pool.read { db in
+                    try Self.schemaMatchesBaseline(database, db: db)
+                }
+                guard !matchesBaseline else {
+                    continue
+                }
+            } catch {
+                throw Self.databaseActorError(
+                    from: error,
+                    path: databaseURL.path,
+                    fallback: .read
+                )
+            }
+
+            try resetDatabaseFiles(at: databaseURL)
+            try applyBaselineSchema(to: database, paths: paths)
+        }
+    }
+
+    /// 删除数据库本体和 SQLite 伴生文件。
+    private func resetDatabaseFiles(at databaseURL: URL) throws {
+        try closeCachedPool(at: databaseURL)
 
         let fileManager = FileManager.default
-        let tempURL = databaseURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("\(databaseURL.lastPathComponent).encrypted-\(UUID().uuidString)")
-        let backupURL = databaseURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("\(databaseURL.lastPathComponent).plaintext-backup-\(UUID().uuidString)")
-
-        defer {
-            try? fileManager.removeItem(at: tempURL)
-            try? fileManager.removeItem(at: backupURL)
-        }
-
-        do {
-            let handle = try openDatabase(at: databaseURL, applyingConfiguredKey: false)
-            defer {
-                try? closeDatabase(handle, at: databaseURL)
+        for url in [
+            databaseURL,
+            URL(fileURLWithPath: "\(databaseURL.path)-wal"),
+            URL(fileURLWithPath: "\(databaseURL.path)-shm")
+        ] {
+            guard fileManager.fileExists(atPath: url.path) else {
+                continue
             }
 
-            try executeRaw(
-                "ATTACH DATABASE '\(Self.escapedSQLString(tempURL.path))' AS encrypted;",
-                using: handle,
-                at: databaseURL
-            )
-            try applyEncryptionKey(key, to: handle, databaseName: "encrypted", at: databaseURL)
-            try executeRaw("SELECT sqlcipher_export('encrypted');", using: handle, at: databaseURL)
-            try executeRaw("DETACH DATABASE encrypted;", using: handle, at: databaseURL)
-        }
-
-        guard canReadDatabase(at: tempURL, applyingKey: key) else {
-            throw DatabaseActorError.encryptionFailed(
-                path: databaseURL.path,
-                message: "Encrypted database verification failed."
-            )
-        }
-
-        try fileManager.moveItem(at: databaseURL, to: backupURL)
-        do {
-            try fileManager.moveItem(at: tempURL, to: databaseURL)
-        } catch {
-            if fileManager.fileExists(atPath: backupURL.path), !fileManager.fileExists(atPath: databaseURL.path) {
-                try? fileManager.moveItem(at: backupURL, to: databaseURL)
+            do {
+                try fileManager.removeItem(at: url)
+            } catch {
+                throw DatabaseActorError.schemaRebuildFailed(
+                    path: databaseURL.path,
+                    message: String(describing: error)
+                )
             }
-
-            throw DatabaseActorError.encryptionFailed(
-                path: databaseURL.path,
-                message: "Encrypted database replacement failed."
-            )
         }
     }
 
-    /// 检查数据库是否可读
-    ///
-    /// 尝试打开数据库并执行简单查询
-    ///
-    /// - Parameters:
-    ///   - url: 数据库文件 URL
-    ///   - applyingConfiguredKey: 是否应用配置的加密密钥
-    /// - Returns: 是否可读
+    /// 检查数据库是否可读。
     private func canReadDatabase(at url: URL, applyingConfiguredKey: Bool) -> Bool {
         do {
-            let handle = try openDatabase(at: url, applyingConfiguredKey: applyingConfiguredKey)
+            let queue = try makeDatabaseQueue(
+                at: url,
+                encryptionKey: applyingConfiguredKey ? encryptionKey(for: url) : nil
+            )
             defer {
-                try? closeDatabase(handle, at: url)
+                try? queue.close()
             }
 
-            _ = try query("SELECT COUNT(*) AS table_count FROM sqlite_master;", parameters: [], using: handle, at: url)
+            _ = try queue.read { db in
+                try Row.fetchAll(db, sql: "SELECT COUNT(*) AS table_count FROM sqlite_master;")
+            }
             return true
         } catch {
             return false
         }
     }
 
-    /// 检查数据库是否可用指定密钥读取
-    ///
-    /// - Parameters:
-    ///   - url: 数据库文件 URL
-    ///   - key: 加密密钥
-    /// - Returns: 是否可读
-    private func canReadDatabase(at url: URL, applyingKey key: Data) -> Bool {
-        do {
-            let handle = try openDatabase(at: url, encryptionKey: key)
-            defer {
-                try? closeDatabase(handle, at: url)
-            }
-
-            _ = try query("SELECT COUNT(*) AS table_count FROM sqlite_master;", parameters: [], using: handle, at: url)
-            return true
-        } catch {
+    /// 校验数据库是否符合当前基线。
+    nonisolated private static func schemaMatchesBaseline(_ database: DatabaseFileKind, db: Database) throws -> Bool {
+        let userVersion = try Int.fetchOne(db, sql: "PRAGMA user_version;") ?? 0
+        guard userVersion == DatabaseSchema.currentVersion else {
             return false
         }
-    }
 
-    /// 应用可重复执行的轻量迁移
-    ///
-    /// 初始建表脚本使用 `CREATE TABLE IF NOT EXISTS`，不会自动给旧表补列。
-    /// 这里通过表结构检查补齐新增字段，保证已有账号目录再次启动后也能升级。
-    private func applyIdempotentMigrations(to paths: AccountStoragePaths) throws {
-        try addColumnIfMissing(
-            table: "notification_setting",
-            column: "badge_enabled",
-            definition: "INTEGER DEFAULT 1",
-            in: .main,
-            paths: paths
-        )
-        try addColumnIfMissing(
-            table: "notification_setting",
-            column: "badge_include_muted",
-            definition: "INTEGER DEFAULT 1",
-            in: .main,
-            paths: paths
-        )
-        try executeIdempotentStatement(
-            "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC);",
-            in: .main,
-            paths: paths
-        )
-        try executeIdempotentStatement(
-            "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);",
-            in: .main,
-            paths: paths
-        )
+        let tables = try tableNames(db: db)
+        guard DatabaseSchema.requiredTables[database, default: []].isSubset(of: tables) else {
+            return false
+        }
 
-        for script in DatabaseSchema.migrationScripts {
-            for statement in script.statements {
-                try executeIdempotentStatement(statement, in: script.database, paths: paths)
+        for (table, requiredColumns) in DatabaseSchema.requiredColumns[database, default: [:]] {
+            let columns = try columnNames(in: table, db: db)
+            guard requiredColumns.isSubset(of: columns) else {
+                return false
             }
         }
+
+        return true
     }
 
-    /// 执行幂等 SQL
-    ///
-    /// 执行可重复执行的 SQL 语句（如 CREATE INDEX IF NOT EXISTS）
-    ///
-    /// - Parameters:
-    ///   - statement: SQL 语句
-    ///   - database: 数据库类型
-    ///   - paths: 账号存储路径
-    /// - Throws: 执行失败时抛出错误
-    private func executeIdempotentStatement(
-        _ statement: String,
-        in database: DatabaseFileKind,
-        paths: AccountStoragePaths
-    ) throws {
-        let databaseURL = url(for: database, in: paths)
-        let handle = try connection(for: databaseURL)
-
-        try executeRaw(statement, using: handle, at: databaseURL)
-    }
-
-    /// 按需补充字段
-    ///
-    /// 检查表中是否存在指定字段，不存在则添加
-    ///
-    /// - Parameters:
-    ///   - table: 表名
-    ///   - column: 字段名
-    ///   - definition: 字段定义（如 "INTEGER DEFAULT 1"）
-    ///   - database: 数据库类型
-    ///   - paths: 账号存储路径
-    /// - Throws: 执行失败时抛出错误
-    private func addColumnIfMissing(
-        table: String,
-        column: String,
-        definition: String,
-        in database: DatabaseFileKind,
-        paths: AccountStoragePaths
-    ) throws {
-        let databaseURL = url(for: database, in: paths)
-        let handle = try connection(for: databaseURL)
-
-        let columns = try columnNames(in: table, using: handle, at: databaseURL)
-        guard !columns.contains(column) else {
-            return
-        }
-
-        try executeRaw("ALTER TABLE \(table) ADD COLUMN \(column) \(definition);", using: handle, at: databaseURL)
-    }
-
-    /// 读取表字段名
-    ///
-    /// 使用 PRAGMA table_info 查询表结构
-    ///
-    /// - Parameters:
-    ///   - table: 表名
-    ///   - handle: 数据库连接句柄
-    ///   - url: 数据库文件 URL
-    /// - Returns: 字段名集合
-    /// - Throws: 查询失败时抛出错误
-    private func columnNames(in table: String, using handle: OpaquePointer, at url: URL) throws -> Set<String> {
-        let rows = try query("PRAGMA table_info(\(table));", parameters: [], using: handle, at: url)
-        return Set(rows.compactMap { $0.string("name") })
-    }
-
-    /// 从数据库加载迁移元数据
-    ///
-    /// 从 migration_meta 表读取元数据
-    ///
-    /// - Parameter paths: 账号存储路径
-    /// - Returns: 迁移元数据，如果表为空则返回 nil
-    /// - Throws: 数据库操作失败时抛出错误
-    private func loadMigrationMetadataFromDatabase(in paths: AccountStoragePaths) throws -> MigrationMetadata? {
-        let databaseURL = url(for: .main, in: paths)
-        let handle = try connection(for: databaseURL)
-
-        let rows = try query(
-            """
-            SELECT
-                schema_version,
-                last_migration_id,
-                last_vacuum_at,
-                last_integrity_check_at,
-                fts_rebuild_version
-            FROM migration_meta
-            LIMIT 1;
-            """,
-            parameters: [],
-            using: handle,
-            at: databaseURL
-        )
-
-        guard let row = rows.first else {
-            return nil
-        }
-
-        return MigrationMetadata(
-            schemaVersion: row.int("schema_version") ?? DatabaseSchema.currentVersion,
-            lastMigrationID: row.string("last_migration_id") ?? DatabaseSchema.allScripts.last?.id ?? "",
-            lastVacuumAt: row.int("last_vacuum_at"),
-            lastIntegrityCheckAt: row.int("last_integrity_check_at"),
-            ftsRebuildVersion: row.int("fts_rebuild_version") ?? 0,
-            appliedScriptIDs: DatabaseSchema.allScripts.map(\.id)
-        )
-    }
-
-    /// 持久化迁移元数据到数据库
-    ///
-    /// - Parameters:
-    ///   - metadata: 迁移元数据
-    ///   - paths: 账号存储路径
-    /// - Throws: 数据库操作失败时抛出错误
-    private func persistMigrationMetadata(_ metadata: MigrationMetadata, in paths: AccountStoragePaths) async throws {
-        try await performTransaction(
-            [
-                SQLiteStatement("DELETE FROM migration_meta;"),
-                SQLiteStatement(
-                    """
-                    INSERT INTO migration_meta (
-                        schema_version,
-                        last_migration_id,
-                        last_vacuum_at,
-                        last_integrity_check_at,
-                        fts_rebuild_version
-                    ) VALUES (?, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .integer(Int64(metadata.schemaVersion)),
-                        .text(metadata.lastMigrationID),
-                        Self.optionalIntegerValue(metadata.lastVacuumAt),
-                        Self.optionalIntegerValue(metadata.lastIntegrityCheckAt),
-                        .integer(Int64(metadata.ftsRebuildVersion))
-                    ]
-                )
-            ],
-            paths: paths
-        )
-    }
-
-    /// 持久化迁移元数据到 JSON 文件
-    ///
-    /// - Parameters:
-    ///   - metadata: 迁移元数据
-    ///   - paths: 账号存储路径
-    /// - Throws: 文件写入失败时抛出错误
-    private func persist(metadata: MigrationMetadata, in paths: AccountStoragePaths) throws {
-        let data = try JSONEncoder().encode(metadata)
-        try data.write(to: metadataURL(in: paths), options: [.atomic])
-    }
-
-    /// 获取元数据文件 URL
-    ///
-    /// - Parameter paths: 账号存储路径
-    /// - Returns: migration_meta.json 文件 URL
-    private func metadataURL(in paths: AccountStoragePaths) -> URL {
-        paths.cacheDirectory.appendingPathComponent("migration_meta.json")
-    }
-
-    /// 获取数据库文件 URL
+    /// 获取数据库文件 URL。
     private func url(for database: DatabaseFileKind, in paths: AccountStoragePaths) -> URL {
         switch database {
         case .main:
@@ -731,342 +426,143 @@ actor DatabaseActor {
         }
     }
 
-    /// 获取指定数据库 URL 对应的 SQLCipher 密钥
+    /// 获取指定数据库 URL 对应的 SQLCipher 密钥。
     private func encryptionKey(for url: URL) -> Data? {
         encryptionKeysByDatabasePath[normalizedPath(for: url)]
     }
 
-    /// 标准化数据库路径，用于密钥缓存查找
+    /// 标准化数据库路径，用于密钥缓存查找。
     private func normalizedPath(for url: URL) -> String {
         url.standardizedFileURL.path
     }
 
-    /// 执行预编译语句（复用缓存连接）
-    private func executePrepared(_ statement: String, parameters: [SQLiteValue], at url: URL) throws {
-        let handle = try connection(for: url)
-        try executePrepared(statement, parameters: parameters, using: handle, at: url)
-    }
-
-    /// 执行原始 SQL 语句（不使用预编译）
-    ///
-    /// 用于执行 BEGIN、COMMIT、ROLLBACK 等事务控制语句
-    private func executeRaw(_ statement: String, using handle: OpaquePointer, at url: URL) throws {
-        var errorMessage: UnsafeMutablePointer<Int8>?
-        let status = sqlite3_exec(handle, statement, nil, nil, &errorMessage)
-
-        guard status == SQLITE_OK else {
-            let message = Self.errorMessage(from: errorMessage) ?? Self.currentErrorMessage(for: handle)
-            sqlite3_free(errorMessage)
-            throw DatabaseActorError.executeFailed(path: url.path, statement: statement, message: message)
-        }
-    }
-
-    /// 执行预编译语句（使用已有连接）
-    private func executePrepared(
-        _ statement: String,
-        parameters: [SQLiteValue],
-        using handle: OpaquePointer,
-        at url: URL
-    ) throws {
-        let preparedStatement = try prepare(statement, using: handle, at: url)
-        defer {
-            sqlite3_finalize(preparedStatement)
-        }
-
-        try bind(parameters, to: preparedStatement, statement: statement, handle: handle, at: url)
-
-        let status = sqlite3_step(preparedStatement)
-
-        guard status == SQLITE_DONE else {
-            throw DatabaseActorError.executeFailed(
-                path: url.path,
-                statement: statement,
-                message: Self.currentErrorMessage(for: handle)
-            )
-        }
-    }
-
-    /// 执行查询（复用缓存连接）
-    private func query(_ statement: String, parameters: [SQLiteValue], at url: URL) throws -> [SQLiteRow] {
-        let handle = try connection(for: url)
-        return try query(statement, parameters: parameters, using: handle, at: url)
-    }
-
-    /// 执行查询（使用已有连接）
-    private func query(
-        _ statement: String,
-        parameters: [SQLiteValue],
-        using handle: OpaquePointer,
-        at url: URL
-    ) throws -> [SQLiteRow] {
-        let preparedStatement = try prepare(statement, using: handle, at: url)
-        defer {
-            sqlite3_finalize(preparedStatement)
-        }
-
-        try bind(parameters, to: preparedStatement, statement: statement, handle: handle, at: url)
-
-        var rows: [SQLiteRow] = []
-
-        while true {
-            let stepStatus = sqlite3_step(preparedStatement)
-
-            switch stepStatus {
-            case SQLITE_ROW:
-                rows.append(row(from: preparedStatement))
-            case SQLITE_DONE:
-                return rows
-            default:
-                throw DatabaseActorError.readFailed(
-                    path: url.path,
-                    statement: statement,
-                    message: Self.currentErrorMessage(for: handle)
-                )
-            }
-        }
-    }
-
-    /// 编译 SQL 语句
-    private func prepare(_ statement: String, using handle: OpaquePointer, at url: URL) throws -> OpaquePointer {
-        var preparedStatement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(handle, statement, -1, &preparedStatement, nil)
-
-        guard prepareStatus == SQLITE_OK, let preparedStatement else {
-            throw DatabaseActorError.prepareFailed(
-                path: url.path,
-                statement: statement,
-                message: Self.currentErrorMessage(for: handle)
-            )
-        }
-
-        return preparedStatement
-    }
-
-    /// 绑定参数到预编译语句
-    private func bind(
-        _ parameters: [SQLiteValue],
-        to preparedStatement: OpaquePointer,
-        statement: String,
-        handle: OpaquePointer,
-        at url: URL
-    ) throws {
-        for (offset, parameter) in parameters.enumerated() {
-            let index = Int32(offset + 1)
-            let status: Int32
-
-            switch parameter {
-            case .null:
-                status = sqlite3_bind_null(preparedStatement, index)
-            case let .integer(value):
-                status = sqlite3_bind_int64(preparedStatement, index, value)
-            case let .real(value):
-                status = sqlite3_bind_double(preparedStatement, index, value)
-            case let .text(value):
-                status = sqlite3_bind_text(preparedStatement, index, value, -1, Self.transientDestructor)
-            case let .blob(data):
-                status = data.withUnsafeBytes { buffer in
-                    sqlite3_bind_blob(
-                        preparedStatement,
-                        index,
-                        buffer.baseAddress,
-                        Int32(data.count),
-                        Self.transientDestructor
-                    )
-                }
-            }
-
-            guard status == SQLITE_OK else {
-                throw DatabaseActorError.bindFailed(
-                    path: url.path,
-                    statement: statement,
-                    message: Self.currentErrorMessage(for: handle)
-                )
-            }
-        }
-    }
-
-    /// 从预编译语句提取当前行数据
-    private func row(from preparedStatement: OpaquePointer) -> SQLiteRow {
-        let columnCount = sqlite3_column_count(preparedStatement)
-        var values: [String: SQLiteValue] = [:]
-
-        for columnIndex in 0..<columnCount {
-            guard let columnName = sqlite3_column_name(preparedStatement, columnIndex) else {
-                continue
-            }
-
-            let name = String(cString: columnName)
-
-            switch sqlite3_column_type(preparedStatement, columnIndex) {
-            case SQLITE_INTEGER:
-                values[name] = .integer(sqlite3_column_int64(preparedStatement, columnIndex))
-            case SQLITE_FLOAT:
-                values[name] = .real(sqlite3_column_double(preparedStatement, columnIndex))
-            case SQLITE_TEXT:
-                if let text = sqlite3_column_text(preparedStatement, columnIndex) {
-                    values[name] = .text(String(cString: text))
-                } else {
-                    values[name] = .null
-                }
-            case SQLITE_BLOB:
-                let byteCount = Int(sqlite3_column_bytes(preparedStatement, columnIndex))
-
-                if let bytes = sqlite3_column_blob(preparedStatement, columnIndex) {
-                    values[name] = .blob(Data(bytes: bytes, count: byteCount))
-                } else {
-                    values[name] = .blob(Data())
-                }
-            default:
-                values[name] = .null
-            }
-        }
-
-        return SQLiteRow(values: values)
-    }
-
-    /// 打开数据库连接
-    private func openDatabase(at url: URL) throws -> OpaquePointer {
-        try openDatabase(at: url, applyingConfiguredKey: true)
-    }
-
-    /// 获取指定数据库的缓存连接；不存在时打开并缓存。
-    private func connection(for url: URL) throws -> OpaquePointer {
+    /// 获取指定数据库的缓存连接池；不存在时打开并缓存。
+    private func databasePool(for url: URL) throws -> DatabasePool {
         let path = normalizedPath(for: url)
-        if let handle = connectionsByDatabasePath[path] {
-            logger.debug("Database connection cache hit database=\(url.lastPathComponent)")
-            return handle
+        if let pool = poolsByDatabasePath[path] {
+            logger.debug("Database pool cache hit database=\(url.lastPathComponent)")
+            return pool
         }
 
         let startUptime = ProcessInfo.processInfo.systemUptime
-        let handle = try openDatabase(at: url)
-        connectionsByDatabasePath[path] = handle
-        openCountsByDatabasePath[path, default: 0] += 1
-        logger.info(
-            "Database connection opened database=\(url.lastPathComponent) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
-        )
-        return handle
-    }
-
-    /// 打开数据库连接，并按需应用已配置密钥
-    private func openDatabase(at url: URL, applyingConfiguredKey: Bool) throws -> OpaquePointer {
-        try openDatabase(at: url, encryptionKey: applyingConfiguredKey ? encryptionKey(for: url) : nil)
-    }
-
-    /// 打开数据库连接，并使用指定密钥解密
-    private func openDatabase(at url: URL, encryptionKey: Data?) throws -> OpaquePointer {
-        var handle: OpaquePointer?
-        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
-        let status = sqlite3_open_v2(url.path, &handle, flags, nil)
-
-        guard status == SQLITE_OK, let handle else {
-            let message = handle.map(Self.currentErrorMessage(for:)) ?? "Unable to allocate SQLite handle."
-
-            if let handle {
-                sqlite3_close(handle)
-            }
-
-            throw DatabaseActorError.openFailed(path: url.path, message: message)
-        }
-
-        if let encryptionKey {
-            do {
-                try applyEncryptionKey(encryptionKey, to: handle, at: url)
-            } catch {
-                sqlite3_close(handle)
-                throw error
-            }
-        }
-
-        return handle
-    }
-
-    /// 对主数据库连接应用 SQLCipher 密钥
-    private func applyEncryptionKey(_ key: Data, to handle: OpaquePointer, at url: URL) throws {
-        let status = key.withUnsafeBytes { buffer in
-            sqlite3_key(handle, buffer.baseAddress, Int32(buffer.count))
-        }
-
-        guard status == SQLITE_OK else {
-            throw DatabaseActorError.encryptionFailed(path: url.path, message: Self.currentErrorMessage(for: handle))
+        do {
+            let pool = try makeDatabasePool(at: url, encryptionKey: encryptionKey(for: url))
+            poolsByDatabasePath[path] = pool
+            openCountsByDatabasePath[path, default: 0] += 1
+            logger.info(
+                "Database pool opened database=\(url.lastPathComponent) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            )
+            return pool
+        } catch {
+            throw Self.databaseActorError(from: error, path: url.path, fallback: .open)
         }
     }
 
-    /// 对附加数据库连接应用 SQLCipher 密钥
-    private func applyEncryptionKey(_ key: Data, to handle: OpaquePointer, databaseName: String, at url: URL) throws {
-        let status = databaseName.withCString { databaseNamePointer in
-            key.withUnsafeBytes { buffer in
-                sqlite3_key_v2(handle, databaseNamePointer, buffer.baseAddress, Int32(buffer.count))
+    /// 创建 GRDB 连接池，并在每条连接准备阶段应用 SQLCipher 密钥。
+    private func makeDatabasePool(at url: URL, encryptionKey: Data?) throws -> DatabasePool {
+        var configuration = makeConfiguration(for: url, encryptionKey: encryptionKey)
+        configuration.label = "AppleIM.pool.\(url.lastPathComponent)"
+        return try DatabasePool(path: url.path, configuration: configuration)
+    }
+
+    /// 创建 GRDB 队列，并在连接准备阶段应用 SQLCipher 密钥。
+    ///
+    /// 仅用于 SQLCipher 可读性探测、明文转加密导出等需要短生命周期单连接的维护流程。
+    private func makeDatabaseQueue(at url: URL, encryptionKey: Data?) throws -> DatabaseQueue {
+        var configuration = makeConfiguration(for: url, encryptionKey: encryptionKey)
+        configuration.label = "AppleIM.queue.\(url.lastPathComponent)"
+        return try DatabaseQueue(path: url.path, configuration: configuration)
+    }
+
+    /// 生成数据库连接配置。
+    private func makeConfiguration(for url: URL, encryptionKey: Data?) -> Configuration {
+        var configuration = Configuration()
+        configuration.label = "AppleIM.\(url.lastPathComponent)"
+        configuration.foreignKeysEnabled = true
+        configuration.prepareDatabase { db in
+            if let encryptionKey {
+                try db.usePassphrase(encryptionKey)
             }
         }
-
-        guard status == SQLITE_OK else {
-            throw DatabaseActorError.encryptionFailed(path: url.path, message: Self.currentErrorMessage(for: handle))
-        }
+        return configuration
     }
 
-    /// 关闭数据库连接
-    private func closeDatabase(_ handle: OpaquePointer, at url: URL) throws {
-        let status = sqlite3_close(handle)
-
-        guard status == SQLITE_OK else {
-            throw DatabaseActorError.closeFailed(path: url.path, message: Self.currentErrorMessage(for: handle))
-        }
+    /// 关闭指定 URL 的缓存连接池。
+    private func closeCachedPool(at url: URL) throws {
+        try closeCachedPool(for: normalizedPath(for: url))
     }
 
-    /// 关闭指定 URL 的缓存连接。
-    private func closeCachedConnection(at url: URL) throws {
-        try closeCachedConnection(for: normalizedPath(for: url))
-    }
-
-    /// 关闭指定标准化路径的缓存连接。
-    private func closeCachedConnection(for path: String) throws {
-        guard let handle = connectionsByDatabasePath[path] else {
+    /// 关闭指定标准化路径的缓存连接池。
+    private func closeCachedPool(for path: String) throws {
+        guard let pool = poolsByDatabasePath[path] else {
             return
         }
 
         let startUptime = ProcessInfo.processInfo.systemUptime
         let url = URL(fileURLWithPath: path)
-        try closeDatabase(handle, at: url)
-        connectionsByDatabasePath[path] = nil
-        logger.info(
-            "Database connection closed database=\(url.lastPathComponent) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+        do {
+            try pool.close()
+            poolsByDatabasePath[path] = nil
+            logger.info(
+                "Database pool closed database=\(url.lastPathComponent) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+            )
+        } catch {
+            throw Self.databaseActorError(from: error, path: path, fallback: .close)
+        }
+    }
+
+    /// 读取表名。
+    nonisolated private static func tableNames(db: Database) throws -> Set<String> {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+            SELECT name FROM sqlite_master
+            WHERE type IN ('table', 'virtual table')
+            AND name NOT LIKE 'sqlite_%';
+            """
         )
+        return Set(rows.compactMap { $0["name"] as String? })
     }
 
-    /// 获取当前错误消息
-    nonisolated private static func currentErrorMessage(for handle: OpaquePointer) -> String {
-        guard let message = sqlite3_errmsg(handle) else {
-            return "Unknown SQLite error."
+    /// 读取表字段名。
+    nonisolated private static func columnNames(in table: String, db: Database) throws -> Set<String> {
+        let rows = try Row.fetchAll(db, sql: "PRAGMA table_info(\(table));")
+        return Set(rows.compactMap { $0["name"] as String? })
+    }
+
+    /// 将底层错误包装为现有安全错误类型。
+    nonisolated private static func databaseActorError(
+        from error: any Error,
+        path: String,
+        fallback: DatabaseActorErrorFallback
+    ) -> DatabaseActorError {
+        if let databaseActorError = error as? DatabaseActorError {
+            return databaseActorError
         }
 
-        return String(cString: message)
-    }
-
-    /// 将 sqlite3_exec 返回的错误指针转换为字符串
-    nonisolated private static func errorMessage(from pointer: UnsafeMutablePointer<Int8>?) -> String? {
-        guard let pointer else {
-            return nil
+        let message = String(describing: error)
+        switch fallback {
+        case .open:
+            return .openFailed(path: path, message: message)
+        case .read:
+            return .readFailed(path: path, message: message)
+        case .write:
+            return .writeFailed(path: path, message: message)
+        case .close:
+            return .closeFailed(path: path, message: message)
+        case .encryption:
+            return .encryptionFailed(path: path, message: message)
+        case .schemaRebuild:
+            return .schemaRebuildFailed(path: path, message: message)
         }
-
-        return String(cString: pointer)
     }
+}
 
-    /// 转义 SQL 字符串字面量中的单引号
-    nonisolated private static func escapedSQLString(_ value: String) -> String {
-        value.replacingOccurrences(of: "'", with: "''")
-    }
-
-    /// SQLite transient destructor，确保绑定文本和 blob 时复制内容
-    nonisolated private static var transientDestructor: sqlite3_destructor_type {
-        unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    }
-
-    /// 将可选整数转换为 SQLiteValue
-    nonisolated private static func optionalIntegerValue(_ value: Int?) -> SQLiteValue {
-        guard let value else {
-            return .null
-        }
-
-        return .integer(Int64(value))
-    }
+nonisolated private enum DatabaseActorErrorFallback: Sendable {
+    case open
+    case read
+    case write
+    case close
+    case encryption
+    case schemaRebuild
 }

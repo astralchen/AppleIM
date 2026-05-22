@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		88E210AB40A0492196A18717 /* SQLCipher in Frameworks */ = {isa = PBXBuildFile; productRef = 800A4EFF22ED4B2A8B255A44 /* SQLCipher */; };
-		D75781506ED1439AA0496174 /* SQLCipher in Frameworks */ = {isa = PBXBuildFile; productRef = C27866732AC64E198C44C1C2 /* SQLCipher */; };
+		88E210AB40A0492196A18717 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 800A4EFF22ED4B2A8B255A44 /* GRDB */; };
+		D75781506ED1439AA0496174 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = C27866732AC64E198C44C1C2 /* GRDB */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -70,7 +70,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				88E210AB40A0492196A18717 /* SQLCipher in Frameworks */,
+				88E210AB40A0492196A18717 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,7 +78,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D75781506ED1439AA0496174 /* SQLCipher in Frameworks */,
+				D75781506ED1439AA0496174 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -132,7 +132,7 @@
 			);
 			name = AppleIM;
 			packageProductDependencies = (
-				800A4EFF22ED4B2A8B255A44 /* SQLCipher */,
+				800A4EFF22ED4B2A8B255A44 /* GRDB */,
 			);
 			productName = AppleIM;
 			productReference = 77267F202FA0AFE000058116 /* AppleIM.app */;
@@ -156,7 +156,7 @@
 			);
 			name = AppleIMTests;
 			packageProductDependencies = (
-				C27866732AC64E198C44C1C2 /* SQLCipher */,
+				C27866732AC64E198C44C1C2 /* GRDB */,
 			);
 			productName = AppleIMTests;
 			productReference = 77267F362FA0AFE200058116 /* AppleIMTests.xctest */;
@@ -221,7 +221,7 @@
 			mainGroup = 77267F172FA0AFE000058116;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				E6C2C013F39046E4903932BD /* XCRemoteSwiftPackageReference "SQLCipher.swift" */,
+				E6C2C013F39046E4903932BD /* XCLocalSwiftPackageReference "Packages/GRDBSQLCipher" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 77267F212FA0AFE000058116 /* Products */;
@@ -667,27 +667,23 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		E6C2C013F39046E4903932BD /* XCRemoteSwiftPackageReference "SQLCipher.swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sqlcipher/SQLCipher.swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 4.10.0;
-			};
+/* Begin XCLocalSwiftPackageReference section */
+		E6C2C013F39046E4903932BD /* XCLocalSwiftPackageReference "Packages/GRDBSQLCipher" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/GRDBSQLCipher;
 		};
-/* End XCRemoteSwiftPackageReference section */
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		800A4EFF22ED4B2A8B255A44 /* SQLCipher */ = {
+		800A4EFF22ED4B2A8B255A44 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E6C2C013F39046E4903932BD /* XCRemoteSwiftPackageReference "SQLCipher.swift" */;
-			productName = SQLCipher;
+			package = E6C2C013F39046E4903932BD /* XCLocalSwiftPackageReference "Packages/GRDBSQLCipher" */;
+			productName = GRDB;
 		};
-		C27866732AC64E198C44C1C2 /* SQLCipher */ = {
+		C27866732AC64E198C44C1C2 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = E6C2C013F39046E4903932BD /* XCRemoteSwiftPackageReference "SQLCipher.swift" */;
-			productName = SQLCipher;
+			package = E6C2C013F39046E4903932BD /* XCLocalSwiftPackageReference "Packages/GRDBSQLCipher" */;
+			productName = GRDB;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

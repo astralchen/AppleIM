@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 
 @testable import AppleIM
 
@@ -477,14 +478,15 @@ extension AppleIMTests {
             paths: paths,
             localNotificationManager: notificationManager
         )
-        try await databaseActor.execute(
-            """
-            INSERT INTO notification_setting (user_id, is_enabled, show_preview, updated_at)
-            VALUES (?, 1, 0, 1);
-            """,
-            parameters: [.text("hidden_preview_user")],
-            paths: paths
-        )
+        _ = try await databaseActor.write(paths: paths) { db in
+            try db.execute(
+                sql: """
+                INSERT INTO notification_setting (user_id, is_enabled, show_preview, updated_at)
+                VALUES (?, 1, 0, 1);
+                """,
+                arguments: ["hidden_preview_user"]
+            )
+        }
         try await repository.upsertConversation(
             makeConversationRecord(id: "hidden_preview_conversation", userID: "hidden_preview_user", title: "Hidden", sortTimestamp: 1)
         )

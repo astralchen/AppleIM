@@ -126,7 +126,7 @@ Repository
   ↓
 DAO / Database Actor / File Actor
   ↓
-SQLite / WCDB / GRDB / FileManager / Keychain
+GRDB / SQLCipher / FileManager / Keychain
 ```
 
 要求：
@@ -138,8 +138,12 @@ SQLite / WCDB / GRDB / FileManager / Keychain
 - ViewModel 不直接读写媒体文件，不直接访问 Keychain。
 - Service 负责业务流程编排。
 - Repository 负责聚合数据库、网络、缓存和任务队列。
-- DAO 只处理单表或少量强相关表的读写。
+- DAO 只处理单表或少量强相关表的读写，普通 CRUD、分页、聚合和去重查询优先使用 GRDB Query Interface / Record。
 - 数据库事务必须在 Store 层统一管理。
+- 本地数据库统一通过 `DatabaseActor` 的 GRDB `read/write/observe` 入口访问；新代码不再保留旧 SQLite 兼容层。
+- 项目未上架阶段采用当前基线 schema，旧业务 schema 不做字段迁移或数据搬运；检测到不符合当前基线的本地库时直接重建数据库文件及 `-wal` / `-shm`。
+- 普通表和普通索引必须使用 GRDB schema builder；手写 SQL 仅保留在 FTS 建表、`PRAGMA`、SQLCipher 基础语句、FTS `MATCH` 和测试查询计划中。
+- `Packages/GRDBSQLCipher` 作为本地 GRDB + SQLCipher 适配包保留，工程依赖 GRDB product，不修改第三方包源码。
 
 ### 2.4 MVVM 输入输出规范
 
@@ -372,6 +376,8 @@ protocol ConversationListViewModel: AnyObject {
 要求：
 
 - Publisher 输出 UI 状态，不直接输出数据库连接、DAO 或可变实体。
+- Repository 可暴露业务模型 `AnyPublisher`；UseCase 负责转换页面 ViewState，ViewModel 只管理订阅生命周期、分页合并和渲染意图。
+- ConversationList 观察首屏会话和账号级未读角标，Chat 观察最新消息窗口；UI 和 UseCase 不直接持有 `DatabasePool`。
 - Publisher 必须在主线程或 `MainActor` 更新 UI。
 - 对用户输入使用 `debounce`、`removeDuplicates`、`flatMap` 或 `switchToLatest`，避免搜索请求乱序回填。
 - Combine 的 `sink` 必须管理生命周期，禁止形成 ViewModel 与闭包之间的强引用环。
@@ -665,6 +671,10 @@ cancelled
 
 ### 10.3 数据库
 
+- 当前数据库访问基线为 GRDB `DatabasePool` + SQLCipher。连接池、密钥配置、当前基线重建、错误脱敏和观察入口集中在 `DatabaseActor`。
+- `DatabaseSchema` 使用单一当前基线，普通表和普通索引用 GRDB schema builder 创建；项目上架前不保留旧 schema 增量迁移、补列脚本或迁移元数据持久化。
+- Store 内部 Record 按领域拆分为会话、消息、联系人、表情、媒体、通知设置、任务与同步等文件，避免单一映射文件继续膨胀。
+- 普通 CRUD 优先使用 GRDB Query Interface；消息分页、FTS MATCH、批量恢复和查询计划断言等热点路径可保留手写 SQL，但必须使用参数绑定和 GRDB 行模型。
 - 批量同步必须批量插入。
 - 高频小写入可以合并事务。
 - 搜索索引异步写入。

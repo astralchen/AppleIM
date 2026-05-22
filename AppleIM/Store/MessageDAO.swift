@@ -5,7 +5,79 @@
 //  消息数据访问对象（DAO）
 //  负责消息的查询、插入、更新操作
 
+import Combine
 import Foundation
+import GRDB
+
+/// 消息写入计划。
+///
+/// 将“内容表 + message 主表 + 可选媒体资源 + 会话摘要”收敛为一个 GRDB 写事务内的执行单元。
+nonisolated struct MessageWritePlan: Sendable {
+    let message: StoredMessage
+    let contentRecord: MessageContentWriteRecord
+    let messageRecord: MessageDatabaseRecord
+    let mediaResourceRecord: MediaResourceDatabaseRecord?
+    let conversationSummary: ConversationSummaryWriteRecord
+
+    func write(in db: Database) throws {
+        try contentRecord.insert(in: db)
+        try messageRecord.insert(db)
+        if let mediaResourceRecord {
+            try MediaResourceDatabaseRecord.upsertUploadResource(mediaResourceRecord, in: db)
+        }
+        try conversationSummary.apply(in: db)
+    }
+}
+
+/// 消息内容表写入记录。
+nonisolated enum MessageContentWriteRecord: Sendable {
+    case text(MessageTextDatabaseRecord)
+    case image(MessageImageDatabaseRecord)
+    case voice(MessageVoiceDatabaseRecord)
+    case video(MessageVideoDatabaseRecord)
+    case file(MessageFileDatabaseRecord)
+    case emoji(MessageEmojiDatabaseRecord)
+
+    func insert(in db: Database) throws {
+        switch self {
+        case let .text(record):
+            try record.insert(db)
+        case let .image(record):
+            try record.insert(db)
+        case let .voice(record):
+            try record.insert(db)
+        case let .video(record):
+            try record.insert(db)
+        case let .file(record):
+            try record.insert(db)
+        case let .emoji(record):
+            try record.insert(db)
+        }
+    }
+}
+
+/// 会话摘要写入记录。
+nonisolated struct ConversationSummaryWriteRecord: Sendable {
+    let messageID: MessageID
+    let conversationID: ConversationID
+    let userID: UserID
+    let localTime: Int64
+    let digest: String
+    let sortSequence: Int64
+
+    func apply(in db: Database) throws {
+        try ConversationDatabaseRecord
+            .filter(ConversationDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+            .filter(ConversationDatabaseRecord.Columns.userID == userID.rawValue)
+            .updateAll(db, [
+                ConversationDatabaseRecord.Columns.lastMessageID.set(to: messageID.rawValue),
+                ConversationDatabaseRecord.Columns.lastMessageTime.set(to: localTime),
+                ConversationDatabaseRecord.Columns.lastMessageDigest.set(to: digest),
+                ConversationDatabaseRecord.Columns.sortTimestamp.set(to: sortSequence),
+                ConversationDatabaseRecord.Columns.updatedAt.set(to: localTime)
+            ])
+    }
+}
 
 /// 消息 DAO
 ///
@@ -30,191 +102,207 @@ nonisolated struct MessageDAO: Sendable {
     }
 
     func listMessages(conversationID: ConversationID, limit: Int, beforeSortSeq: Int64?) async throws -> [StoredMessage] {
-        let query = Self.listMessagesQuery(beforeSortSeq: beforeSortSeq)
-        var parameters: [SQLiteValue] = [.text(conversationID.rawValue)]
-        if let beforeSortSeq {
-            parameters.append(.integer(beforeSortSeq))
+        return try await database.read(paths: paths) { db in
+            try Self.visibleMessages(conversationID: conversationID, beforeSortSeq: beforeSortSeq)
+                .limit(max(0, limit))
+                .fetchAll(db)
+                .map { try Self.storedMessage(from: $0, db: db, paths: paths) }
         }
-        parameters.append(.integer(Int64(limit)))
-
-        let rows = try await database.query(
-            query,
-            parameters: parameters,
-            paths: paths
-        )
-
-        return try rows.map { try Self.message(from: $0, paths: paths) }
     }
 
-    static func listMessagesQuery(beforeSortSeq: Int64?) -> String {
-        let cursorPredicate = beforeSortSeq == nil ? "" : "\n            AND message.sort_seq < ?"
-
-        return """
-        SELECT
-            message.message_id,
-            message.conversation_id,
-            message.sender_id,
-            message.client_msg_id,
-            message.server_msg_id,
-            message.seq,
-            message.msg_type,
-            message.direction,
-            message.send_status,
-            message.read_status,
-            message.server_time,
-            message.revoke_status,
-            message.is_deleted,
-            message_revoke.replace_text,
-            message.sort_seq,
-            message.local_time,
-            message_text.text,
-            message_image.media_id AS image_media_id,
-            message_image.width AS image_width,
-            message_image.height AS image_height,
-            message_image.size_bytes AS image_size_bytes,
-            message_image.local_path AS image_local_path,
-            message_image.thumb_path AS image_thumb_path,
-            message_image.cdn_url AS image_cdn_url,
-            message_image.md5 AS image_md5,
-            message_image.format AS image_format,
-            message_image.upload_status AS image_upload_status,
-            message_voice.media_id AS voice_media_id,
-            message_voice.duration_ms AS voice_duration_ms,
-            message_voice.size_bytes AS voice_size_bytes,
-            message_voice.local_path AS voice_local_path,
-            message_voice.cdn_url AS voice_cdn_url,
-            message_voice.format AS voice_format,
-            message_voice.upload_status AS voice_upload_status,
-            message_video.media_id AS video_media_id,
-            message_video.duration_ms AS video_duration_ms,
-            message_video.width AS video_width,
-            message_video.height AS video_height,
-            message_video.size_bytes AS video_size_bytes,
-            message_video.local_path AS video_local_path,
-            message_video.thumb_path AS video_thumb_path,
-            message_video.cdn_url AS video_cdn_url,
-            message_video.md5 AS video_md5,
-            message_video.upload_status AS video_upload_status,
-            message_file.media_id AS file_media_id,
-            message_file.file_name AS file_name,
-            message_file.file_ext AS file_ext,
-            message_file.size_bytes AS file_size_bytes,
-            message_file.local_path AS file_local_path,
-            message_file.cdn_url AS file_cdn_url,
-            message_file.md5 AS file_md5,
-            message_file.upload_status AS file_upload_status,
-            message_emoji.emoji_id AS emoji_id,
-            message_emoji.package_id AS emoji_package_id,
-            message_emoji.emoji_type AS emoji_type,
-            message_emoji.name AS emoji_name,
-            message_emoji.local_path AS emoji_local_path,
-            message_emoji.thumb_path AS emoji_thumb_path,
-            message_emoji.cdn_url AS emoji_cdn_url,
-            message_emoji.width AS emoji_width,
-            message_emoji.height AS emoji_height,
-            message_emoji.size_bytes AS emoji_size_bytes
-        FROM message INDEXED BY idx_message_conversation_visible_sort
-        LEFT JOIN message_text ON message_text.content_id = message.content_id
-        LEFT JOIN message_image ON message_image.content_id = message.content_id
-        LEFT JOIN message_voice ON message_voice.content_id = message.content_id
-        LEFT JOIN message_video ON message_video.content_id = message.content_id
-        LEFT JOIN message_file ON message_file.content_id = message.content_id
-        LEFT JOIN message_emoji ON message_emoji.content_id = message.content_id
-        LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
-        WHERE message.conversation_id = ?
-        AND message.is_deleted = 0\(cursorPredicate)
-        ORDER BY message.sort_seq DESC
-        LIMIT ?;
-        """
+    /// 观察指定会话的最新消息窗口。
+    func observeLatestMessages(conversationID: ConversationID, limit: Int) async throws -> AnyPublisher<[StoredMessage], Error> {
+        let boundedLimit = max(1, limit)
+        let observation = try await database.observe(paths: paths) { db in
+            try Self.visibleMessages(conversationID: conversationID, beforeSortSeq: nil)
+                .limit(boundedLimit)
+                .fetchAll(db)
+                .map { try Self.storedMessage(from: $0, db: db, paths: paths) }
+        }
+        return observation.publisher
     }
 
     func message(messageID: MessageID) async throws -> StoredMessage? {
-        let rows = try await database.query(
-            """
-            SELECT
-                message.message_id,
-                message.conversation_id,
-                message.sender_id,
-                message.client_msg_id,
-                message.server_msg_id,
-                message.seq,
-                message.msg_type,
-                message.direction,
-                message.send_status,
-                message.read_status,
-                message.server_time,
-                message.revoke_status,
-                message.is_deleted,
-                message_revoke.replace_text,
-                message.sort_seq,
-                message.local_time,
-                message_text.text,
-                message_image.media_id AS image_media_id,
-                message_image.width AS image_width,
-                message_image.height AS image_height,
-                message_image.size_bytes AS image_size_bytes,
-                message_image.local_path AS image_local_path,
-                message_image.thumb_path AS image_thumb_path,
-                message_image.cdn_url AS image_cdn_url,
-                message_image.md5 AS image_md5,
-                message_image.format AS image_format,
-                message_image.upload_status AS image_upload_status,
-                message_voice.media_id AS voice_media_id,
-                message_voice.duration_ms AS voice_duration_ms,
-                message_voice.size_bytes AS voice_size_bytes,
-                message_voice.local_path AS voice_local_path,
-                message_voice.cdn_url AS voice_cdn_url,
-                message_voice.format AS voice_format,
-                message_voice.upload_status AS voice_upload_status,
-                message_video.media_id AS video_media_id,
-                message_video.duration_ms AS video_duration_ms,
-                message_video.width AS video_width,
-                message_video.height AS video_height,
-                message_video.size_bytes AS video_size_bytes,
-                message_video.local_path AS video_local_path,
-                message_video.thumb_path AS video_thumb_path,
-                message_video.cdn_url AS video_cdn_url,
-                message_video.md5 AS video_md5,
-                message_video.upload_status AS video_upload_status,
-                message_file.media_id AS file_media_id,
-                message_file.file_name AS file_name,
-                message_file.file_ext AS file_ext,
-                message_file.size_bytes AS file_size_bytes,
-                message_file.local_path AS file_local_path,
-                message_file.cdn_url AS file_cdn_url,
-                message_file.md5 AS file_md5,
-                message_file.upload_status AS file_upload_status,
-                message_emoji.emoji_id AS emoji_id,
-                message_emoji.package_id AS emoji_package_id,
-                message_emoji.emoji_type AS emoji_type,
-                message_emoji.name AS emoji_name,
-                message_emoji.local_path AS emoji_local_path,
-                message_emoji.thumb_path AS emoji_thumb_path,
-                message_emoji.cdn_url AS emoji_cdn_url,
-                message_emoji.width AS emoji_width,
-                message_emoji.height AS emoji_height,
-                message_emoji.size_bytes AS emoji_size_bytes
-            FROM message
-            LEFT JOIN message_text ON message_text.content_id = message.content_id
-            LEFT JOIN message_image ON message_image.content_id = message.content_id
-            LEFT JOIN message_voice ON message_voice.content_id = message.content_id
-            LEFT JOIN message_video ON message_video.content_id = message.content_id
-            LEFT JOIN message_file ON message_file.content_id = message.content_id
-            LEFT JOIN message_emoji ON message_emoji.content_id = message.content_id
-            LEFT JOIN message_revoke ON message_revoke.message_id = message.message_id
-            WHERE message.message_id = ?
-            AND message.is_deleted = 0
-            LIMIT 1;
-            """,
-            parameters: [.text(messageID.rawValue)],
-            paths: paths
-        )
+        return try await database.read(paths: paths) { db in
+            try MessageDatabaseRecord
+                .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+                .filter(MessageDatabaseRecord.Columns.isDeleted == false)
+                .fetchOne(db)
+                .map { try Self.storedMessage(from: $0, db: db, paths: paths) }
+        }
+    }
 
-        guard let row = rows.first else {
-            return nil
+    private static func visibleMessages(
+        conversationID: ConversationID,
+        beforeSortSeq: Int64?
+    ) -> QueryInterfaceRequest<MessageDatabaseRecord> {
+        var request = MessageDatabaseRecord
+            .filter(MessageDatabaseRecord.Columns.conversationID == conversationID.rawValue)
+            .filter(MessageDatabaseRecord.Columns.isDeleted == false)
+
+        if let beforeSortSeq {
+            request = request.filter(MessageDatabaseRecord.Columns.sortSequence < beforeSortSeq)
         }
 
-        return try Self.message(from: row, paths: paths)
+        return request.order(MessageDatabaseRecord.Columns.sortSequence.desc)
+    }
+
+    private static func storedMessage(
+        from record: MessageDatabaseRecord,
+        db: Database,
+        paths: AccountStoragePaths
+    ) throws -> StoredMessage {
+        let revokeRecord = try MessageRevokeDatabaseRecord
+            .filter(MessageRevokeDatabaseRecord.Columns.messageID == record.messageID.rawValue)
+            .fetchOne(db)
+        return StoredMessage(
+            id: record.messageID,
+            conversationID: record.conversationID,
+            senderID: record.senderID,
+            delivery: StoredMessageDelivery(
+                clientMessageID: record.clientMessageID,
+                serverMessageID: record.serverMessageID,
+                sequence: record.sequence
+            ),
+            state: StoredMessageState(
+                direction: record.direction,
+                sendStatus: record.sendStatus,
+                readStatus: record.readStatus,
+                isRevoked: record.revokeStatus != 0,
+                isDeleted: record.isDeleted,
+                revokeReplacementText: revokeRecord?.replaceText,
+                revokeEditableText: record.revokeStatus != 0 ? textContent(contentID: record.contentID, db: db) : nil
+            ),
+            timeline: StoredMessageTimeline(
+                serverTime: record.serverTime,
+                sortSequence: record.sortSequence,
+                localTime: record.localTime
+            ),
+            content: try storedContent(from: record, db: db, paths: paths, revokeRecord: revokeRecord)
+        )
+    }
+
+    private static func storedContent(
+        from record: MessageDatabaseRecord,
+        db: Database,
+        paths: AccountStoragePaths,
+        revokeRecord: MessageRevokeDatabaseRecord?
+    ) throws -> StoredMessageContent {
+        switch record.messageType {
+        case .text:
+            return .text(textContent(contentID: record.contentID, db: db) ?? "")
+        case .image:
+            if let image = try MessageImageDatabaseRecord.fetchOne(db, key: record.contentID) {
+                return .image(
+                    StoredImageContent(
+                        mediaID: image.mediaID,
+                        localPath: resolvedMediaPath(image.localPath, in: paths),
+                        thumbnailPath: resolvedMediaPath(image.thumbPath, in: paths),
+                        width: image.width,
+                        height: image.height,
+                        sizeBytes: image.sizeBytes,
+                        remoteURL: image.cdnURL,
+                        md5: image.md5,
+                        format: image.format,
+                        uploadStatus: image.uploadStatus
+                    )
+                )
+            }
+        case .voice:
+            if let voice = try MessageVoiceDatabaseRecord.fetchOne(db, key: record.contentID) {
+                return .voice(
+                    StoredVoiceContent(
+                        mediaID: voice.mediaID,
+                        localPath: resolvedMediaPath(voice.localPath, in: paths),
+                        durationMilliseconds: voice.durationMilliseconds,
+                        sizeBytes: voice.sizeBytes,
+                        remoteURL: voice.cdnURL,
+                        format: voice.format,
+                        uploadStatus: voice.uploadStatus
+                    )
+                )
+            }
+        case .video:
+            if let video = try MessageVideoDatabaseRecord.fetchOne(db, key: record.contentID) {
+                return .video(
+                    StoredVideoContent(
+                        mediaID: video.mediaID,
+                        localPath: resolvedMediaPath(video.localPath, in: paths),
+                        thumbnailPath: resolvedMediaPath(video.thumbPath, in: paths),
+                        durationMilliseconds: video.durationMilliseconds,
+                        width: video.width,
+                        height: video.height,
+                        sizeBytes: video.sizeBytes,
+                        remoteURL: video.cdnURL,
+                        md5: video.md5,
+                        uploadStatus: video.uploadStatus
+                    )
+                )
+            }
+        case .file:
+            if let file = try MessageFileDatabaseRecord.fetchOne(db, key: record.contentID) {
+                return .file(
+                    StoredFileContent(
+                        mediaID: file.mediaID,
+                        localPath: resolvedMediaPath(file.localPath, in: paths),
+                        fileName: file.fileName,
+                        fileExtension: file.fileExtension,
+                        sizeBytes: file.sizeBytes,
+                        remoteURL: file.cdnURL,
+                        md5: file.md5,
+                        uploadStatus: file.uploadStatus
+                    )
+                )
+            }
+        case .emoji:
+            if let emoji = try MessageEmojiDatabaseRecord.fetchOne(db, key: record.contentID) {
+                return .emoji(
+                    StoredEmojiContent(
+                        emojiID: emoji.emojiID,
+                        packageID: emoji.packageID,
+                        emojiType: emoji.emojiType,
+                        name: emoji.name,
+                        localPath: emoji.localPath.map { resolvedMediaPath($0, in: paths) },
+                        thumbPath: emoji.thumbPath.map { resolvedMediaPath($0, in: paths) },
+                        cdnURL: emoji.cdnURL,
+                        width: emoji.width,
+                        height: emoji.height,
+                        sizeBytes: emoji.sizeBytes
+                    )
+                )
+            }
+        case .system:
+            return .system(textContent(contentID: record.contentID, db: db))
+        case .quote:
+            return .quote(textContent(contentID: record.contentID, db: db))
+        case .revoked:
+            return .revoked(revokeRecord?.replaceText)
+        }
+
+        return .text(textContent(contentID: record.contentID, db: db) ?? "")
+    }
+
+    private static func textContent(contentID: String, db: Database) -> String? {
+        try? MessageTextDatabaseRecord.fetchOne(db, key: contentID)?.text
+    }
+
+    private static func resolvedMediaPath(_ storedPath: String, in paths: AccountStoragePaths) -> String {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: storedPath) else {
+            return storedPath
+        }
+
+        let standardizedPath = URL(fileURLWithPath: storedPath).standardizedFileURL.path
+        guard let mediaRange = standardizedPath.range(of: "/media/") else {
+            return storedPath
+        }
+
+        let relativeMediaPath = String(standardizedPath[mediaRange.upperBound...])
+        let currentPath = paths.mediaDirectory.appendingPathComponent(relativeMediaPath).path
+        guard fileManager.fileExists(atPath: currentPath) else {
+            return storedPath
+        }
+        return currentPath
     }
 
     /// 更新消息发送状态
@@ -225,50 +313,16 @@ nonisolated struct MessageDAO: Sendable {
     ///   - ack: 服务端确认信息（可选）
     /// - Throws: 数据库操作失败时抛出错误
     func updateSendStatus(messageID: MessageID, status: MessageSendStatus, ack: MessageSendAck?) async throws {
-        try await database.execute(
-            """
-            UPDATE message
-            SET
-                send_status = ?,
-                server_msg_id = ?,
-                seq = ?,
-                server_time = ?
-            WHERE message_id = ?;
-            """,
-            parameters: [
-                .integer(Int64(status.rawValue)),
-                .optionalText(ack?.serverMessageID),
-                .optionalInteger(ack?.sequence),
-                .optionalInteger(ack?.serverTime),
-                .text(messageID.rawValue)
-            ],
-            paths: paths
-        )
-    }
-
-    /// 生成会话内 incoming 消息已读 SQL 语句
-    ///
-    /// 进入会话后，消息级未读状态需要和会话未读数一起清理，避免语音未读点等状态残留。
-    ///
-    /// - Parameter conversationID: 会话 ID
-    /// - Returns: SQL 语句
-    static func markIncomingMessagesReadStatement(conversationID: ConversationID) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE message
-            SET read_status = ?
-            WHERE conversation_id = ?
-            AND direction = ?
-            AND read_status = ?
-            AND is_deleted = 0;
-            """,
-            parameters: [
-                .integer(Int64(MessageReadStatus.read.rawValue)),
-                .text(conversationID.rawValue),
-                .integer(Int64(MessageDirection.incoming.rawValue)),
-                .integer(Int64(MessageReadStatus.unread.rawValue))
-            ]
-        )
+        _ = try await database.write(paths: paths) { db in
+            try MessageDatabaseRecord
+                .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
+                .updateAll(db, [
+                    MessageDatabaseRecord.Columns.sendStatus.set(to: status.rawValue),
+                    MessageDatabaseRecord.Columns.serverMessageID.set(to: ack?.serverMessageID),
+                    MessageDatabaseRecord.Columns.sequence.set(to: ack?.sequence),
+                    MessageDatabaseRecord.Columns.serverTime.set(to: ack?.serverTime)
+                ])
+        }
     }
 
     /// 准备文本消息重发
@@ -330,125 +384,72 @@ nonisolated struct MessageDAO: Sendable {
         )
     }
 
-    private static func outgoingMessageInsertStatement<Input: OutgoingMessageEnvelopeProviding>(
-        message: StoredMessage,
-        input: Input,
-        context: OutgoingMessageInsertContext,
-        messageType: MessageType,
-        contentTable: String
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO message (
-                message_id,
-                conversation_id,
-                sender_id,
-                client_msg_id,
-                msg_type,
-                direction,
-                send_status,
-                delivery_status,
-                read_status,
-                revoke_status,
-                is_deleted,
-                content_table,
-                content_id,
-                sort_seq,
-                local_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, ?, ?, ?, ?);
-            """,
-            parameters: [
-                .text(message.id.rawValue),
-                .text(input.conversationID.rawValue),
-                .text(input.senderID.rawValue),
-                .text(context.clientMessageID),
-                .integer(Int64(messageType.rawValue)),
-                .integer(Int64(MessageDirection.outgoing.rawValue)),
-                .integer(Int64(MessageSendStatus.sending.rawValue)),
-                .text(contentTable),
-                .text(context.contentID),
-                .integer(context.sortSequence),
-                .integer(input.localTime)
-            ]
-        )
-    }
-
-    /// 生成插入发出文本消息的 SQL 语句
-    ///
-    /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
-    ///
-    /// - Parameter input: 发出的文本消息输入参数
-    /// - Returns: 消息对象和 SQL 语句数组
-    static func insertOutgoingTextStatements(_ input: OutgoingTextMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
+    static func makeOutgoingTextWritePlan(_ input: OutgoingTextMessageInput) -> MessageWritePlan {
         let context = outgoingInsertContext(input: input, contentPrefix: "text")
         let mentionsJSON = Self.mentionsJSON(for: input.mentionedUserIDs)
         let message = outgoingStoredMessage(input: input, context: context, content: .text(input.text))
-
-        return (
-            message,
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_text (
-                        content_id,
-                        text,
-                        mentions_json,
-                        at_all,
-                        rich_text_json
-                    ) VALUES (?, ?, ?, ?, NULL);
-                    """,
-                    parameters: [
-                        .text(context.contentID),
-                        .text(input.text),
-                        .optionalText(mentionsJSON),
-                        .integer(input.mentionsAll ? 1 : 0)
-                    ]
-                ),
-                outgoingMessageInsertStatement(
-                    message: message,
-                    input: input,
-                    context: context,
-                    messageType: .text,
-                    contentTable: "message_text"
-                ),
-                conversationUpdateStatement(
-                    messageID: message.id,
-                    input: input,
-                    digest: input.text,
-                    sortSequence: context.sortSequence
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .text(
+                MessageTextDatabaseRecord(
+                    contentID: context.contentID,
+                    text: input.text,
+                    mentionsJSON: mentionsJSON,
+                    atAll: input.mentionsAll,
+                    richTextJSON: nil
                 )
-            ]
+            ),
+            messageRecord: outgoingMessageRecord(message: message, input: input, context: context, messageType: .text, contentTable: "message_text"),
+            mediaResourceRecord: nil,
+            conversationSummary: conversationSummary(messageID: message.id, input: input, digest: input.text, sortSequence: context.sortSequence)
         )
     }
 
-    /// 生成首次演示文本消息的插入 SQL。
-    static func insertInitialTextStatements(_ input: InitialTextMessageInput) -> [SQLiteStatement] {
+    static func makeInitialTextWritePlan(_ input: InitialTextMessageInput) -> MessageWritePlan {
         let contentID = "seed_text_\(input.messageID.rawValue)"
-
-        return [
-            SQLiteStatement(
-                """
-                INSERT INTO message_text (
-                    content_id,
-                    text,
-                    mentions_json,
-                    at_all,
-                    rich_text_json
-                ) VALUES (?, ?, NULL, 0, NULL);
-                """,
-                parameters: [
-                    .text(contentID),
-                    .text(input.text)
-                ]
+        let message = StoredMessage(
+            id: input.messageID,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            delivery: StoredMessageDelivery(
+                clientMessageID: input.clientMessageID,
+                serverMessageID: input.serverMessageID,
+                sequence: input.sequence
             ),
-            insertMessageRecordStatement(
+            state: StoredMessageState(
+                direction: input.direction,
+                sendStatus: .success,
+                readStatus: input.readStatus,
+                isRevoked: false,
+                isDeleted: false,
+                revokeReplacementText: nil
+            ),
+            timeline: StoredMessageTimeline(
+                serverTime: input.localTime,
+                sortSequence: input.sortSequence,
+                localTime: input.localTime
+            ),
+            content: .text(input.text)
+        )
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .text(
+                MessageTextDatabaseRecord(
+                    contentID: contentID,
+                    text: input.text,
+                    mentionsJSON: nil,
+                    atAll: false,
+                    richTextJSON: nil
+                )
+            ),
+            messageRecord: MessageDatabaseRecord(
                 messageID: input.messageID,
                 conversationID: input.conversationID,
                 senderID: input.senderID,
                 clientMessageID: input.clientMessageID,
                 serverMessageID: input.serverMessageID,
                 sequence: input.sequence,
-                type: .text,
+                messageType: .text,
                 direction: input.direction,
                 sendStatus: .success,
                 deliveryStatus: 0,
@@ -461,94 +462,257 @@ nonisolated struct MessageDAO: Sendable {
                 serverTime: input.localTime,
                 localTime: input.localTime
             ),
-            SQLiteStatement(
-                """
-                UPDATE conversation
-                SET
-                    last_message_id = ?,
-                    last_message_time = ?,
-                    last_message_digest = ?,
-                    sort_ts = ?,
-                    updated_at = ?
-                WHERE conversation_id = ? AND user_id = ?;
-                """,
-                parameters: [
-                    .text(input.messageID.rawValue),
-                    .integer(input.localTime),
-                    .text(input.text),
-                    .integer(input.sortSequence),
-                    .integer(input.localTime),
-                    .text(input.conversationID.rawValue),
-                    .text(input.userID.rawValue)
-                ]
+            mediaResourceRecord: nil,
+            conversationSummary: ConversationSummaryWriteRecord(
+                messageID: input.messageID,
+                conversationID: input.conversationID,
+                userID: input.userID,
+                localTime: input.localTime,
+                digest: input.text,
+                sortSequence: input.sortSequence
             )
-        ]
+        )
     }
 
-    /// 生成完整消息记录插入 SQL，供 seed 和同步入库复用字段列表。
-    static func insertMessageRecordStatement(
+    static func makeOutgoingImageWritePlan(_ input: OutgoingImageMessageInput) -> MessageWritePlan {
+        let context = outgoingInsertContext(input: input, contentPrefix: "image")
+        let message = outgoingStoredMessage(input: input, context: context, content: .image(input.image))
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .image(
+                MessageImageDatabaseRecord(
+                    contentID: context.contentID,
+                    mediaID: input.image.mediaID,
+                    width: input.image.width,
+                    height: input.image.height,
+                    sizeBytes: input.image.sizeBytes,
+                    localPath: input.image.localPath,
+                    thumbPath: input.image.thumbnailPath,
+                    cdnURL: nil,
+                    md5: input.image.md5,
+                    format: input.image.format,
+                    uploadStatus: .pending,
+                    downloadStatus: 0
+                )
+            ),
+            messageRecord: outgoingMessageRecord(message: message, input: input, context: context, messageType: .image, contentTable: "message_image"),
+            mediaResourceRecord: mediaResourceRecord(
+                mediaID: input.image.mediaID,
+                userID: input.userID,
+                ownerMessageID: message.id,
+                localPath: input.image.localPath,
+                thumbPath: input.image.thumbnailPath,
+                sizeBytes: input.image.sizeBytes,
+                md5: input.image.md5,
+                uploadStatus: .pending,
+                timestamp: input.localTime
+            ),
+            conversationSummary: conversationSummary(messageID: message.id, input: input, digest: "[图片]", sortSequence: context.sortSequence)
+        )
+    }
+
+    static func makeOutgoingVoiceWritePlan(_ input: OutgoingVoiceMessageInput) -> MessageWritePlan {
+        let context = outgoingInsertContext(input: input, contentPrefix: "voice")
+        let message = outgoingStoredMessage(input: input, context: context, content: .voice(input.voice))
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .voice(
+                MessageVoiceDatabaseRecord(
+                    contentID: context.contentID,
+                    mediaID: input.voice.mediaID,
+                    durationMilliseconds: input.voice.durationMilliseconds,
+                    sizeBytes: input.voice.sizeBytes,
+                    localPath: input.voice.localPath,
+                    cdnURL: nil,
+                    format: input.voice.format,
+                    transcript: nil,
+                    uploadStatus: .pending,
+                    downloadStatus: 0
+                )
+            ),
+            messageRecord: outgoingMessageRecord(message: message, input: input, context: context, messageType: .voice, contentTable: "message_voice"),
+            mediaResourceRecord: mediaResourceRecord(
+                mediaID: input.voice.mediaID,
+                userID: input.userID,
+                ownerMessageID: message.id,
+                localPath: input.voice.localPath,
+                thumbPath: nil,
+                sizeBytes: input.voice.sizeBytes,
+                md5: nil,
+                uploadStatus: .pending,
+                timestamp: input.localTime
+            ),
+            conversationSummary: conversationSummary(messageID: message.id, input: input, digest: "[语音]", sortSequence: context.sortSequence)
+        )
+    }
+
+    static func makeOutgoingVideoWritePlan(_ input: OutgoingVideoMessageInput) -> MessageWritePlan {
+        let context = outgoingInsertContext(input: input, contentPrefix: "video")
+        let message = outgoingStoredMessage(input: input, context: context, content: .video(input.video))
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .video(
+                MessageVideoDatabaseRecord(
+                    contentID: context.contentID,
+                    mediaID: input.video.mediaID,
+                    durationMilliseconds: input.video.durationMilliseconds,
+                    width: input.video.width,
+                    height: input.video.height,
+                    sizeBytes: input.video.sizeBytes,
+                    localPath: input.video.localPath,
+                    thumbPath: input.video.thumbnailPath,
+                    cdnURL: nil,
+                    md5: input.video.md5,
+                    uploadStatus: .pending,
+                    downloadStatus: 0
+                )
+            ),
+            messageRecord: outgoingMessageRecord(message: message, input: input, context: context, messageType: .video, contentTable: "message_video"),
+            mediaResourceRecord: mediaResourceRecord(
+                mediaID: input.video.mediaID,
+                userID: input.userID,
+                ownerMessageID: message.id,
+                localPath: input.video.localPath,
+                thumbPath: input.video.thumbnailPath,
+                sizeBytes: input.video.sizeBytes,
+                md5: input.video.md5,
+                uploadStatus: .pending,
+                timestamp: input.localTime
+            ),
+            conversationSummary: conversationSummary(messageID: message.id, input: input, digest: "[视频]", sortSequence: context.sortSequence)
+        )
+    }
+
+    static func makeOutgoingFileWritePlan(_ input: OutgoingFileMessageInput) -> MessageWritePlan {
+        let context = outgoingInsertContext(input: input, contentPrefix: "file")
+        let message = outgoingStoredMessage(input: input, context: context, content: .file(input.file))
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .file(
+                MessageFileDatabaseRecord(
+                    contentID: context.contentID,
+                    mediaID: input.file.mediaID,
+                    fileName: input.file.fileName,
+                    fileExtension: input.file.fileExtension,
+                    sizeBytes: input.file.sizeBytes,
+                    localPath: input.file.localPath,
+                    cdnURL: nil,
+                    md5: input.file.md5,
+                    uploadStatus: .pending,
+                    downloadStatus: 0
+                )
+            ),
+            messageRecord: outgoingMessageRecord(message: message, input: input, context: context, messageType: .file, contentTable: "message_file"),
+            mediaResourceRecord: mediaResourceRecord(
+                mediaID: input.file.mediaID,
+                userID: input.userID,
+                ownerMessageID: message.id,
+                localPath: input.file.localPath,
+                thumbPath: nil,
+                sizeBytes: input.file.sizeBytes,
+                md5: input.file.md5,
+                uploadStatus: .pending,
+                timestamp: input.localTime
+            ),
+            conversationSummary: conversationSummary(messageID: message.id, input: input, digest: "[文件] \(input.file.fileName)", sortSequence: context.sortSequence)
+        )
+    }
+
+    static func makeOutgoingEmojiWritePlan(_ input: OutgoingEmojiMessageInput) -> MessageWritePlan {
+        let context = outgoingInsertContext(input: input, contentPrefix: "emoji")
+        let message = outgoingStoredMessage(input: input, context: context, content: .emoji(input.emoji))
+        return MessageWritePlan(
+            message: message,
+            contentRecord: .emoji(
+                MessageEmojiDatabaseRecord(
+                    contentID: context.contentID,
+                    emojiID: input.emoji.emojiID,
+                    packageID: input.emoji.packageID,
+                    emojiType: input.emoji.emojiType,
+                    name: input.emoji.name,
+                    localPath: input.emoji.localPath,
+                    thumbPath: input.emoji.thumbPath,
+                    cdnURL: input.emoji.cdnURL,
+                    width: input.emoji.width,
+                    height: input.emoji.height,
+                    sizeBytes: input.emoji.sizeBytes
+                )
+            ),
+            messageRecord: outgoingMessageRecord(message: message, input: input, context: context, messageType: .emoji, contentTable: "message_emoji"),
+            mediaResourceRecord: nil,
+            conversationSummary: conversationSummary(messageID: message.id, input: input, digest: "[表情]", sortSequence: context.sortSequence)
+        )
+    }
+
+    private static func outgoingMessageRecord<Input: OutgoingMessageEnvelopeProviding>(
+        message: StoredMessage,
+        input: Input,
+        context: OutgoingMessageInsertContext,
+        messageType: MessageType,
+        contentTable: String
+    ) -> MessageDatabaseRecord {
+        MessageDatabaseRecord(
+            messageID: message.id,
+            conversationID: input.conversationID,
+            senderID: input.senderID,
+            clientMessageID: context.clientMessageID,
+            serverMessageID: nil,
+            sequence: nil,
+            messageType: messageType,
+            direction: .outgoing,
+            sendStatus: .sending,
+            deliveryStatus: 0,
+            readStatus: .read,
+            revokeStatus: 0,
+            isDeleted: false,
+            contentTable: contentTable,
+            contentID: context.contentID,
+            sortSequence: context.sortSequence,
+            serverTime: nil,
+            localTime: input.localTime
+        )
+    }
+
+    private static func mediaResourceRecord(
+        mediaID: String,
+        userID: UserID,
+        ownerMessageID: MessageID,
+        localPath: String,
+        thumbPath: String?,
+        sizeBytes: Int64,
+        md5: String?,
+        uploadStatus: MediaUploadStatus,
+        timestamp: Int64
+    ) -> MediaResourceDatabaseRecord {
+        MediaResourceDatabaseRecord(
+            mediaID: mediaID,
+            userID: userID,
+            ownerMessageID: ownerMessageID,
+            localPath: localPath,
+            remoteURL: nil,
+            thumbPath: thumbPath,
+            sizeBytes: sizeBytes,
+            md5: md5,
+            uploadStatus: uploadStatus,
+            downloadStatus: 0,
+            updatedAt: timestamp,
+            createdAt: timestamp
+        )
+    }
+
+    private static func conversationSummary<Input: OutgoingMessageEnvelopeProviding>(
         messageID: MessageID,
-        conversationID: ConversationID,
-        senderID: UserID,
-        clientMessageID: String?,
-        serverMessageID: String?,
-        sequence: Int64?,
-        type: MessageType,
-        direction: MessageDirection,
-        sendStatus: MessageSendStatus,
-        deliveryStatus: Int64,
-        readStatus: MessageReadStatus,
-        revokeStatus: Int64,
-        isDeleted: Bool,
-        contentTable: String,
-        contentID: String,
-        sortSequence: Int64,
-        serverTime: Int64?,
-        localTime: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO message (
-                message_id,
-                conversation_id,
-                sender_id,
-                client_msg_id,
-                server_msg_id,
-                seq,
-                msg_type,
-                direction,
-                send_status,
-                delivery_status,
-                read_status,
-                revoke_status,
-                is_deleted,
-                content_table,
-                content_id,
-                sort_seq,
-                server_time,
-                local_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            parameters: [
-                .text(messageID.rawValue),
-                .text(conversationID.rawValue),
-                .text(senderID.rawValue),
-                .optionalText(clientMessageID),
-                .optionalText(serverMessageID),
-                .optionalInteger(sequence),
-                .integer(Int64(type.rawValue)),
-                .integer(Int64(direction.rawValue)),
-                .integer(Int64(sendStatus.rawValue)),
-                .integer(deliveryStatus),
-                .integer(Int64(readStatus.rawValue)),
-                .integer(revokeStatus),
-                .integer(isDeleted ? 1 : 0),
-                .text(contentTable),
-                .text(contentID),
-                .integer(sortSequence),
-                .optionalInteger(serverTime),
-                .integer(localTime)
-            ]
+        input: Input,
+        digest: String,
+        sortSequence: Int64
+    ) -> ConversationSummaryWriteRecord {
+        ConversationSummaryWriteRecord(
+            messageID: messageID,
+            conversationID: input.conversationID,
+            userID: input.userID,
+            localTime: input.localTime,
+            digest: digest,
+            sortSequence: sortSequence
         )
     }
 
@@ -563,669 +727,4 @@ nonisolated struct MessageDAO: Sendable {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private static func mediaResourceUpsertStatement(
-        mediaID: String,
-        userID: UserID,
-        ownerMessageID: MessageID,
-        localPath: String,
-        thumbPath: String?,
-        sizeBytes: Int64,
-        md5: String?,
-        uploadStatus: MediaUploadStatus,
-        timestamp: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            INSERT INTO media_resource (
-                media_id,
-                user_id,
-                owner_message_id,
-                local_path,
-                remote_url,
-                thumb_path,
-                size_bytes,
-                md5,
-                upload_status,
-                download_status,
-                updated_at,
-                created_at
-            ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)
-            ON CONFLICT(media_id) DO UPDATE SET
-                owner_message_id = excluded.owner_message_id,
-                local_path = excluded.local_path,
-                thumb_path = COALESCE(excluded.thumb_path, media_resource.thumb_path),
-                size_bytes = excluded.size_bytes,
-                md5 = COALESCE(excluded.md5, media_resource.md5),
-                upload_status = excluded.upload_status,
-                updated_at = excluded.updated_at;
-            """,
-            parameters: [
-                .text(mediaID),
-                .text(userID.rawValue),
-                .text(ownerMessageID.rawValue),
-                .text(localPath),
-                .optionalText(thumbPath),
-                .integer(sizeBytes),
-                .optionalText(md5),
-                .integer(Int64(uploadStatus.rawValue)),
-                .integer(timestamp),
-                .integer(timestamp)
-            ]
-        )
-    }
-
-    /// 生成插入发出图片消息的 SQL 语句
-    ///
-    /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
-    ///
-    /// - Parameter input: 发出的图片消息输入参数
-    /// - Returns: 消息对象和 SQL 语句数组
-    static func insertOutgoingImageStatements(_ input: OutgoingImageMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let context = outgoingInsertContext(input: input, contentPrefix: "image")
-        let message = outgoingStoredMessage(input: input, context: context, content: .image(input.image))
-
-        return (
-            message,
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_image (
-                        content_id,
-                        media_id,
-                        width,
-                        height,
-                        size_bytes,
-                        local_path,
-                        thumb_path,
-                        cdn_url,
-                        md5,
-                        format,
-                        upload_status,
-                        download_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0);
-                    """,
-                    parameters: [
-                        .text(context.contentID),
-                        .text(input.image.mediaID),
-                        .integer(Int64(input.image.width)),
-                        .integer(Int64(input.image.height)),
-                        .integer(input.image.sizeBytes),
-                        .text(input.image.localPath),
-                        .text(input.image.thumbnailPath),
-                        .optionalText(input.image.md5),
-                        .text(input.image.format),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue))
-                    ]
-                ),
-                outgoingMessageInsertStatement(
-                    message: message,
-                    input: input,
-                    context: context,
-                    messageType: .image,
-                    contentTable: "message_image"
-                ),
-                mediaResourceUpsertStatement(
-                    mediaID: input.image.mediaID,
-                    userID: input.userID,
-                    ownerMessageID: message.id,
-                    localPath: input.image.localPath,
-                    thumbPath: input.image.thumbnailPath,
-                    sizeBytes: input.image.sizeBytes,
-                    md5: input.image.md5,
-                    uploadStatus: .pending,
-                    timestamp: input.localTime
-                ),
-                conversationUpdateStatement(
-                    messageID: message.id,
-                    input: input,
-                    digest: "[图片]",
-                    sortSequence: context.sortSequence
-                )
-            ]
-        )
-    }
-
-    /// 生成插入发出语音消息的 SQL 语句
-    ///
-    /// 返回消息对象和 SQL 语句数组，由调用方在事务中执行
-    ///
-    /// - Parameter input: 发出的语音消息输入参数
-    /// - Returns: 消息对象和 SQL 语句数组
-    static func insertOutgoingVoiceStatements(_ input: OutgoingVoiceMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let context = outgoingInsertContext(input: input, contentPrefix: "voice")
-        let message = outgoingStoredMessage(input: input, context: context, content: .voice(input.voice))
-
-        return (
-            message,
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_voice (
-                        content_id,
-                        media_id,
-                        duration_ms,
-                        size_bytes,
-                        local_path,
-                        cdn_url,
-                        format,
-                        transcript,
-                        upload_status,
-                        download_status
-                    ) VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, 0);
-                    """,
-                    parameters: [
-                        .text(context.contentID),
-                        .text(input.voice.mediaID),
-                        .integer(Int64(input.voice.durationMilliseconds)),
-                        .integer(input.voice.sizeBytes),
-                        .text(input.voice.localPath),
-                        .text(input.voice.format),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue))
-                    ]
-                ),
-                outgoingMessageInsertStatement(
-                    message: message,
-                    input: input,
-                    context: context,
-                    messageType: .voice,
-                    contentTable: "message_voice"
-                ),
-                mediaResourceUpsertStatement(
-                    mediaID: input.voice.mediaID,
-                    userID: input.userID,
-                    ownerMessageID: message.id,
-                    localPath: input.voice.localPath,
-                    thumbPath: nil,
-                    sizeBytes: input.voice.sizeBytes,
-                    md5: nil,
-                    uploadStatus: .pending,
-                    timestamp: input.localTime
-                ),
-                conversationUpdateStatement(
-                    messageID: message.id,
-                    input: input,
-                    digest: "[语音]",
-                    sortSequence: context.sortSequence
-                )
-            ]
-        )
-    }
-
-    static func insertOutgoingVideoStatements(_ input: OutgoingVideoMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let context = outgoingInsertContext(input: input, contentPrefix: "video")
-        let message = outgoingStoredMessage(input: input, context: context, content: .video(input.video))
-
-        return (
-            message,
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_video (
-                        content_id,
-                        media_id,
-                        duration_ms,
-                        width,
-                        height,
-                        size_bytes,
-                        local_path,
-                        thumb_path,
-                        cdn_url,
-                        md5,
-                        upload_status,
-                        download_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0);
-                    """,
-                    parameters: [
-                        .text(context.contentID),
-                        .text(input.video.mediaID),
-                        .integer(Int64(input.video.durationMilliseconds)),
-                        .integer(Int64(input.video.width)),
-                        .integer(Int64(input.video.height)),
-                        .integer(input.video.sizeBytes),
-                        .text(input.video.localPath),
-                        .text(input.video.thumbnailPath),
-                        .optionalText(input.video.md5),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue))
-                    ]
-                ),
-                outgoingMessageInsertStatement(
-                    message: message,
-                    input: input,
-                    context: context,
-                    messageType: .video,
-                    contentTable: "message_video"
-                ),
-                mediaResourceUpsertStatement(
-                    mediaID: input.video.mediaID,
-                    userID: input.userID,
-                    ownerMessageID: message.id,
-                    localPath: input.video.localPath,
-                    thumbPath: input.video.thumbnailPath,
-                    sizeBytes: input.video.sizeBytes,
-                    md5: input.video.md5,
-                    uploadStatus: .pending,
-                    timestamp: input.localTime
-                ),
-                conversationUpdateStatement(
-                    messageID: message.id,
-                    input: input,
-                    digest: "[视频]",
-                    sortSequence: context.sortSequence
-                )
-            ]
-        )
-    }
-
-    static func insertOutgoingFileStatements(_ input: OutgoingFileMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let context = outgoingInsertContext(input: input, contentPrefix: "file")
-        let message = outgoingStoredMessage(input: input, context: context, content: .file(input.file))
-
-        return (
-            message,
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_file (
-                        content_id,
-                        media_id,
-                        file_name,
-                        file_ext,
-                        size_bytes,
-                        local_path,
-                        cdn_url,
-                        md5,
-                        upload_status,
-                        download_status
-                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, 0);
-                    """,
-                    parameters: [
-                        .text(context.contentID),
-                        .text(input.file.mediaID),
-                        .text(input.file.fileName),
-                        .optionalText(input.file.fileExtension),
-                        .integer(input.file.sizeBytes),
-                        .text(input.file.localPath),
-                        .optionalText(input.file.md5),
-                        .integer(Int64(MediaUploadStatus.pending.rawValue))
-                    ]
-                ),
-                outgoingMessageInsertStatement(
-                    message: message,
-                    input: input,
-                    context: context,
-                    messageType: .file,
-                    contentTable: "message_file"
-                ),
-                mediaResourceUpsertStatement(
-                    mediaID: input.file.mediaID,
-                    userID: input.userID,
-                    ownerMessageID: message.id,
-                    localPath: input.file.localPath,
-                    thumbPath: nil,
-                    sizeBytes: input.file.sizeBytes,
-                    md5: input.file.md5,
-                    uploadStatus: .pending,
-                    timestamp: input.localTime
-                ),
-                conversationUpdateStatement(
-                    messageID: message.id,
-                    input: input,
-                    digest: "[文件] \(input.file.fileName)",
-                    sortSequence: context.sortSequence
-                )
-            ]
-        )
-    }
-
-    static func insertOutgoingEmojiStatements(_ input: OutgoingEmojiMessageInput) -> (message: StoredMessage, statements: [SQLiteStatement]) {
-        let context = outgoingInsertContext(input: input, contentPrefix: "emoji")
-        let message = outgoingStoredMessage(input: input, context: context, content: .emoji(input.emoji))
-
-        return (
-            message,
-            [
-                SQLiteStatement(
-                    """
-                    INSERT INTO message_emoji (
-                        content_id,
-                        emoji_id,
-                        package_id,
-                        emoji_type,
-                        name,
-                        local_path,
-                        thumb_path,
-                        cdn_url,
-                        width,
-                        height,
-                        size_bytes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-                    """,
-                    parameters: [
-                        .text(context.contentID),
-                        .text(input.emoji.emojiID),
-                        .optionalText(input.emoji.packageID),
-                        .integer(Int64(input.emoji.emojiType.rawValue)),
-                        .optionalText(input.emoji.name),
-                        .optionalText(input.emoji.localPath),
-                        .optionalText(input.emoji.thumbPath),
-                        .optionalText(input.emoji.cdnURL),
-                        .optionalInteger(input.emoji.width.map(Int64.init)),
-                        .optionalInteger(input.emoji.height.map(Int64.init)),
-                        .optionalInteger(input.emoji.sizeBytes)
-                    ]
-                ),
-                outgoingMessageInsertStatement(
-                    message: message,
-                    input: input,
-                    context: context,
-                    messageType: .emoji,
-                    contentTable: "message_emoji"
-                ),
-                conversationUpdateStatement(
-                    messageID: message.id,
-                    input: input,
-                    digest: "[表情]",
-                    sortSequence: context.sortSequence
-                )
-            ]
-        )
-    }
-
-    private static func conversationUpdateStatement<Input: OutgoingMessageEnvelopeProviding>(
-        messageID: MessageID,
-        input: Input,
-        digest: String,
-        sortSequence: Int64
-    ) -> SQLiteStatement {
-        conversationUpdateStatement(
-            messageID: messageID,
-            conversationID: input.conversationID,
-            userID: input.userID,
-            localTime: input.localTime,
-            digest: digest,
-            sortSequence: sortSequence
-        )
-    }
-
-    private static func conversationUpdateStatement(
-        messageID: MessageID,
-        conversationID: ConversationID,
-        userID: UserID,
-        localTime: Int64,
-        digest: String,
-        sortSequence: Int64
-    ) -> SQLiteStatement {
-        SQLiteStatement(
-            """
-            UPDATE conversation
-            SET
-                last_message_id = ?,
-                last_message_time = ?,
-                last_message_digest = ?,
-                sort_ts = ?,
-                updated_at = ?
-            WHERE conversation_id = ? AND user_id = ?;
-            """,
-            parameters: [
-                .text(messageID.rawValue),
-                .integer(localTime),
-                .text(digest),
-                .integer(sortSequence),
-                .integer(localTime),
-                .text(conversationID.rawValue),
-                .text(userID.rawValue)
-            ]
-        )
-    }
-
-    /// 从数据库行构建消息对象
-    ///
-    /// - Parameter row: 数据库查询结果行
-    /// - Returns: 消息对象
-    /// - Throws: 数据格式错误时抛出错误
-    private static func message(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredMessage {
-        let typeRawValue = try row.requiredInt("msg_type")
-        let directionRawValue = try row.requiredInt("direction")
-        let sendStatusRawValue = try row.requiredInt("send_status")
-        let readStatusRawValue = row.int("read_status") ?? MessageReadStatus.unread.rawValue
-
-        guard let type = MessageType(rawValue: typeRawValue) else {
-            throw ChatStoreError.invalidMessageType(typeRawValue)
-        }
-
-        guard let direction = MessageDirection(rawValue: directionRawValue) else {
-            throw ChatStoreError.invalidMessageDirection(directionRawValue)
-        }
-
-        guard let sendStatus = MessageSendStatus(rawValue: sendStatusRawValue) else {
-            throw ChatStoreError.invalidMessageSendStatus(sendStatusRawValue)
-        }
-
-        guard let readStatus = MessageReadStatus(rawValue: readStatusRawValue) else {
-            throw ChatStoreError.invalidMessageReadStatus(readStatusRawValue)
-        }
-
-        return StoredMessage(
-            id: MessageID(rawValue: try row.requiredString("message_id")),
-            conversationID: ConversationID(rawValue: try row.requiredString("conversation_id")),
-            senderID: UserID(rawValue: try row.requiredString("sender_id")),
-            delivery: StoredMessageDelivery(
-                clientMessageID: row.string("client_msg_id"),
-                serverMessageID: row.string("server_msg_id"),
-                sequence: row.int64("seq")
-            ),
-            state: StoredMessageState(
-                direction: direction,
-                sendStatus: sendStatus,
-                readStatus: readStatus,
-                isRevoked: row.bool("revoke_status"),
-                isDeleted: row.bool("is_deleted"),
-                revokeReplacementText: row.string("replace_text"),
-                revokeEditableText: row.bool("revoke_status") ? row.string("text") : nil
-            ),
-            timeline: StoredMessageTimeline(
-                serverTime: row.int64("server_time"),
-                sortSequence: try row.requiredInt64("sort_seq"),
-                localTime: try row.requiredInt64("local_time")
-            ),
-            content: try content(from: row, type: type, paths: paths)
-        )
-    }
-
-    /// 根据消息类型从聚合行中提取唯一内容分支。
-    private static func content(
-        from row: SQLiteRow,
-        type: MessageType,
-        paths: AccountStoragePaths
-    ) throws -> StoredMessageContent {
-        switch type {
-        case .text:
-            return .text(row.string("text") ?? "")
-        case .image:
-            if let image = try image(from: row, paths: paths) {
-                return .image(image)
-            }
-        case .voice:
-            if let voice = try voice(from: row, paths: paths) {
-                return .voice(voice)
-            }
-        case .video:
-            if let video = try video(from: row, paths: paths) {
-                return .video(video)
-            }
-        case .file:
-            if let file = try file(from: row, paths: paths) {
-                return .file(file)
-            }
-        case .emoji:
-            if let emoji = try emoji(from: row, paths: paths) {
-                return .emoji(emoji)
-            }
-        case .system:
-            return .system(row.string("text"))
-        case .quote:
-            return .quote(row.string("text"))
-        case .revoked:
-            return .revoked(row.string("replace_text"))
-        }
-
-        return .text(row.string("text") ?? "")
-    }
-
-    /// 从数据库行提取图片内容
-    ///
-    /// - Parameter row: 数据库查询结果行
-    /// - Returns: 图片内容，如果不是图片消息则返回 nil
-    private static func image(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredImageContent? {
-        guard
-            let mediaID = row.string("image_media_id"),
-            let localPath = row.string("image_local_path"),
-            let thumbnailPath = row.string("image_thumb_path")
-        else {
-            return nil
-        }
-
-        let uploadStatusRawValue = row.int("image_upload_status") ?? MediaUploadStatus.pending.rawValue
-        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
-            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
-        }
-
-        return StoredImageContent(
-            mediaID: mediaID,
-            localPath: resolvedMediaPath(localPath, in: paths),
-            thumbnailPath: resolvedMediaPath(thumbnailPath, in: paths),
-            width: row.int("image_width") ?? 0,
-            height: row.int("image_height") ?? 0,
-            sizeBytes: row.int64("image_size_bytes") ?? 0,
-            remoteURL: row.string("image_cdn_url"),
-            md5: row.string("image_md5"),
-            format: row.string("image_format") ?? "jpg",
-            uploadStatus: uploadStatus
-        )
-    }
-
-    /// 从数据库行提取语音内容
-    ///
-    /// - Parameter row: 数据库查询结果行
-    /// - Returns: 语音内容，如果不是语音消息则返回 nil
-    private static func voice(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredVoiceContent? {
-        guard
-            let mediaID = row.string("voice_media_id"),
-            let localPath = row.string("voice_local_path")
-        else {
-            return nil
-        }
-
-        let uploadStatusRawValue = row.int("voice_upload_status") ?? MediaUploadStatus.pending.rawValue
-        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
-            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
-        }
-
-        return StoredVoiceContent(
-            mediaID: mediaID,
-            localPath: resolvedMediaPath(localPath, in: paths),
-            durationMilliseconds: row.int("voice_duration_ms") ?? 0,
-            sizeBytes: row.int64("voice_size_bytes") ?? 0,
-            remoteURL: row.string("voice_cdn_url"),
-            format: row.string("voice_format") ?? "m4a",
-            uploadStatus: uploadStatus
-        )
-    }
-
-    private static func video(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredVideoContent? {
-        guard
-            let mediaID = row.string("video_media_id"),
-            let localPath = row.string("video_local_path"),
-            let thumbnailPath = row.string("video_thumb_path")
-        else {
-            return nil
-        }
-
-        let uploadStatusRawValue = row.int("video_upload_status") ?? MediaUploadStatus.pending.rawValue
-        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
-            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
-        }
-
-        return StoredVideoContent(
-            mediaID: mediaID,
-            localPath: resolvedMediaPath(localPath, in: paths),
-            thumbnailPath: resolvedMediaPath(thumbnailPath, in: paths),
-            durationMilliseconds: row.int("video_duration_ms") ?? 0,
-            width: row.int("video_width") ?? 0,
-            height: row.int("video_height") ?? 0,
-            sizeBytes: row.int64("video_size_bytes") ?? 0,
-            remoteURL: row.string("video_cdn_url"),
-            md5: row.string("video_md5"),
-            uploadStatus: uploadStatus
-        )
-    }
-
-    private static func file(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredFileContent? {
-        guard
-            let mediaID = row.string("file_media_id"),
-            let localPath = row.string("file_local_path"),
-            let fileName = row.string("file_name")
-        else {
-            return nil
-        }
-
-        let uploadStatusRawValue = row.int("file_upload_status") ?? MediaUploadStatus.pending.rawValue
-        guard let uploadStatus = MediaUploadStatus(rawValue: uploadStatusRawValue) else {
-            throw ChatStoreError.invalidMediaUploadStatus(uploadStatusRawValue)
-        }
-
-        return StoredFileContent(
-            mediaID: mediaID,
-            localPath: resolvedMediaPath(localPath, in: paths),
-            fileName: fileName,
-            fileExtension: row.string("file_ext"),
-            sizeBytes: row.int64("file_size_bytes") ?? 0,
-            remoteURL: row.string("file_cdn_url"),
-            md5: row.string("file_md5"),
-            uploadStatus: uploadStatus
-        )
-    }
-
-    private static func emoji(from row: SQLiteRow, paths: AccountStoragePaths) throws -> StoredEmojiContent? {
-        guard let emojiID = row.string("emoji_id") else {
-            return nil
-        }
-
-        let typeRawValue = row.int("emoji_type") ?? EmojiType.package.rawValue
-        guard let emojiType = EmojiType(rawValue: typeRawValue) else {
-            throw ChatStoreError.invalidEmojiType(typeRawValue)
-        }
-
-        return StoredEmojiContent(
-            emojiID: emojiID,
-            packageID: row.string("emoji_package_id"),
-            emojiType: emojiType,
-            name: row.string("emoji_name"),
-            localPath: row.string("emoji_local_path").map { resolvedMediaPath($0, in: paths) },
-            thumbPath: row.string("emoji_thumb_path").map { resolvedMediaPath($0, in: paths) },
-            cdnURL: row.string("emoji_cdn_url"),
-            width: row.int("emoji_width"),
-            height: row.int("emoji_height"),
-            sizeBytes: row.int64("emoji_size_bytes")
-        )
-    }
-
-    private static func resolvedMediaPath(_ storedPath: String, in paths: AccountStoragePaths) -> String {
-        let fileManager = FileManager.default
-        guard !fileManager.fileExists(atPath: storedPath) else {
-            return storedPath
-        }
-
-        let standardizedPath = URL(fileURLWithPath: storedPath).standardizedFileURL.path
-        guard let mediaRange = standardizedPath.range(of: "/media/") else {
-            return storedPath
-        }
-
-        let relativeMediaPath = String(standardizedPath[mediaRange.upperBound...])
-        let currentPath = paths.mediaDirectory.appendingPathComponent(relativeMediaPath).path
-        guard fileManager.fileExists(atPath: currentPath) else {
-            return storedPath
-        }
-        return currentPath
-    }
 }

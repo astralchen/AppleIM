@@ -2,10 +2,11 @@
 //  DatabaseSchema.swift
 //  AppleIM
 //
-//  数据库 Schema 定义
-//  定义数据库表结构和初始化脚本
+//  当前数据库基线 Schema。
+//
 
 import Foundation
+import GRDB
 
 /// 数据库文件类型
 ///
@@ -19,23 +20,9 @@ nonisolated enum DatabaseFileKind: String, Codable, CaseIterable, Sendable {
     case fileIndex
 }
 
-/// 数据库迁移脚本
-///
-/// 包含 SQL 语句和版本信息
-nonisolated struct MigrationScript: Equatable, Sendable {
-    /// 脚本 ID
-    let id: String
-    /// 目标数据库
-    let database: DatabaseFileKind
-    /// Schema 版本号
-    let version: Int
-    /// SQL 语句数组
-    let statements: [String]
-}
-
 /// 数据库 Schema
 ///
-/// 定义当前 Schema 版本和初始化脚本
+/// 定义当前完整基线，不维护历史迁移链。
 ///
 /// ## 重要说明
 ///
@@ -44,472 +31,493 @@ nonisolated struct MigrationScript: Equatable, Sendable {
 /// - 消息表和内容表分离，支持多种消息类型扩展
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
-    /// 当前 Schema 版本
+    /// 当前 Schema 版本。
     static let currentVersion = 8
 
-    /// 增量迁移脚本元数据
-    static let migrationScripts: [MigrationScript] = [
-        MigrationScript(
-            id: "002_notification_badge_settings",
-            database: .main,
-            version: 2,
-            statements: []
-        ),
-        MigrationScript(
-            id: "003_conversation_visible_sort_index",
-            database: .main,
-            version: 3,
-            statements: [
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC);"
-            ]
-        ),
-        MigrationScript(
-            id: "004_message_visible_sort_index",
-            database: .main,
-            version: 4,
-            statements: [
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);"
-            ]
-        ),
-        MigrationScript(
-            id: "005_conversation_visible_cursor_sort_index",
-            database: .main,
-            version: 5,
-            statements: [
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_cursor_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC, conversation_id DESC);"
-            ]
-        ),
-        MigrationScript(
-            id: "006_emoji_tables",
-            database: .main,
-            version: 6,
-            statements: [
-                """
-                CREATE TABLE IF NOT EXISTS emoji_package (
-                    package_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    author TEXT,
-                    cover_url TEXT,
-                    local_cover_path TEXT,
-                    version INTEGER DEFAULT 0,
-                    status INTEGER DEFAULT 0,
-                    sort_order INTEGER DEFAULT 0,
-                    created_at INTEGER,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS emoji_store (
-                    emoji_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    package_id TEXT,
-                    emoji_type INTEGER NOT NULL,
-                    name TEXT,
-                    md5 TEXT,
-                    local_path TEXT,
-                    thumb_path TEXT,
-                    cdn_url TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    size_bytes INTEGER,
-                    use_count INTEGER DEFAULT 0,
-                    last_used_at INTEGER,
-                    is_favorite INTEGER DEFAULT 0,
-                    is_deleted INTEGER DEFAULT 0,
-                    extra_json TEXT,
-                    created_at INTEGER,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_emoji (
-                    content_id TEXT PRIMARY KEY,
-                    emoji_id TEXT NOT NULL,
-                    package_id TEXT,
-                    emoji_type INTEGER NOT NULL,
-                    name TEXT,
-                    local_path TEXT,
-                    thumb_path TEXT,
-                    cdn_url TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    size_bytes INTEGER
-                );
-                """,
-                "CREATE INDEX IF NOT EXISTS idx_emoji_package_user_sort ON emoji_package(user_id, sort_order ASC, updated_at DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_emoji_user_recent ON emoji_store(user_id, last_used_at DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_emoji_user_favorite ON emoji_store(user_id, is_favorite, updated_at DESC);"
-            ]
-        ),
-        MigrationScript(
-            id: "007_contact_lookup_indexes",
-            database: .main,
-            version: 7,
-            statements: [
-                "CREATE INDEX IF NOT EXISTS idx_contact_user_wxid ON contact(user_id, wxid);",
-                "CREATE INDEX IF NOT EXISTS idx_contact_user_type_name ON contact(user_id, is_deleted, type, is_starred DESC, remark, nickname, wxid);",
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_type_target ON conversation(user_id, biz_type, target_id, is_hidden);"
-            ]
-        ),
-        MigrationScript(
-            id: "008_sql_hot_path_indexes",
-            database: .main,
-            version: 8,
-            statements: [
-                "CREATE INDEX IF NOT EXISTS idx_pending_job_user_recoverable ON pending_job(user_id, status, next_retry_at, created_at);",
-                "CREATE INDEX IF NOT EXISTS idx_media_resource_user_updated ON media_resource(user_id, updated_at DESC, created_at DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_media_resource_owner_message ON media_resource(owner_message_id);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_seq ON message(conversation_id, seq);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_read_state ON message(conversation_id, direction, read_status, is_deleted);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_send_recovery ON message(conversation_id, direction, send_status, is_deleted, local_time ASC, sort_seq ASC);"
-            ]
-        )
+    /// 每个数据库必须存在的核心表。
+    static let requiredTables: [DatabaseFileKind: Set<String>] = [
+        .main: [
+            "user",
+            "contact",
+            "conversation",
+            "conversation_member",
+            "message",
+            "message_text",
+            "message_image",
+            "message_voice",
+            "message_video",
+            "message_file",
+            "message_emoji",
+            "message_revoke",
+            "media_resource",
+            "draft",
+            "pending_job",
+            "sync_checkpoint",
+            "notification_setting",
+            "emoji_package",
+            "emoji_store"
+        ],
+        .search: [
+            "contact_search",
+            "conversation_search",
+            "message_search"
+        ],
+        .fileIndex: [
+            "file_index"
+        ]
     ]
 
-    /// 所有已知脚本元数据
-    static let allScripts: [MigrationScript] = initialScripts + migrationScripts
-
-    /// 初始化脚本数组
-    static let initialScripts: [MigrationScript] = [
-        MigrationScript(
-            id: "001_main_core_tables",
-            database: .main,
-            version: 1,
-            statements: [
-                """
-                CREATE TABLE IF NOT EXISTS migration_meta (
-                    schema_version INTEGER NOT NULL,
-                    last_migration_id TEXT,
-                    last_vacuum_at INTEGER,
-                    last_integrity_check_at INTEGER,
-                    fts_rebuild_version INTEGER DEFAULT 0
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS user (
-                    user_id TEXT PRIMARY KEY,
-                    wxid TEXT UNIQUE,
-                    nickname TEXT,
-                    avatar_url TEXT,
-                    gender INTEGER,
-                    region TEXT,
-                    signature TEXT,
-                    remark TEXT,
-                    mobile TEXT,
-                    extra_json TEXT,
-                    updated_at INTEGER,
-                    created_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS contact (
-                    contact_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    wxid TEXT NOT NULL,
-                    nickname TEXT,
-                    remark TEXT,
-                    avatar_url TEXT,
-                    type INTEGER NOT NULL,
-                    is_starred INTEGER DEFAULT 0,
-                    is_blocked INTEGER DEFAULT 0,
-                    is_deleted INTEGER DEFAULT 0,
-                    source INTEGER,
-                    extra_json TEXT,
-                    updated_at INTEGER,
-                    created_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS conversation (
-                    conversation_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    biz_type INTEGER NOT NULL,
-                    target_id TEXT NOT NULL,
-                    title TEXT,
-                    avatar_url TEXT,
-                    last_message_id TEXT,
-                    last_message_time INTEGER,
-                    last_message_digest TEXT,
-                    unread_count INTEGER DEFAULT 0,
-                    draft_text TEXT,
-                    is_pinned INTEGER DEFAULT 0,
-                    is_muted INTEGER DEFAULT 0,
-                    is_hidden INTEGER DEFAULT 0,
-                    sort_ts INTEGER NOT NULL,
-                    extra_json TEXT,
-                    updated_at INTEGER,
-                    created_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS conversation_member (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    conversation_id TEXT NOT NULL,
-                    member_id TEXT NOT NULL,
-                    display_name TEXT,
-                    role INTEGER DEFAULT 0,
-                    join_time INTEGER,
-                    extra_json TEXT,
-                    UNIQUE(conversation_id, member_id)
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message (
-                    message_id TEXT PRIMARY KEY,
-                    local_id INTEGER UNIQUE,
-                    conversation_id TEXT NOT NULL,
-                    sender_id TEXT NOT NULL,
-                    client_msg_id TEXT UNIQUE,
-                    server_msg_id TEXT,
-                    seq INTEGER,
-                    msg_type INTEGER NOT NULL,
-                    direction INTEGER NOT NULL,
-                    send_status INTEGER NOT NULL,
-                    delivery_status INTEGER DEFAULT 0,
-                    read_status INTEGER DEFAULT 0,
-                    revoke_status INTEGER DEFAULT 0,
-                    is_deleted INTEGER DEFAULT 0,
-                    quoted_message_id TEXT,
-                    reply_to_message_id TEXT,
-                    content_table TEXT,
-                    content_id TEXT,
-                    sort_seq INTEGER NOT NULL,
-                    server_time INTEGER,
-                    local_time INTEGER NOT NULL,
-                    edit_version INTEGER DEFAULT 0,
-                    extra_json TEXT
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_text (
-                    content_id TEXT PRIMARY KEY,
-                    text TEXT NOT NULL,
-                    mentions_json TEXT,
-                    at_all INTEGER DEFAULT 0,
-                    rich_text_json TEXT
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_image (
-                    content_id TEXT PRIMARY KEY,
-                    media_id TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    size_bytes INTEGER,
-                    local_path TEXT,
-                    thumb_path TEXT,
-                    cdn_url TEXT,
-                    md5 TEXT,
-                    format TEXT,
-                    upload_status INTEGER DEFAULT 0,
-                    download_status INTEGER DEFAULT 0
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_voice (
-                    content_id TEXT PRIMARY KEY,
-                    media_id TEXT,
-                    duration_ms INTEGER,
-                    size_bytes INTEGER,
-                    local_path TEXT,
-                    cdn_url TEXT,
-                    format TEXT,
-                    transcript TEXT,
-                    upload_status INTEGER DEFAULT 0,
-                    download_status INTEGER DEFAULT 0
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_video (
-                    content_id TEXT PRIMARY KEY,
-                    media_id TEXT,
-                    duration_ms INTEGER,
-                    width INTEGER,
-                    height INTEGER,
-                    size_bytes INTEGER,
-                    local_path TEXT,
-                    thumb_path TEXT,
-                    cdn_url TEXT,
-                    md5 TEXT,
-                    upload_status INTEGER DEFAULT 0,
-                    download_status INTEGER DEFAULT 0
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_file (
-                    content_id TEXT PRIMARY KEY,
-                    media_id TEXT,
-                    file_name TEXT,
-                    file_ext TEXT,
-                    size_bytes INTEGER,
-                    local_path TEXT,
-                    cdn_url TEXT,
-                    md5 TEXT,
-                    upload_status INTEGER DEFAULT 0,
-                    download_status INTEGER DEFAULT 0
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_receipt (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    message_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    receipt_type INTEGER NOT NULL,
-                    receipt_time INTEGER,
-                    UNIQUE(message_id, user_id, receipt_type)
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS message_revoke (
-                    message_id TEXT PRIMARY KEY,
-                    operator_id TEXT NOT NULL,
-                    revoke_time INTEGER NOT NULL,
-                    reason TEXT,
-                    replace_text TEXT
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS media_resource (
-                    media_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    owner_message_id TEXT,
-                    local_path TEXT,
-                    remote_url TEXT,
-                    thumb_path TEXT,
-                    size_bytes INTEGER,
-                    md5 TEXT,
-                    upload_status INTEGER DEFAULT 0,
-                    download_status INTEGER DEFAULT 0,
-                    updated_at INTEGER,
-                    created_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS draft (
-                    conversation_id TEXT PRIMARY KEY,
-                    text TEXT,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS sync_checkpoint (
-                    biz_key TEXT PRIMARY KEY,
-                    cursor TEXT,
-                    seq INTEGER,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS pending_job (
-                    job_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    job_type INTEGER NOT NULL,
-                    biz_key TEXT,
-                    payload_json TEXT,
-                    status INTEGER NOT NULL,
-                    retry_count INTEGER DEFAULT 0,
-                    max_retry_count INTEGER DEFAULT 3,
-                    next_retry_at INTEGER,
-                    updated_at INTEGER,
-                    created_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS conversation_setting (
-                    conversation_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    is_pinned INTEGER DEFAULT 0,
-                    is_muted INTEGER DEFAULT 0,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS notification_setting (
-                    user_id TEXT PRIMARY KEY,
-                    is_enabled INTEGER DEFAULT 1,
-                    show_preview INTEGER DEFAULT 1,
-                    badge_enabled INTEGER DEFAULT 1,
-                    badge_include_muted INTEGER DEFAULT 1,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS blacklist (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    blocked_user_id TEXT NOT NULL,
-                    created_at INTEGER,
-                    UNIQUE(user_id, blocked_user_id)
-                );
-                """,
-                "CREATE INDEX IF NOT EXISTS idx_contact_user_wxid ON contact(user_id, wxid);",
-                "CREATE INDEX IF NOT EXISTS idx_contact_user_updated ON contact(user_id, updated_at);",
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_sort ON conversation(user_id, is_pinned DESC, sort_ts DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_visible_cursor_sort ON conversation(user_id, is_hidden, is_pinned DESC, sort_ts DESC, conversation_id DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_conversation_user_target ON conversation(user_id, target_id);",
-                "CREATE INDEX IF NOT EXISTS idx_member_conversation ON conversation_member(conversation_id);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_sort ON message(conversation_id, sort_seq DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_visible_sort ON message(conversation_id, is_deleted, sort_seq DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_server ON message(conversation_id, server_time DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_seq ON message(conversation_id, seq);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_read_state ON message(conversation_id, direction, read_status, is_deleted);",
-                "CREATE INDEX IF NOT EXISTS idx_message_conversation_send_recovery ON message(conversation_id, direction, send_status, is_deleted, local_time ASC, sort_seq ASC);",
-                "CREATE INDEX IF NOT EXISTS idx_message_client_msg_id ON message(client_msg_id);",
-                "CREATE INDEX IF NOT EXISTS idx_message_server_msg_id ON message(server_msg_id);",
-                "CREATE INDEX IF NOT EXISTS idx_receipt_message ON message_receipt(message_id);",
-                "CREATE INDEX IF NOT EXISTS idx_pending_job_user_recoverable ON pending_job(user_id, status, next_retry_at, created_at);",
-                "CREATE INDEX IF NOT EXISTS idx_media_resource_user_updated ON media_resource(user_id, updated_at DESC, created_at DESC);",
-                "CREATE INDEX IF NOT EXISTS idx_media_resource_owner_message ON media_resource(owner_message_id);"
-            ]
-        ),
-        MigrationScript(
-            id: "001_search_tables",
-            database: .search,
-            version: 1,
-            statements: [
-                """
-                CREATE TABLE IF NOT EXISTS search_index_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    updated_at INTEGER
-                );
-                """,
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS message_search
-                USING fts5(message_id, conversation_id, sender_id, text, tokenize = 'unicode61');
-                """,
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS contact_search
-                USING fts5(contact_id, title, subtitle, tokenize = 'unicode61');
-                """,
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS conversation_search
-                USING fts5(conversation_id, title, subtitle, tokenize = 'unicode61');
-                """
-            ]
-        ),
-        MigrationScript(
-            id: "001_file_index_tables",
-            database: .fileIndex,
-            version: 1,
-            statements: [
-                """
-                CREATE TABLE IF NOT EXISTS file_index (
-                    media_id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    local_path TEXT NOT NULL,
-                    file_name TEXT,
-                    file_ext TEXT,
-                    size_bytes INTEGER,
-                    md5 TEXT,
-                    last_access_at INTEGER,
-                    created_at INTEGER
-                );
-                """,
-                "CREATE INDEX IF NOT EXISTS idx_file_index_user ON file_index(user_id, last_access_at DESC);"
-            ]
-        )
+    /// 用少量关键字段识别旧 schema；不做补列，缺字段即重建。
+    static let requiredColumns: [DatabaseFileKind: [String: Set<String>]] = [
+        .main: [
+            "notification_setting": ["user_id", "badge_enabled", "badge_include_muted"],
+            "message": ["message_id", "conversation_id", "content_table", "content_id", "sort_seq"],
+            "conversation": ["conversation_id", "user_id", "sort_ts"],
+            "media_resource": ["media_id", "owner_message_id", "updated_at"],
+            "pending_job": ["job_id", "user_id", "status", "next_retry_at"]
+        ],
+        .search: [
+            "contact_search": ["contact_id", "title", "subtitle"],
+            "conversation_search": ["conversation_id", "title", "subtitle"],
+            "message_search": ["message_id", "conversation_id", "sender_id", "text"]
+        ],
+        .fileIndex: [
+            "file_index": ["media_id", "user_id", "last_access_at"]
+        ]
     ]
+
+    /// 应用当前完整基线 schema。
+    static func applyBaseline(to db: Database, kind: DatabaseFileKind) throws {
+        switch kind {
+        case .main:
+            try applyMainBaseline(to: db)
+        case .search:
+            try applySearchBaseline(to: db)
+        case .fileIndex:
+            try applyFileIndexBaseline(to: db)
+        }
+    }
+}
+
+private extension DatabaseSchema {
+    nonisolated static func applyMainBaseline(to db: Database) throws {
+        try createMainTables(in: db)
+        try createMainIndexes(in: db)
+    }
+
+    nonisolated static func applySearchBaseline(to db: Database) throws {
+        try db.create(table: "search_index_meta", options: .ifNotExists) { table in
+            table.primaryKey("key", .text)
+            table.column("value", .text)
+            table.column("updated_at", .integer)
+        }
+        try createSearchFTSTables(in: db)
+    }
+
+    nonisolated static func applyFileIndexBaseline(to db: Database) throws {
+        try db.create(table: "file_index", options: .ifNotExists) { table in
+            table.primaryKey("media_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("local_path", .text).notNull()
+            table.column("file_name", .text)
+            table.column("file_ext", .text)
+            table.column("size_bytes", .integer)
+            table.column("md5", .text)
+            table.column("last_access_at", .integer)
+            table.column("created_at", .integer)
+        }
+        try createIndex(db, "idx_file_index_user", on: "file_index", columns: ["user_id", "last_access_at"])
+    }
+
+    nonisolated static func createMainTables(in db: Database) throws {
+        try db.create(table: "user", options: .ifNotExists) { table in
+            table.primaryKey("user_id", .text)
+            table.column("wxid", .text).unique()
+            table.column("nickname", .text)
+            table.column("avatar_url", .text)
+            table.column("gender", .integer)
+            table.column("region", .text)
+            table.column("signature", .text)
+            table.column("remark", .text)
+            table.column("mobile", .text)
+            table.column("extra_json", .text)
+            table.column("updated_at", .integer)
+            table.column("created_at", .integer)
+        }
+
+        try db.create(table: "contact", options: .ifNotExists) { table in
+            table.primaryKey("contact_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("wxid", .text).notNull()
+            table.column("nickname", .text)
+            table.column("remark", .text)
+            table.column("avatar_url", .text)
+            table.column("type", .integer).notNull()
+            table.column("is_starred", .integer).defaults(to: 0)
+            table.column("is_blocked", .integer).defaults(to: 0)
+            table.column("is_deleted", .integer).defaults(to: 0)
+            table.column("source", .integer)
+            table.column("extra_json", .text)
+            table.column("updated_at", .integer)
+            table.column("created_at", .integer)
+        }
+
+        try db.create(table: "conversation", options: .ifNotExists) { table in
+            table.primaryKey("conversation_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("biz_type", .integer).notNull()
+            table.column("target_id", .text).notNull()
+            table.column("title", .text)
+            table.column("avatar_url", .text)
+            table.column("last_message_id", .text)
+            table.column("last_message_time", .integer)
+            table.column("last_message_digest", .text)
+            table.column("unread_count", .integer).defaults(to: 0)
+            table.column("draft_text", .text)
+            table.column("is_pinned", .integer).defaults(to: 0)
+            table.column("is_muted", .integer).defaults(to: 0)
+            table.column("is_hidden", .integer).defaults(to: 0)
+            table.column("sort_ts", .integer).notNull()
+            table.column("extra_json", .text)
+            table.column("updated_at", .integer)
+            table.column("created_at", .integer)
+        }
+
+        try db.create(table: "conversation_member", options: .ifNotExists) { table in
+            table.autoIncrementedPrimaryKey("id")
+            table.column("conversation_id", .text).notNull()
+            table.column("member_id", .text).notNull()
+            table.column("display_name", .text)
+            table.column("role", .integer).defaults(to: 0)
+            table.column("join_time", .integer)
+            table.column("extra_json", .text)
+            table.uniqueKey(["conversation_id", "member_id"])
+        }
+
+        try db.create(table: "message", options: .ifNotExists) { table in
+            table.primaryKey("message_id", .text)
+            table.column("local_id", .integer).unique()
+            table.column("conversation_id", .text).notNull()
+            table.column("sender_id", .text).notNull()
+            table.column("client_msg_id", .text).unique()
+            table.column("server_msg_id", .text)
+            table.column("seq", .integer)
+            table.column("msg_type", .integer).notNull()
+            table.column("direction", .integer).notNull()
+            table.column("send_status", .integer).notNull()
+            table.column("delivery_status", .integer).defaults(to: 0)
+            table.column("read_status", .integer).defaults(to: 0)
+            table.column("revoke_status", .integer).defaults(to: 0)
+            table.column("is_deleted", .integer).defaults(to: 0)
+            table.column("quoted_message_id", .text)
+            table.column("reply_to_message_id", .text)
+            table.column("content_table", .text)
+            table.column("content_id", .text)
+            table.column("sort_seq", .integer).notNull()
+            table.column("server_time", .integer)
+            table.column("local_time", .integer).notNull()
+            table.column("edit_version", .integer).defaults(to: 0)
+            table.column("extra_json", .text)
+        }
+
+        try db.create(table: "message_text", options: .ifNotExists) { table in
+            table.primaryKey("content_id", .text)
+            table.column("text", .text).notNull()
+            table.column("mentions_json", .text)
+            table.column("at_all", .integer).defaults(to: 0)
+            table.column("rich_text_json", .text)
+        }
+
+        try db.create(table: "message_image", options: .ifNotExists) { table in
+            table.primaryKey("content_id", .text)
+            table.column("media_id", .text)
+            table.column("width", .integer)
+            table.column("height", .integer)
+            table.column("size_bytes", .integer)
+            table.column("local_path", .text)
+            table.column("thumb_path", .text)
+            table.column("cdn_url", .text)
+            table.column("md5", .text)
+            table.column("format", .text)
+            table.column("upload_status", .integer).defaults(to: 0)
+            table.column("download_status", .integer).defaults(to: 0)
+        }
+
+        try db.create(table: "message_voice", options: .ifNotExists) { table in
+            table.primaryKey("content_id", .text)
+            table.column("media_id", .text)
+            table.column("duration_ms", .integer)
+            table.column("size_bytes", .integer)
+            table.column("local_path", .text)
+            table.column("cdn_url", .text)
+            table.column("format", .text)
+            table.column("transcript", .text)
+            table.column("upload_status", .integer).defaults(to: 0)
+            table.column("download_status", .integer).defaults(to: 0)
+        }
+
+        try db.create(table: "message_video", options: .ifNotExists) { table in
+            table.primaryKey("content_id", .text)
+            table.column("media_id", .text)
+            table.column("duration_ms", .integer)
+            table.column("width", .integer)
+            table.column("height", .integer)
+            table.column("size_bytes", .integer)
+            table.column("local_path", .text)
+            table.column("thumb_path", .text)
+            table.column("cdn_url", .text)
+            table.column("md5", .text)
+            table.column("upload_status", .integer).defaults(to: 0)
+            table.column("download_status", .integer).defaults(to: 0)
+        }
+
+        try db.create(table: "message_file", options: .ifNotExists) { table in
+            table.primaryKey("content_id", .text)
+            table.column("media_id", .text)
+            table.column("file_name", .text)
+            table.column("file_ext", .text)
+            table.column("size_bytes", .integer)
+            table.column("local_path", .text)
+            table.column("cdn_url", .text)
+            table.column("md5", .text)
+            table.column("upload_status", .integer).defaults(to: 0)
+            table.column("download_status", .integer).defaults(to: 0)
+        }
+
+        try db.create(table: "message_receipt", options: .ifNotExists) { table in
+            table.autoIncrementedPrimaryKey("id")
+            table.column("message_id", .text).notNull()
+            table.column("user_id", .text).notNull()
+            table.column("receipt_type", .integer).notNull()
+            table.column("receipt_time", .integer)
+            table.uniqueKey(["message_id", "user_id", "receipt_type"])
+        }
+
+        try db.create(table: "message_revoke", options: .ifNotExists) { table in
+            table.primaryKey("message_id", .text)
+            table.column("operator_id", .text).notNull()
+            table.column("revoke_time", .integer).notNull()
+            table.column("reason", .text)
+            table.column("replace_text", .text)
+        }
+
+        try db.create(table: "media_resource", options: .ifNotExists) { table in
+            table.primaryKey("media_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("owner_message_id", .text)
+            table.column("local_path", .text)
+            table.column("remote_url", .text)
+            table.column("thumb_path", .text)
+            table.column("size_bytes", .integer)
+            table.column("md5", .text)
+            table.column("upload_status", .integer).defaults(to: 0)
+            table.column("download_status", .integer).defaults(to: 0)
+            table.column("updated_at", .integer)
+            table.column("created_at", .integer)
+        }
+
+        try db.create(table: "draft", options: .ifNotExists) { table in
+            table.primaryKey("conversation_id", .text)
+            table.column("text", .text)
+            table.column("updated_at", .integer)
+        }
+
+        try db.create(table: "sync_checkpoint", options: .ifNotExists) { table in
+            table.primaryKey("biz_key", .text)
+            table.column("cursor", .text)
+            table.column("seq", .integer)
+            table.column("updated_at", .integer)
+        }
+
+        try db.create(table: "pending_job", options: .ifNotExists) { table in
+            table.primaryKey("job_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("job_type", .integer).notNull()
+            table.column("biz_key", .text)
+            table.column("payload_json", .text)
+            table.column("status", .integer).notNull()
+            table.column("retry_count", .integer).defaults(to: 0)
+            table.column("max_retry_count", .integer).defaults(to: 3)
+            table.column("next_retry_at", .integer)
+            table.column("updated_at", .integer)
+            table.column("created_at", .integer)
+        }
+
+        try db.create(table: "conversation_setting", options: .ifNotExists) { table in
+            table.primaryKey("conversation_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("is_pinned", .integer).defaults(to: 0)
+            table.column("is_muted", .integer).defaults(to: 0)
+            table.column("updated_at", .integer)
+        }
+
+        try db.create(table: "notification_setting", options: .ifNotExists) { table in
+            table.primaryKey("user_id", .text)
+            table.column("is_enabled", .integer).defaults(to: 1)
+            table.column("show_preview", .integer).defaults(to: 1)
+            table.column("badge_enabled", .integer).defaults(to: 1)
+            table.column("badge_include_muted", .integer).defaults(to: 1)
+            table.column("updated_at", .integer)
+        }
+
+        try db.create(table: "blacklist", options: .ifNotExists) { table in
+            table.autoIncrementedPrimaryKey("id")
+            table.column("user_id", .text).notNull()
+            table.column("blocked_user_id", .text).notNull()
+            table.column("created_at", .integer)
+            table.uniqueKey(["user_id", "blocked_user_id"])
+        }
+
+        try db.create(table: "emoji_package", options: .ifNotExists) { table in
+            table.primaryKey("package_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("title", .text).notNull()
+            table.column("author", .text)
+            table.column("cover_url", .text)
+            table.column("local_cover_path", .text)
+            table.column("version", .integer).defaults(to: 0)
+            table.column("status", .integer).defaults(to: 0)
+            table.column("sort_order", .integer).defaults(to: 0)
+            table.column("created_at", .integer)
+            table.column("updated_at", .integer)
+        }
+
+        try db.create(table: "emoji_store", options: .ifNotExists) { table in
+            table.primaryKey("emoji_id", .text)
+            table.column("user_id", .text).notNull()
+            table.column("package_id", .text)
+            table.column("emoji_type", .integer).notNull()
+            table.column("name", .text)
+            table.column("md5", .text)
+            table.column("local_path", .text)
+            table.column("thumb_path", .text)
+            table.column("cdn_url", .text)
+            table.column("width", .integer)
+            table.column("height", .integer)
+            table.column("size_bytes", .integer)
+            table.column("use_count", .integer).defaults(to: 0)
+            table.column("last_used_at", .integer)
+            table.column("is_favorite", .integer).defaults(to: 0)
+            table.column("is_deleted", .integer).defaults(to: 0)
+            table.column("extra_json", .text)
+            table.column("created_at", .integer)
+            table.column("updated_at", .integer)
+        }
+
+        try db.create(table: "message_emoji", options: .ifNotExists) { table in
+            table.primaryKey("content_id", .text)
+            table.column("emoji_id", .text).notNull()
+            table.column("package_id", .text)
+            table.column("emoji_type", .integer).notNull()
+            table.column("name", .text)
+            table.column("local_path", .text)
+            table.column("thumb_path", .text)
+            table.column("cdn_url", .text)
+            table.column("width", .integer)
+            table.column("height", .integer)
+            table.column("size_bytes", .integer)
+        }
+    }
+
+    nonisolated static func createMainIndexes(in db: Database) throws {
+        try createIndex(db, "idx_contact_user_wxid", on: "contact", columns: ["user_id", "wxid"])
+        try createIndex(db, "idx_contact_user_updated", on: "contact", columns: ["user_id", "updated_at"])
+        try createIndex(
+            db,
+            "idx_contact_user_type_name",
+            on: "contact",
+            columns: ["user_id", "is_deleted", "type", "is_starred", "remark", "nickname", "wxid"]
+        )
+        try createIndex(db, "idx_conversation_user_sort", on: "conversation", columns: ["user_id", "is_pinned", "sort_ts"])
+        try createIndex(
+            db,
+            "idx_conversation_user_visible_sort",
+            on: "conversation",
+            columns: ["user_id", "is_hidden", "is_pinned", "sort_ts"]
+        )
+        try createIndex(
+            db,
+            "idx_conversation_user_visible_cursor_sort",
+            on: "conversation",
+            columns: ["user_id", "is_hidden", "is_pinned", "sort_ts", "conversation_id"]
+        )
+        try createIndex(db, "idx_conversation_user_target", on: "conversation", columns: ["user_id", "target_id"])
+        try createIndex(
+            db,
+            "idx_conversation_user_type_target",
+            on: "conversation",
+            columns: ["user_id", "biz_type", "target_id", "is_hidden"]
+        )
+        try createIndex(db, "idx_member_conversation", on: "conversation_member", columns: ["conversation_id"])
+        try createIndex(db, "idx_message_conversation_sort", on: "message", columns: ["conversation_id", "sort_seq"])
+        try createIndex(
+            db,
+            "idx_message_conversation_visible_sort",
+            on: "message",
+            columns: ["conversation_id", "is_deleted", "sort_seq"]
+        )
+        try createIndex(db, "idx_message_conversation_server", on: "message", columns: ["conversation_id", "server_time"])
+        try createIndex(db, "idx_message_conversation_seq", on: "message", columns: ["conversation_id", "seq"])
+        try createIndex(
+            db,
+            "idx_message_conversation_read_state",
+            on: "message",
+            columns: ["conversation_id", "direction", "read_status", "is_deleted"]
+        )
+        try createIndex(
+            db,
+            "idx_message_conversation_send_recovery",
+            on: "message",
+            columns: ["conversation_id", "direction", "send_status", "is_deleted", "local_time", "sort_seq"]
+        )
+        try createIndex(db, "idx_message_client_msg_id", on: "message", columns: ["client_msg_id"])
+        try createIndex(db, "idx_message_server_msg_id", on: "message", columns: ["server_msg_id"])
+        try createIndex(db, "idx_receipt_message", on: "message_receipt", columns: ["message_id"])
+        try createIndex(
+            db,
+            "idx_pending_job_user_recoverable",
+            on: "pending_job",
+            columns: ["user_id", "status", "next_retry_at", "created_at"]
+        )
+        try createIndex(
+            db,
+            "idx_media_resource_user_updated",
+            on: "media_resource",
+            columns: ["user_id", "updated_at", "created_at"]
+        )
+        try createIndex(db, "idx_media_resource_owner_message", on: "media_resource", columns: ["owner_message_id"])
+        try createIndex(
+            db,
+            "idx_emoji_package_user_sort",
+            on: "emoji_package",
+            columns: ["user_id", "sort_order", "updated_at"]
+        )
+        try createIndex(db, "idx_emoji_user_recent", on: "emoji_store", columns: ["user_id", "last_used_at"])
+        try createIndex(db, "idx_emoji_user_favorite", on: "emoji_store", columns: ["user_id", "is_favorite", "updated_at"])
+    }
+
+    nonisolated static func createSearchFTSTables(in db: Database) throws {
+        try db.execute(
+            sql: """
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_search
+            USING fts5(message_id, conversation_id, sender_id, text, tokenize = 'unicode61');
+            """
+        )
+        try db.execute(
+            sql: """
+            CREATE VIRTUAL TABLE IF NOT EXISTS contact_search
+            USING fts5(contact_id, title, subtitle, tokenize = 'unicode61');
+            """
+        )
+        try db.execute(
+            sql: """
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversation_search
+            USING fts5(conversation_id, title, subtitle, tokenize = 'unicode61');
+            """
+        )
+    }
+
+    nonisolated static func createIndex(_ db: Database, _ name: String, on table: String, columns: [String]) throws {
+        try db.create(index: name, on: table, columns: columns, options: .ifNotExists)
+    }
 }
