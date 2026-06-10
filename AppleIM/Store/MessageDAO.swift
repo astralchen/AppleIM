@@ -221,6 +221,7 @@ nonisolated struct MessageDAO: Sendable {
                         sizeBytes: voice.sizeBytes,
                         remoteURL: voice.cdnURL,
                         format: voice.format,
+                        playedAt: voice.playedAt,
                         uploadStatus: voice.uploadStatus
                     )
                 )
@@ -514,6 +515,7 @@ nonisolated struct MessageDAO: Sendable {
                     cdnURL: nil,
                     format: input.voice.format,
                     transcript: nil,
+                    playedAt: input.voice.playedAt,
                     uploadStatus: .pending,
                     downloadStatus: 0
                 )

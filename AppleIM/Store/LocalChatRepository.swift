@@ -36,7 +36,7 @@ nonisolated private struct ConversationExtraContext: Codable, Equatable, Sendabl
 
 extension Notification.Name {
     /// 聊天存储中的会话摘要、排序或未读状态发生变化。
-    static let chatStoreConversationsDidChange = Notification.Name("ChatStoreConversationsDidChange")
+    nonisolated static let chatStoreConversationsDidChange = Notification.Name("ChatStoreConversationsDidChange")
 }
 
 nonisolated enum ChatStoreConversationChangeNotification {
@@ -959,11 +959,24 @@ nonisolated struct LocalChatRepository: ConversationRepository, ConversationObse
             return
         }
 
+        let now = Self.currentTimestamp()
         _ = try await database.write(paths: paths) { db in
-            try MessageDatabaseRecord
-                .filter(MessageDatabaseRecord.Columns.messageID == messageID.rawValue)
-                .filter(MessageDatabaseRecord.Columns.messageType == MessageType.voice.rawValue)
-                .updateAll(db, MessageDatabaseRecord.Columns.readStatus.set(to: MessageReadStatus.read.rawValue))
+            guard let contentID = try String.fetchOne(
+                db,
+                sql: "SELECT content_id FROM message WHERE message_id = ?;",
+                arguments: [messageID.rawValue]
+            ) else {
+                return
+            }
+
+            try db.execute(
+                sql: """
+                UPDATE message_voice
+                SET played_at = COALESCE(played_at, ?)
+                WHERE content_id = ?;
+                """,
+                arguments: [now, contentID]
+            )
         }
     }
 

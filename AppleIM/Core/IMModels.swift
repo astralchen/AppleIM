@@ -138,9 +138,9 @@ nonisolated enum MessageSendStatus: Int, Codable, Sendable {
 ///
 /// 对应数据库 `message.read_status` 字段
 nonisolated enum MessageReadStatus: Int, Codable, Sendable {
-    /// 未读/未播放
+    /// 未读
     case unread = 0
-    /// 已读/已播放
+    /// 已读
     case read = 1
 }
 

@@ -455,7 +455,7 @@ actor Counter {
     }
 }
 
-final class InMemoryAccountSessionStore: AccountSessionStore {
+nonisolated final class InMemoryAccountSessionStore: AccountSessionStore {
     private let sessionBox: TestLockedBox<AccountSession?>
 
     init(session: AccountSession? = nil) {

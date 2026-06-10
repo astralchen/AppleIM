@@ -207,7 +207,7 @@ extension AppleIMTests {
             let id = "\(prefix)_\(index)"
             return ChatMentionOptionState(
                 id: id,
-                userID: id,
+                userID: UserID(rawValue: id),
                 displayName: "\(displayPrefix) \(String(format: "%02d", index))",
                 mentionsAll: false
             )

@@ -8,7 +8,7 @@
 import Foundation
 
 /// 账号存储服务协议
-protocol AccountStorageService: Sendable {
+nonisolated protocol AccountStorageService: Sendable {
     /// 准备账号存储
     ///
     /// 创建账号目录和数据库文件

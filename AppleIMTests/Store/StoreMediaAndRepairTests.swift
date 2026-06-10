@@ -1066,7 +1066,7 @@ extension AppleIMTests {
         #expect(voiceIndex?.localPath == voiceURL.path)
     }
 
-    @Test func localChatRepositoryMarksVoiceMessagePlayed() async throws {
+    @Test func localChatRepositoryMarksVoicePlaybackWithoutChangingMessageReadStatus() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -1104,11 +1104,68 @@ extension AppleIMTests {
         }
 
         let unreadMessage = try await repository.message(messageID: message.id)
+        let playedAtBefore = try await voicePlayedAt(messageID: message.id, databaseContext: databaseContext)
         try await repository.markVoicePlayed(messageID: message.id)
         let playedMessage = try await repository.message(messageID: message.id)
+        let playedAtAfter = try await voicePlayedAt(messageID: message.id, databaseContext: databaseContext)
 
-        #expect(unreadMessage?.state.readStatus == .unread)
-        #expect(playedMessage?.state.readStatus == .read)
+        #expect(unreadMessage?.state.readStatus == .unread, "测试夹具应先把语音消息置为未读")
+        #expect(playedMessage?.state.readStatus == .unread, "播放语音不应修改 message.read_status")
+        #expect(playedAtBefore == nil, "播放前 message_voice.played_at 应为空")
+        #expect(playedAtAfter != nil, "播放后 message_voice.played_at 应写入时间戳")
+    }
+
+    @Test func localChatRepositoryKeepsVoicePlaybackStateWhenMarkingConversationRead() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "voice_read_user")
+        try await repository.upsertConversation(
+            makeConversationRecord(id: "voice_read_conversation", userID: "voice_read_user", title: "Voice Read", unreadCount: 1, sortTimestamp: 1)
+        )
+
+        let voice = StoredVoiceContent(
+            mediaID: "media_voice_read",
+            localPath: databaseContext.paths.mediaDirectory.appendingPathComponent("voice/media_voice_read.m4a").path,
+            durationMilliseconds: 2_000,
+            sizeBytes: 512,
+            format: "m4a"
+        )
+        let message = try await repository.insertOutgoingVoiceMessage(
+            OutgoingVoiceMessageInput(
+                userID: "voice_read_user",
+                conversationID: "voice_read_conversation",
+                senderID: "friend_user",
+                voice: voice,
+                localTime: 521,
+                messageID: "voice_read_message",
+                clientMessageID: "voice_read_client",
+                sortSequence: 521
+            )
+        )
+        _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
+            try db.execute(
+                sql: "UPDATE message SET direction = ?, read_status = ? WHERE message_id = ?;",
+                arguments: [
+                    MessageDirection.incoming.rawValue,
+                    MessageReadStatus.unread.rawValue,
+                    message.id.rawValue
+                ]
+            )
+        }
+
+        let playedAtBefore = try await voicePlayedAt(messageID: message.id, databaseContext: databaseContext)
+        try await repository.markConversationRead(conversationID: "voice_read_conversation", userID: "voice_read_user")
+        let conversations = try await repository.listConversations(for: "voice_read_user")
+        let storedMessage = try await repository.message(messageID: message.id)
+        let playedAtAfter = try await voicePlayedAt(messageID: message.id, databaseContext: databaseContext)
+
+        #expect(conversations.first?.unreadCount == 0)
+        #expect(storedMessage?.state.readStatus == .read)
+        #expect(playedAtBefore == nil)
+        #expect(playedAtAfter == nil)
     }
 
     @Test func localChatRepositoryRollsBackWhenMessageInsertFails() async throws {
@@ -1310,6 +1367,29 @@ private func databaseInt(
 ) async throws -> Int? {
     try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
         try Int.fetchOne(db, sql: sql, arguments: arguments)
+    }
+}
+
+private func voicePlayedAt(messageID: MessageID, databaseContext: DatabaseTestContext) async throws -> Int64? {
+    try await databaseContext.databaseActor.read(paths: databaseContext.paths) { db in
+        let columnNames = try String.fetchAll(
+            db,
+            sql: "SELECT name FROM pragma_table_info('message_voice');"
+        )
+        guard columnNames.contains("played_at") else {
+            return nil
+        }
+
+        return try Int64.fetchOne(
+            db,
+            sql: """
+            SELECT voice.played_at
+            FROM message_voice AS voice
+            INNER JOIN message ON message.content_id = voice.content_id
+            WHERE message.message_id = ?;
+            """,
+            arguments: [messageID.rawValue]
+        )
     }
 }
 

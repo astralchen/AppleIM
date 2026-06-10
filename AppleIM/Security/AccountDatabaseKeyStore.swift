@@ -11,7 +11,7 @@ import Security
 /// 账号数据库密钥存储协议
 ///
 /// 密钥与账号绑定，调用方只负责获取密钥能力，不直接关心 Keychain 细节。
-protocol AccountDatabaseKeyStore: Sendable {
+nonisolated protocol AccountDatabaseKeyStore: Sendable {
     /// 获取或创建指定账号的数据库加密密钥
     func databaseKey(for accountID: UserID) async throws -> Data
     /// 删除指定账号的数据库加密密钥

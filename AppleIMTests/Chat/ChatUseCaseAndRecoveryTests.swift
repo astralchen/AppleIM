@@ -790,7 +790,7 @@ extension AppleIMTests {
         #expect(conversations.first?.unreadCount == 0)
     }
 
-    @Test func chatUseCaseMarksIncomingVoicePlayedAndClearsUnreadDot() async throws {
+    @Test func localChatUseCaseKeepsReadVoiceUnplayedUntilPlayback() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: rootDirectory)
@@ -821,8 +821,12 @@ extension AppleIMTests {
         )
         _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
             try db.execute(
-                sql: "UPDATE message SET read_status = ? WHERE message_id = ?;",
-                arguments: [MessageReadStatus.unread.rawValue, insertedMessage.id.rawValue]
+                sql: "UPDATE message SET direction = ?, read_status = ? WHERE message_id = ?;",
+                arguments: [
+                    MessageDirection.incoming.rawValue,
+                    MessageReadStatus.read.rawValue,
+                    insertedMessage.id.rawValue
+                ]
             )
         }
 

@@ -438,6 +438,8 @@ nonisolated struct StoredVoiceContent: Equatable, Sendable {
     let durationMilliseconds: Int
     /// 语音格式（m4a、aac 等）
     let format: String
+    /// 首次播放时间戳，nil 表示未播放
+    let playedAt: Int64?
 
     var mediaID: String { resource.mediaID }
     var localPath: String { resource.localPath }
@@ -445,6 +447,7 @@ nonisolated struct StoredVoiceContent: Equatable, Sendable {
     var remoteURL: String? { resource.remoteURL }
     var md5: String? { resource.md5 }
     var uploadStatus: MediaUploadStatus { resource.uploadStatus }
+    var isPlayed: Bool { playedAt != nil }
 
     init(
         mediaID: String,
@@ -453,6 +456,7 @@ nonisolated struct StoredVoiceContent: Equatable, Sendable {
         sizeBytes: Int64,
         remoteURL: String? = nil,
         format: String,
+        playedAt: Int64? = nil,
         uploadStatus: MediaUploadStatus = .pending
     ) {
         self.init(
@@ -465,18 +469,21 @@ nonisolated struct StoredVoiceContent: Equatable, Sendable {
                 uploadStatus: uploadStatus
             ),
             durationMilliseconds: durationMilliseconds,
-            format: format
+            format: format,
+            playedAt: playedAt
         )
     }
 
     init(
         resource: StoredMediaResourceSnapshot,
         durationMilliseconds: Int,
-        format: String
+        format: String,
+        playedAt: Int64? = nil
     ) {
         self.resource = resource
         self.durationMilliseconds = durationMilliseconds
         self.format = format
+        self.playedAt = playedAt
     }
 }
 

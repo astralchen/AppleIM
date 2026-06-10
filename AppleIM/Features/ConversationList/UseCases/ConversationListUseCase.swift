@@ -28,7 +28,7 @@ nonisolated struct ConversationListSimulationResult: Equatable, Sendable {
 }
 
 /// 会话列表服务协议
-protocol ConversationListService: Sendable {
+nonisolated protocol ConversationListService: Sendable {
     /// 加载会话列表
     ///
     /// - Returns: 会话列表行状态数组

@@ -32,7 +32,7 @@ nonisolated enum DatabaseFileKind: String, Codable, CaseIterable, Sendable {
 /// - 使用 sort_seq 字段统一排序，避免依赖时间戳
 nonisolated enum DatabaseSchema {
     /// 当前 Schema 版本。
-    static let currentVersion = 8
+    static let currentVersion = 9
 
     /// 每个数据库必须存在的核心表。
     static let requiredTables: [DatabaseFileKind: Set<String>] = [
@@ -72,6 +72,7 @@ nonisolated enum DatabaseSchema {
         .main: [
             "notification_setting": ["user_id", "badge_enabled", "badge_include_muted"],
             "message": ["message_id", "conversation_id", "content_table", "content_id", "sort_seq"],
+            "message_voice": ["content_id", "played_at"],
             "conversation": ["conversation_id", "user_id", "sort_ts"],
             "media_resource": ["media_id", "owner_message_id", "updated_at"],
             "pending_job": ["job_id", "user_id", "status", "next_retry_at"]
@@ -252,6 +253,7 @@ private extension DatabaseSchema {
             table.column("cdn_url", .text)
             table.column("format", .text)
             table.column("transcript", .text)
+            table.column("played_at", .integer)
             table.column("upload_status", .integer).defaults(to: 0)
             table.column("download_status", .integer).defaults(to: 0)
         }

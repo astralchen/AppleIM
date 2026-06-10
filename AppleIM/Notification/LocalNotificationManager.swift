@@ -10,7 +10,7 @@ import UIKit
 @preconcurrency import UserNotifications
 
 /// App 角标管理协议
-protocol ApplicationBadgeManaging: Sendable {
+nonisolated protocol ApplicationBadgeManaging: Sendable {
     /// 设置 App 图标角标数量
     func setApplicationIconBadgeNumber(_ count: Int) async
 }
@@ -85,7 +85,7 @@ nonisolated struct IncomingMessageNotificationPayload: Equatable, Sendable {
 }
 
 /// 本地通知管理协议
-protocol LocalNotificationManaging: Sendable {
+nonisolated protocol LocalNotificationManaging: Sendable {
     /// 请求通知授权
     func requestAuthorization() async throws -> Bool
     /// 调度收到新消息的本地通知
@@ -109,7 +109,7 @@ protocol LocalNotificationManaging: Sendable {
 /// - 本类型只保存不可变通知中心引用，不保存可变业务状态。
 /// - 暴露方法只调用系统通知中心的授权、添加、角标和清理 API。
 /// - delegate 生命周期由通知中心持有；回调只返回展示选项，不读写共享状态。
-final class UserNotificationCenterNotificationManager: NSObject, LocalNotificationManaging, UNUserNotificationCenterDelegate, @unchecked Sendable {
+nonisolated final class UserNotificationCenterNotificationManager: NSObject, LocalNotificationManaging, UNUserNotificationCenterDelegate, @unchecked Sendable {
     private let center: UNUserNotificationCenter
 
     /// 初始化

@@ -317,6 +317,7 @@ nonisolated struct MessageVoiceDatabaseRecord: FetchableRecord, PersistableRecor
         static let cdnURL = Column("cdn_url")
         static let format = Column("format")
         static let transcript = Column("transcript")
+        static let playedAt = Column("played_at")
         static let uploadStatus = Column("upload_status")
         static let downloadStatus = Column("download_status")
     }
@@ -329,6 +330,7 @@ nonisolated struct MessageVoiceDatabaseRecord: FetchableRecord, PersistableRecor
     let cdnURL: String?
     let format: String
     let transcript: String?
+    let playedAt: Int64?
     let uploadStatus: MediaUploadStatus
     let downloadStatus: Int
 
@@ -341,6 +343,7 @@ nonisolated struct MessageVoiceDatabaseRecord: FetchableRecord, PersistableRecor
         cdnURL: String?,
         format: String,
         transcript: String?,
+        playedAt: Int64? = nil,
         uploadStatus: MediaUploadStatus,
         downloadStatus: Int
     ) {
@@ -352,6 +355,7 @@ nonisolated struct MessageVoiceDatabaseRecord: FetchableRecord, PersistableRecor
         self.cdnURL = cdnURL
         self.format = format
         self.transcript = transcript
+        self.playedAt = playedAt
         self.uploadStatus = uploadStatus
         self.downloadStatus = downloadStatus
     }
@@ -370,6 +374,7 @@ nonisolated struct MessageVoiceDatabaseRecord: FetchableRecord, PersistableRecor
             cdnURL: row[Columns.cdnURL],
             format: row[Columns.format],
             transcript: row[Columns.transcript],
+            playedAt: row[Columns.playedAt],
             uploadStatus: uploadStatus,
             downloadStatus: row[Columns.downloadStatus] ?? 0
         )
@@ -384,6 +389,7 @@ nonisolated struct MessageVoiceDatabaseRecord: FetchableRecord, PersistableRecor
         container[Columns.cdnURL] = cdnURL
         container[Columns.format] = format
         container[Columns.transcript] = transcript
+        container[Columns.playedAt] = playedAt
         container[Columns.uploadStatus] = uploadStatus.rawValue
         container[Columns.downloadStatus] = downloadStatus
     }

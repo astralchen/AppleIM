@@ -110,7 +110,7 @@ extension AppleIMTests {
     private func makeLifecycleService(
         accountID: UserID,
         rootDirectory: URL,
-        localNotificationManager: any LocalNotificationManaging = CountingLocalNotificationManager(),
+        localNotificationManager: (any LocalNotificationManaging)? = nil,
         networkRecoveryCoordinator: any NetworkRecoveryCoordinating = NetworkRecoveryCoordinatorSpy()
     ) throws -> AppLifecycleService {
         let storeProvider = ChatStoreProvider(
@@ -122,7 +122,7 @@ extension AppleIMTests {
         return AppLifecycleService(
             userID: accountID,
             storeProvider: storeProvider,
-            localNotificationManager: localNotificationManager,
+            localNotificationManager: localNotificationManager ?? CountingLocalNotificationManager(),
             networkRecoveryCoordinator: networkRecoveryCoordinator
         )
     }

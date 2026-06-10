@@ -42,7 +42,7 @@ extension NotificationCenter {
 
 extension Notification.Name {
     /// 联系人资料变更后发出的本地 UI 刷新广播。
-    static let chatStoreContactProfileDidChange = Notification.Name("ChatStoreContactProfileDidChange")
+    nonisolated static let chatStoreContactProfileDidChange = Notification.Name("ChatStoreContactProfileDidChange")
 }
 
 nonisolated enum ContactProfileChangeNotification {

@@ -7,7 +7,7 @@
 
 import Foundation
 
-protocol ContactListService: Sendable {
+nonisolated protocol ContactListService: Sendable {
     func loadContacts(query: String) async throws -> ContactListViewState
     func openConversation(for contactID: ContactID) async throws -> ConversationListRowState
     func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult?

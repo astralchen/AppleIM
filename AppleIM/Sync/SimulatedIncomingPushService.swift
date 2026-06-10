@@ -51,7 +51,7 @@ nonisolated struct SimulatedIncomingPushResult: Equatable, Sendable {
 }
 
 /// 聊天等上层用例依赖的后台推送能力。
-protocol SimulatedIncomingPushing: Sendable {
+nonisolated protocol SimulatedIncomingPushing: Sendable {
     func simulateIncomingPush(_ request: SimulatedIncomingPushRequest) async throws -> SimulatedIncomingPushResult?
 }
 

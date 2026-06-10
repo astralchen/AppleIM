@@ -972,7 +972,7 @@ nonisolated struct LocalChatServiceHub: ChatServiceHub {
                 ChatMessageRowContent.VoiceContent(
                     localPath: voice.localPath,
                     durationMilliseconds: voice.durationMilliseconds,
-                    isUnplayed: !isOutgoing && message.state.readStatus == .unread,
+                    isUnplayed: !isOutgoing && voice.playedAt == nil,
                     isPlaying: false
                 )
             )

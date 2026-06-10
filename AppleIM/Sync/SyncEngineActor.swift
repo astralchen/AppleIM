@@ -11,7 +11,7 @@ import Foundation
 /// 同步增量数据服务协议
 ///
 /// 由网络层实现，负责从服务端拉取增量数据
-protocol SyncDeltaService: Sendable {
+nonisolated protocol SyncDeltaService: Sendable {
     /// 拉取增量数据
     ///
     /// - Parameter checkpoint: 上次同步的检查点，nil 表示首次同步
