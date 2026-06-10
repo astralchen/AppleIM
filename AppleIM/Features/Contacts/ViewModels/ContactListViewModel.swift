@@ -10,7 +10,7 @@ import Foundation
 
 @MainActor
 final class ContactListViewModel {
-    private let useCase: any ContactListUseCase
+    private let service: any ContactListService
     private let stateSubject: CurrentValueSubject<ContactListViewState, Never>
     private var loadTask: Task<Void, Never>?
     private var openTask: Task<Void, Never>?
@@ -24,8 +24,8 @@ final class ContactListViewModel {
         stateSubject.value
     }
 
-    init(useCase: any ContactListUseCase, initialState: ContactListViewState = ContactListViewState()) {
-        self.useCase = useCase
+    init(useCase: any ContactListService, initialState: ContactListViewState = ContactListViewState()) {
+        self.service = useCase
         self.stateSubject = CurrentValueSubject(initialState)
     }
 
@@ -46,7 +46,7 @@ final class ContactListViewModel {
             guard let self else { return }
 
             do {
-                let conversation = try await useCase.openConversation(for: row.id)
+                let conversation = try await service.openConversation(for: row.id)
                 guard !Task.isCancelled else { return }
                 onOpenConversation(conversation)
             } catch {
@@ -64,7 +64,7 @@ final class ContactListViewModel {
             guard let self else { return }
 
             do {
-                _ = try await useCase.simulateContactProfileChange()
+                _ = try await service.simulateContactProfileChange()
                 guard !Task.isCancelled else { return }
                 load(query: query, showLoading: false)
                 simulatedProfileChangeTask = nil
@@ -90,7 +90,7 @@ final class ContactListViewModel {
             guard let self else { return }
 
             do {
-                let nextState = try await useCase.loadContacts(query: query)
+                let nextState = try await service.loadContacts(query: query)
                 guard !Task.isCancelled else { return }
                 stateSubject.send(nextState)
                 loadTask = nil

@@ -6,6 +6,35 @@ import UIKit
 
 extension AppleIMTests {
     @MainActor
+    @Test func chatViewModelLoadsWithNarrowServiceDependencies() async throws {
+        let row = makeChatRow(id: "narrow_dependency_row", text: "窄服务消息", sortSequence: 10)
+        let services = NarrowChatViewModelDependencyStub(
+            initialPage: ChatMessagePage(rows: [row], hasMore: false, nextBeforeSortSequence: nil),
+            draft: "窄服务草稿"
+        )
+        let viewModel = ChatViewModel(
+            dependencies: ChatViewModel.Dependencies(
+                timeline: services,
+                draft: services,
+                sender: services,
+                messageOperations: services,
+                group: services,
+                emoji: services,
+                simulatedIncoming: services
+            ),
+            title: "窄服务"
+        )
+
+        viewModel.load()
+
+        try await waitForCondition {
+            viewModel.currentState.phase == .loaded
+        }
+        #expect(viewModel.currentState.rows.map(rowText) == ["窄服务消息"])
+        #expect(viewModel.currentState.draftText == "窄服务草稿")
+    }
+
+    @MainActor
     @Test func chatViewModelLoadsMessagesAfterConversationListSimulatedPush() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
@@ -19,7 +48,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "push_enter_view_model_conversation",
@@ -47,6 +76,76 @@ extension AppleIMTests {
             viewModel.currentState.rows.map(\.id) == pushResult.messages.map(\.messageID)
         }
         #expect(viewModel.currentState.phase == .loaded)
+    }
+
+    @MainActor
+    @Test func storeBackedChatUseCaseLoadsEmojiPanelFromAccountEmojiStore() async throws {
+        let rootDirectory = temporaryDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: rootDirectory)
+        }
+
+        let userID: UserID = "store_backed_emoji_user"
+        let packageID = "store_backed_pack"
+        let storageService = FileAccountStorageService(rootDirectory: rootDirectory)
+        let storeProvider = ChatStoreProvider(
+            accountID: userID,
+            storageService: storageService,
+            database: DatabaseActor(),
+            shouldSeedDemoData: false
+        )
+        let accountStore = try await storeProvider.accountStore()
+        try await accountStore.emojis.upsertEmojiPackage(
+            EmojiPackageRecord(
+                packageID: packageID,
+                userID: userID,
+                title: "全部表情",
+                author: "Tests",
+                coverURL: nil,
+                localCoverPath: nil,
+                version: 1,
+                status: .downloaded,
+                sortOrder: 0,
+                createdAt: 1,
+                updatedAt: 1
+            )
+        )
+        try await accountStore.emojis.upsertEmojiAsset(
+            EmojiAssetRecord(
+                emojiID: "store_backed_smile",
+                userID: userID,
+                packageID: packageID,
+                emojiType: .package,
+                name: "Smile",
+                md5: nil,
+                localPath: nil,
+                thumbPath: nil,
+                cdnURL: nil,
+                width: 128,
+                height: 128,
+                sizeBytes: nil,
+                useCount: 0,
+                lastUsedAt: nil,
+                isFavorite: true,
+                isDeleted: false,
+                extraJSON: nil,
+                createdAt: 2,
+                updatedAt: 2
+            )
+        )
+        let useCase = StoreBackedChatUseCase(
+            userID: userID,
+            conversationID: "store_backed_emoji_conversation",
+            storeProvider: storeProvider,
+            sendService: MockMessageSendService(delayNanoseconds: 0),
+            mediaFileStore: AccountMediaFileStore(accountID: userID, storageService: storageService)
+        )
+
+        let state = try await useCase.loadEmojiPanelState()
+
+        #expect(state.packages.map(\.packageID) == [packageID])
+        #expect(state.packageEmojisByPackageID[packageID]?.map(\.emojiID) == ["store_backed_smile"])
+        #expect(state.favoriteEmojis.map(\.emojiID) == ["store_backed_smile"])
     }
 
     @MainActor
@@ -1294,5 +1393,105 @@ extension AppleIMTests {
         #expect(insertedRow.isOutgoing)
         #expect(insertedRow.statusText == "Sending")
         #expect(insertedRow.voiceContent?.durationMilliseconds == 4_200)
+    }
+}
+
+private nonisolated struct NarrowChatViewModelDependencyStub:
+    ChatTimelineService,
+    ChatDraftService,
+    ChatSendingService,
+    ChatMessageOperationService,
+    ChatGroupService,
+    ChatEmojiService,
+    ChatSimulatedIncomingService
+{
+    let initialPage: ChatMessagePage
+    let draft: String?
+
+    var observedUserID: UserID? { "narrow_dependency_user" }
+    var observedConversationID: ConversationID? { "narrow_dependency_conversation" }
+
+    func loadInitialMessages() async throws -> ChatMessagePage {
+        initialPage
+    }
+
+    func loadOlderMessages(beforeSortSequence: Int64, limit: Int) async throws -> ChatMessagePage {
+        ChatMessagePage(rows: [], hasMore: false, nextBeforeSortSequence: nil)
+    }
+
+    func observeLatestMessages(limit: Int) async throws -> DatabaseObservationStream<[ChatMessageRowState]>? {
+        nil
+    }
+
+    func loadDraft() async throws -> String? {
+        draft
+    }
+
+    func saveDraft(_ text: String) async throws {}
+
+    func sendText(
+        _ text: String,
+        mentionedUserIDs: [UserID],
+        mentionsAll: Bool
+    ) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendImage(data: Data, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendVoice(recording: VoiceRecordingFile) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendVideo(fileURL: URL, preferredFileExtension: String?) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func sendFile(fileURL: URL) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func resend(messageID: MessageID) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func markVoicePlayed(messageID: MessageID) async throws -> ChatMessageRowState? {
+        nil
+    }
+
+    func delete(messageID: MessageID) async throws {}
+
+    func revoke(messageID: MessageID) async throws {}
+
+    func loadGroupContext() async throws -> GroupChatContext? {
+        nil
+    }
+
+    func updateGroupAnnouncement(_ text: String) async throws -> GroupAnnouncement? {
+        nil
+    }
+
+    func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
+        .empty
+    }
+
+    func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
+        .empty
+    }
+
+    func sendEmoji(_ emoji: EmojiAssetRecord) -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        Self.emptyRowStream()
+    }
+
+    func simulateIncomingMessages() async throws -> [ChatMessageRowState] {
+        []
+    }
+
+    private static func emptyRowStream() -> AsyncThrowingStream<ChatMessageRowState, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
     }
 }

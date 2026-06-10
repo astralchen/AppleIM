@@ -16,7 +16,7 @@ final class ConversationListViewModel {
     private static let defaultPageSize = 50
 
     /// UseCase 依赖
-    private let useCase: any ConversationListUseCase
+    private let service: any ConversationListService
     /// 每页加载数量
     private let pageSize: Int
     /// 状态发布器
@@ -49,12 +49,12 @@ final class ConversationListViewModel {
     }
 
     init(
-        useCase: any ConversationListUseCase,
+        useCase: any ConversationListService,
         initialState: ConversationListViewState = ConversationListViewState(),
         pageSize: Int = ConversationListViewModel.defaultPageSize,
         diagnostics: any ConversationListLoadingDiagnostics = AppConversationListLoadingDiagnostics()
     ) {
-        self.useCase = useCase
+        self.service = useCase
         self.pageSize = max(pageSize, 1)
         self.diagnostics = diagnostics
         self.stateSubject = CurrentValueSubject(initialState)
@@ -130,11 +130,11 @@ final class ConversationListViewModel {
             guard let self else { return }
 
             do {
-                let useCaseStartUptime = AppLogger.performanceSpan()
-                let page = try await useCase.loadConversationPage(limit: pageSize, after: nil)
+                let serviceStartUptime = AppLogger.performanceSpan()
+                let page = try await service.loadConversationPage(limit: pageSize, after: nil)
                 guard !Task.isCancelled, loadGeneration == currentGeneration else { return }
                 diagnostics.log(
-                    "ConversationList initial load useCase returned generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: useCaseStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
+                    "ConversationList initial load service returned generation=\(currentGeneration) rows=\(page.rows.count) elapsed=\(AppLogger.elapsedMilliseconds(since: serviceStartUptime)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))"
                 )
                 let elapsed = AppLogger.elapsedMilliseconds(since: startUptime)
 
@@ -216,7 +216,7 @@ final class ConversationListViewModel {
             guard let self else { return }
 
             do {
-                let page = try await useCase.loadConversationPage(limit: pageSize, after: cursor)
+                let page = try await service.loadConversationPage(limit: pageSize, after: cursor)
                 guard !Task.isCancelled else { return }
 
                 publish { state in
@@ -287,7 +287,7 @@ final class ConversationListViewModel {
             }
 
             do {
-                let result = try await useCase.simulateIncomingMessages()
+                let result = try await service.simulateIncomingMessages()
                 guard !Task.isCancelled else { return }
                 if let result {
                     publishSimulationResult(result)
@@ -345,7 +345,7 @@ final class ConversationListViewModel {
         observationStartTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let stream = try await useCase.observeConversationPage(limit: pageSize) else {
+                guard let stream = try await service.observeConversationPage(limit: pageSize) else {
                     observationStartTask = nil
                     return
                 }
@@ -377,13 +377,13 @@ final class ConversationListViewModel {
         stateSubject.send(state)
     }
 
-    private func updateConversationSetting(_ operation: @escaping @Sendable (any ConversationListUseCase) async throws -> Void) {
+    private func updateConversationSetting(_ operation: @escaping @Sendable (any ConversationListService) async throws -> Void) {
         settingTask?.cancel()
         settingTask = Task { [weak self] in
             guard let self else { return }
 
             do {
-                try await operation(useCase)
+                try await operation(service)
                 guard !Task.isCancelled else { return }
                 load()
             } catch is CancellationError {

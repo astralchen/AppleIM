@@ -68,7 +68,7 @@ final class TestNetworkConnectivityMonitor: NetworkConnectivityMonitoring {
     }
 }
 
-struct StubConversationListUseCase: ConversationListUseCase {
+struct StubConversationListUseCase: ConversationListService {
     func loadConversations() async throws -> [ConversationListRowState] {
         [
             ConversationListRowState(
@@ -103,7 +103,7 @@ struct StubConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
-actor StubContactListUseCase: ContactListUseCase {
+actor StubContactListUseCase: ContactListService {
     private(set) var queries: [String] = []
     private(set) var simulateProfileChangeCallCount = 0
 
@@ -145,7 +145,7 @@ actor StubContactListUseCase: ContactListUseCase {
     }
 }
 
-actor RefreshingContactListUseCase: ContactListUseCase {
+actor RefreshingContactListUseCase: ContactListService {
     private var didSimulateProfileChange = false
     private(set) var simulateProfileChangeCallCount = 0
 
@@ -186,7 +186,7 @@ actor RefreshingContactListUseCase: ContactListUseCase {
     }
 }
 
-actor GroupOnlyContactListUseCase: ContactListUseCase {
+actor GroupOnlyContactListUseCase: ContactListService {
     func loadContacts(query: String) async throws -> ContactListViewState {
         let row = ContactListRowState(
             id: "group_language",
@@ -222,7 +222,7 @@ actor GroupOnlyContactListUseCase: ContactListUseCase {
     }
 }
 
-struct PagedConversationListUseCase: ConversationListUseCase {
+struct PagedConversationListUseCase: ConversationListService {
     private let rows: [ConversationListRowState] = (0..<3).map { index in
         ConversationListRowState(
             id: ConversationID(rawValue: "paged_\(index)"),
@@ -258,7 +258,7 @@ struct PagedConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
-actor CursorShiftConversationListUseCase: ConversationListUseCase {
+actor CursorShiftConversationListUseCase: ConversationListService {
     private var didLoadFirstPage = false
     private let originalRows: [ConversationListRowState] = [
         ConversationListRowState(
@@ -335,7 +335,7 @@ actor CursorShiftConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
-actor MutableConversationListUseCase: ConversationListUseCase {
+actor MutableConversationListUseCase: ConversationListService {
     private var row = ConversationListRowState(
         id: "mutable_conversation",
         title: "Mutable Conversation",
@@ -390,7 +390,7 @@ actor MutableConversationListUseCase: ConversationListUseCase {
     }
 }
 
-actor CountingConversationListUseCase: ConversationListUseCase {
+actor CountingConversationListUseCase: ConversationListService {
     private(set) var loadPageCallCount = 0
 
     func loadConversations() async throws -> [ConversationListRowState] {
@@ -422,7 +422,7 @@ actor CountingConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
-actor ReadClearingConversationListUseCase: ConversationListUseCase {
+actor ReadClearingConversationListUseCase: ConversationListService {
     private(set) var loadPageCallCount = 0
 
     func loadConversations() async throws -> [ConversationListRowState] {
@@ -451,7 +451,7 @@ actor ReadClearingConversationListUseCase: ConversationListUseCase {
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {}
 }
 
-actor SimulatingConversationListUseCase: ConversationListUseCase {
+actor SimulatingConversationListUseCase: ConversationListService {
     private var row = ConversationListRowState(
         id: "simulated_list_conversation",
         title: "Simulated List",
@@ -496,7 +496,7 @@ actor SimulatingConversationListUseCase: ConversationListUseCase {
     }
 }
 
-actor ExternalConversationChangeUseCase: ConversationListUseCase {
+actor ExternalConversationChangeUseCase: ConversationListService {
     private var row = ConversationListRowState(
         id: "external_change_conversation",
         title: "External Change",
@@ -532,7 +532,7 @@ actor ExternalConversationChangeUseCase: ConversationListUseCase {
     }
 }
 
-actor ImmediateResultSlowRefreshConversationListUseCase: ConversationListUseCase {
+actor ImmediateResultSlowRefreshConversationListUseCase: ConversationListService {
     private var row = ConversationListRowState(
         id: "immediate_simulated_list_conversation",
         title: "Immediate Simulated List",
@@ -581,7 +581,7 @@ actor ImmediateResultSlowRefreshConversationListUseCase: ConversationListUseCase
     }
 }
 
-actor DelayedSimulatingConversationListUseCase: ConversationListUseCase {
+actor DelayedSimulatingConversationListUseCase: ConversationListService {
     private var row = ConversationListRowState(
         id: "delayed_simulated_list_conversation",
         title: "Delayed Simulated List",
@@ -625,7 +625,7 @@ actor DelayedSimulatingConversationListUseCase: ConversationListUseCase {
     }
 }
 
-struct FailingSimulationConversationListUseCase: ConversationListUseCase {
+struct FailingSimulationConversationListUseCase: ConversationListService {
     func loadConversations() async throws -> [ConversationListRowState] {
         [
             ConversationListRowState(
@@ -654,7 +654,7 @@ struct FailingSimulationConversationListUseCase: ConversationListUseCase {
     }
 }
 
-struct EmptySimulationConversationListUseCase: ConversationListUseCase {
+struct EmptySimulationConversationListUseCase: ConversationListService {
     func loadConversations() async throws -> [ConversationListRowState] {
         []
     }
@@ -717,7 +717,7 @@ actor ConversationChangeNotificationSpy {
     }
 }
 
-struct EmptySearchUseCase: SearchUseCase {
+struct EmptySearchUseCase: SearchService {
     func search(query: String) async throws -> SearchResults {
         SearchResults()
     }
@@ -800,7 +800,7 @@ actor TrackingAccountDatabaseKeyStore: AccountDatabaseKeyStore {
     }
 }
 
-struct StaleSearchUseCase: SearchUseCase {
+struct StaleSearchUseCase: SearchService {
     func search(query: String) async throws -> SearchResults {
         if query == "old" {
             try await Task.sleep(nanoseconds: 80_000_000)

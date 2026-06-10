@@ -38,7 +38,7 @@ extension AppleIMTests {
             databaseKeyStore: keyStore
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
         let originalKey = try await keyStore.databaseKey(for: "delete_secure_user")
         let paths = try await storageService.prepareStorage(for: "delete_secure_user")
 
@@ -66,7 +66,7 @@ extension AppleIMTests {
             databaseKeyStore: InMemoryAccountDatabaseKeyStore()
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
         let paths = try await storageService.prepareStorage(for: "delete_cached_connection_user")
         _ = try await databaseActor.tableNames(in: .main, paths: paths)
 
@@ -94,7 +94,7 @@ extension AppleIMTests {
             databaseKeyStore: InMemoryAccountDatabaseKeyStore()
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
         let paths = try await storageService.prepareStorage(for: "logout_cached_connection_user")
         _ = try await databaseActor.tableNames(in: .main, paths: paths)
         #expect(await databaseActor.cachedConnectionCount(for: paths) > 0)
@@ -122,7 +122,7 @@ extension AppleIMTests {
             databaseKeyStore: keyStore
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
         let paths = try await storageService.prepareStorage(for: "cipher_user")
 
         for databaseKind in DatabaseFileKind.allCases {
@@ -185,7 +185,7 @@ extension AppleIMTests {
             databaseKeyStore: keyStore
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
         _ = try await storeProvider.searchIndex()
         _ = try await storeProvider.dataRepairService()
 
@@ -210,7 +210,7 @@ extension AppleIMTests {
             applicationBadgeManager: badgeManager
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
 
         #expect(await badgeManager.values().isEmpty)
     }
@@ -230,7 +230,7 @@ extension AppleIMTests {
             databaseKeyStore: InMemoryAccountDatabaseKeyStore()
         )
 
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         let conversations = try await repository.listConversations(for: "ui_test_user")
         let conversationsByID = Dictionary(uniqueKeysWithValues: conversations.map { ($0.id, $0) })
 
@@ -264,7 +264,7 @@ extension AppleIMTests {
             databaseKeyStore: keyStore
         )
 
-        _ = try await storeProvider.repository()
+        _ = (try await storeProvider.accountStore()).dataRepairRepository
         let paths = try await storageService.prepareStorage(for: "wrong_key_user")
 
         let unconfiguredActor = DatabaseActor()
@@ -308,7 +308,7 @@ extension AppleIMTests {
             databaseKeyStore: InMemoryAccountDatabaseKeyStore()
         )
 
-        let encryptedRepository = try await storeProvider.repository()
+        let encryptedRepository = (try await storeProvider.accountStore()).dataRepairRepository
         let conversations = try await encryptedRepository.listConversations(for: accountID)
         let cipherVersion = try await encryptedActor.cipherVersion(in: .main, paths: paths)
         let unconfiguredReadFailed = await databaseReadFails(using: DatabaseActor(), paths: paths)
@@ -504,7 +504,7 @@ extension AppleIMTests {
             shouldSeedDemoData: false
         )
 
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         let conversations = try await repository.listConversations(for: "mock_user")
         let contacts = try await repository.listContacts(for: "mock_user")
 

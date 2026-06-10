@@ -25,6 +25,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private var languageObservation: NSObjectProtocol?
     /// 登录态缓存
     private let sessionStore: any AccountSessionStore = UserDefaultsAccountSessionStore()
+    /// 账号生命周期流程服务
+    private lazy var accountLifecycleService = AccountLifecycleService(sessionStore: sessionStore)
+    /// 账号依赖容器工厂
+    private lazy var dependencyFactory = AppDependencyFactory(sessionStore: sessionStore)
     /// 登录后主界面构建器
     private let mainInterfaceBuilder = MainInterfaceBuilder()
 
@@ -135,10 +139,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 清空会话缓存，返回登录界面
     private func endCurrentSession() {
         let dependenciesToClose = dependencies
-        sessionStore.clearSession()
+        let accountLifecycleService = accountLifecycleService
 
-        Task { @MainActor [weak self, dependenciesToClose] in
-            try? await dependenciesToClose?.closeCurrentAccountConnections()
+        Task { @MainActor [weak self, dependenciesToClose, accountLifecycleService] in
+            await accountLifecycleService.endSession {
+                try await dependenciesToClose?.closeCurrentAccountConnections()
+            }
             guard let self else { return }
 
             guard let window = self.window else {
@@ -156,11 +162,25 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             endCurrentSession()
             return
         }
+        let accountLifecycleService = accountLifecycleService
 
-        Task { @MainActor [weak self] in
+        Task { @MainActor [weak self, dependencies, accountLifecycleService] in
             do {
-                try await dependencies.deleteCurrentAccountStorage()
-                self?.endCurrentSession()
+                try await accountLifecycleService.deleteLocalDataThenEndSession(
+                    deleteLocalData: {
+                        try await dependencies.deleteCurrentAccountStorage()
+                    },
+                    closeConnections: {
+                        try await dependencies.closeCurrentAccountConnections()
+                    }
+                )
+                guard let self else { return }
+                guard let window = self.window else {
+                    self.dependencies = nil
+                    return
+                }
+
+                self.showLoginInterface(in: window)
             } catch {
                 self?.showLocalDataDeletionError()
             }
@@ -213,12 +233,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///   - window: 主窗口
     private func showMainInterface(for session: AccountSession, in window: UIWindow) {
         do {
-            let serverMessageSendConfiguration = makeServerMessageSendConfiguration(for: session)
-            let dependencies = try AppDependencyContainer(
-                accountID: session.userID,
-                accountAvatarURL: session.avatarURL,
-                serverMessageSendConfiguration: serverMessageSendConfiguration
-            )
+            let dependencies = try dependencyFactory.makeDependencies(for: session)
             self.dependencies = dependencies
             if !dependencies.isUITesting {
                 dependencies.requestLocalNotificationAuthorization()
@@ -268,43 +283,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// 把语言方向和文案刷新应用到窗口与当前控制器树。
     private func applyLanguageContext(_ context: AppLanguageContext) {
         window?.applyAppLanguageContext(context)
-    }
-
-    private func makeServerMessageSendConfiguration(for session: AccountSession) -> ServerMessageSendService.Configuration? {
-        let environment = ProcessInfo.processInfo.environment
-        guard
-            let baseURLValue = environment["CHATBRIDGE_SERVER_BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !baseURLValue.isEmpty,
-            let baseURL = URL(string: baseURLValue)
-        else {
-            return nil
-        }
-
-        let timeoutSeconds = environment["CHATBRIDGE_SERVER_TIMEOUT_SECONDS"]
-            .flatMap { value in
-                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-                return trimmed.isEmpty ? nil : TimeInterval(trimmed)
-            }
-            ?? 15
-        let tokenActor = TokenRefreshActor(
-            session: session,
-            sessionStore: sessionStore,
-            configuration: URLSessionHTTPClient.Configuration(
-                baseURL: baseURL,
-                authTokenProvider: { nil },
-                timeoutSeconds: timeoutSeconds
-            )
-        )
-
-        return ServerMessageSendService.Configuration.fromEnvironment(
-            environment,
-            authTokenProvider: {
-                await tokenActor.validToken()
-            },
-            authTokenRefresher: {
-                await tokenActor.refreshToken()
-            }
-        )
     }
 }
 

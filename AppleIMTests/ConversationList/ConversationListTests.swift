@@ -26,7 +26,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(id: "badge_controller_a", userID: "badge_controller_user", unreadCount: 2)
         )
@@ -594,7 +594,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListService(userID: "ui_test_user", storeProvider: storeProvider)
 
         let rows = try await useCase.loadConversations()
 
@@ -615,7 +615,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "avatar_conversation",
@@ -625,7 +625,7 @@ extension AppleIMTests {
                 sortTimestamp: 9_999
             )
         )
-        let useCase = LocalConversationListUseCase(userID: "avatar_list_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListService(userID: "avatar_list_user", storeProvider: storeProvider)
 
         let rows = try await useCase.loadConversations()
         let avatarRow = rows.first { $0.id == "avatar_conversation" }
@@ -645,7 +645,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListService(userID: "ui_test_user", storeProvider: storeProvider)
 
         let firstPage = try await useCase.loadConversationPage(limit: 2, after: nil)
         let secondPage = try await useCase.loadConversationPage(limit: 2, after: firstPage.nextCursor)
@@ -668,7 +668,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListService(userID: "ui_test_user", storeProvider: storeProvider)
 
         try await useCase.setPinned(conversationID: "group_core", isPinned: true)
         try await useCase.setMuted(conversationID: "single_sondra", isMuted: true)
@@ -691,7 +691,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListService(userID: "ui_test_user", storeProvider: storeProvider)
         let rowsBefore = try await useCase.loadConversations()
 
         let result = try #require(try await useCase.simulateIncomingMessages())
@@ -728,7 +728,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "push_service_conversation",
@@ -788,7 +788,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "push_concurrent_conversation",
@@ -857,7 +857,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "push_enter_chat_conversation",

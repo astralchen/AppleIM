@@ -6,10 +6,10 @@
 
 import Foundation
 
-/// 搜索用例协议
+/// 搜索服务协议
 ///
 /// 定义全局搜索的业务接口
-protocol SearchUseCase: Sendable {
+protocol SearchService: Sendable {
     /// 执行搜索
     ///
     /// - Parameter query: 搜索关键词
@@ -25,10 +25,10 @@ protocol SearchUseCase: Sendable {
     func rebuildIndex() async throws
 }
 
-/// 本地搜索用例实现
+/// 本地搜索服务实现
 ///
 /// 基于 SearchIndexActor 实现的本地全文搜索
-nonisolated struct LocalSearchUseCase: SearchUseCase {
+nonisolated struct LocalSearchService: SearchService {
     /// 当前用户 ID
     private let userID: UserID
     /// 存储提供者

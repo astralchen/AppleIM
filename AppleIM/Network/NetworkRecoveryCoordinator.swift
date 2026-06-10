@@ -160,16 +160,16 @@ final class NetworkRecoveryCoordinator: NetworkRecoveryCoordinating {
         recoveryTask = Task { [userID, storeProvider, sendService, mediaUploadService, retryPolicy, weak self] in
             do {
                 let now = Int64(Date().timeIntervalSince1970)
-                let repository = try await storeProvider.repository()
-                let crashRecoveryResult = try await repository.recoverInterruptedOutgoingMessages(
+                let store = try await storeProvider.accountStore()
+                let crashRecoveryResult = try await store.messages.recoverInterruptedOutgoingMessages(
                     userID: userID,
                     retryPolicy: retryPolicy,
                     now: now
                 )
                 let runner = PendingMessageRetryRunner(
                     userID: userID,
-                    messageRepository: repository,
-                    pendingJobRepository: repository,
+                    messageRepository: store.messages,
+                    pendingJobRepository: store.pendingJobs,
                     sendService: sendService,
                     mediaUploadService: mediaUploadService,
                     retryPolicy: retryPolicy

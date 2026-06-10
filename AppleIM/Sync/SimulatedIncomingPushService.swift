@@ -101,7 +101,7 @@ nonisolated struct SimulatedIncomingPushService: SimulatedIncomingPushing, Senda
         self.userID = userID
         self.messageCountRange = messageCountRange
         self.repositoryProvider = {
-            try await storeProvider.repository()
+            try await storeProvider.accountStore().simulatedIncomingPushRepository
         }
         self.sequenceAllocator = SimulatedIncomingPushSequenceAllocator()
         self.logger = logger
@@ -343,7 +343,7 @@ nonisolated struct SimulatedContactProfilePushService: Sendable {
     ) {
         self.userID = userID
         self.repositoryProvider = {
-            try await storeProvider.repository()
+            try await storeProvider.accountStore().simulatedContactProfilePushRepository
         }
         self.logger = logger
     }

@@ -141,7 +141,7 @@ GRDB / SQLCipher / FileManager / Keychain
 - DAO 只处理单表或少量强相关表的读写，普通 CRUD、分页、聚合和去重查询优先使用 GRDB Query Interface / Record。
 - 数据库事务必须在 Store 层统一管理。
 - 本地数据库统一通过 `DatabaseActor` 的 GRDB `read/write/observe` 入口访问；新代码不再保留旧 SQLite 兼容层。
-- 项目未上架阶段采用当前基线 schema，旧业务 schema 不做字段迁移或数据搬运；检测到不符合当前基线的本地库时直接重建数据库文件及 `-wal` / `-shm`。这是上架前的开发期策略，不代表生产发布后的数据迁移策略；进入生产迁移阶段前必须重新建立版本化迁移、备份和失败恢复方案。
+- 项目未上架阶段采用当前基线 schema，旧业务 schema 不做字段迁移或数据搬运；检测到不符合当前基线的本地库时直接重建数据库文件及 `-wal` / `-shm`。这是上架前的开发期策略，不代表生产发布后的数据迁移策略；生产发布后的迁移策略必须改为版本化迁移、账号级加密备份、失败恢复和升级验证；进入生产迁移阶段前必须重新建立版本化迁移、备份和失败恢复方案。
 - 普通表和普通索引必须使用 GRDB schema builder；手写 SQL 仅保留在 FTS 建表、`PRAGMA`、SQLCipher 基础语句、FTS `MATCH` 和测试查询计划中。
 - `Packages/GRDBSQLCipher` 作为本地 GRDB + SQLCipher 适配包保留，工程依赖 GRDB product，不修改第三方包源码。
 

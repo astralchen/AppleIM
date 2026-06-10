@@ -27,8 +27,8 @@ nonisolated struct ConversationListSimulationResult: Equatable, Sendable {
     let finalRow: ConversationListRowState
 }
 
-/// 会话列表用例协议
-protocol ConversationListUseCase: Sendable {
+/// 会话列表服务协议
+protocol ConversationListService: Sendable {
     /// 加载会话列表
     ///
     /// - Returns: 会话列表行状态数组
@@ -65,7 +65,7 @@ protocol ConversationListUseCase: Sendable {
     func simulateIncomingMessages() async throws -> ConversationListSimulationResult?
 }
 
-extension ConversationListUseCase {
+extension ConversationListService {
     func observeConversationPage(limit: Int) async throws -> DatabaseObservationStream<ConversationListPage>? {
         nil
     }
@@ -75,8 +75,8 @@ extension ConversationListUseCase {
     }
 }
 
-/// 本地会话列表用例实现
-nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
+/// 本地会话列表服务实现
+nonisolated struct LocalConversationListService: ConversationListService {
     /// 用户 ID
     private let userID: UserID
     /// 存储提供者
@@ -114,8 +114,8 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     func loadConversations() async throws -> [ConversationListRowState] {
         let startUptime = AppLogger.performanceSpan()
         logger.info("ConversationList useCase loadConversations requested")
-        let repository = try await storeProvider.repository()
-        let conversations = try await repository.listConversations(for: userID)
+        let accountStore = try await storeProvider.accountStore()
+        let conversations = try await accountStore.conversations.listConversations(for: userID)
         logger.info(
             "ConversationList useCase loadConversations completed count=\(conversations.count) elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))"
         )
@@ -136,14 +136,14 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
         let startUptime = AppLogger.performanceSpan()
         logger.info("ConversationList useCase page requested limit=\(limit) cursor=\(cursor?.conversationID.rawValue ?? "nil")")
         let repositoryStartUptime = AppLogger.performanceSpan()
-        let repository = try await storeProvider.repository()
+        let accountStore = try await storeProvider.accountStore()
         logger.info(
-            "ConversationList useCase repository ready elapsed=\(AppLogger.elapsedMilliseconds(since: repositoryStartUptime))"
+            "ConversationList service accountStore ready elapsed=\(AppLogger.elapsedMilliseconds(since: repositoryStartUptime))"
         )
 
         let requestedLimit = max(limit, 0)
         let queryStartUptime = AppLogger.performanceSpan()
-        let conversations = try await repository.listConversations(for: userID, limit: requestedLimit + 1, after: cursor)
+        let conversations = try await accountStore.conversations.listConversations(for: userID, limit: requestedLimit + 1, after: cursor)
         logger.info(
             "ConversationList useCase query completed fetched=\(conversations.count) requestedLimit=\(requestedLimit) elapsed=\(AppLogger.elapsedMilliseconds(since: queryStartUptime))"
         )
@@ -165,9 +165,9 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
 
     /// 观察首屏会话列表，供 ViewModel 实时刷新可见窗口。
     func observeConversationPage(limit: Int) async throws -> DatabaseObservationStream<ConversationListPage>? {
-        let repository = try await storeProvider.repository()
+        let accountStore = try await storeProvider.accountStore()
         let requestedLimit = max(limit, 1)
-        return try await repository
+        return try await accountStore.conversations
             .observeConversations(for: userID, limit: requestedLimit + 1)
             .map { conversations in
                 let pageConversations = Array(conversations.prefix(requestedLimit))
@@ -186,8 +186,8 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     ///   - isPinned: 是否置顶
     /// - Throws: 存储访问错误
     func setPinned(conversationID: ConversationID, isPinned: Bool) async throws {
-        let repository = try await storeProvider.repository()
-        try await repository.updateConversationPin(conversationID: conversationID, userID: userID, isPinned: isPinned)
+        let accountStore = try await storeProvider.accountStore()
+        try await accountStore.conversations.updateConversationPin(conversationID: conversationID, userID: userID, isPinned: isPinned)
     }
 
     /// 更新会话免打扰状态
@@ -197,8 +197,8 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     ///   - isMuted: 是否免打扰
     /// - Throws: 存储访问错误
     func setMuted(conversationID: ConversationID, isMuted: Bool) async throws {
-        let repository = try await storeProvider.repository()
-        try await repository.updateConversationMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
+        let accountStore = try await storeProvider.accountStore()
+        try await accountStore.conversations.updateConversationMute(conversationID: conversationID, userID: userID, isMuted: isMuted)
     }
 
     /// 从统一模拟后台推送入口随机写入 1...5 条 incoming 文本消息。
@@ -261,10 +261,10 @@ nonisolated struct LocalConversationListUseCase: ConversationListUseCase {
     }
 }
 
-/// 预览会话列表用例实现
+/// 预览会话列表服务实现
 ///
 /// 用于 SwiftUI 预览和测试，返回模拟数据
-nonisolated struct PreviewConversationListUseCase: ConversationListUseCase {
+nonisolated struct PreviewConversationListService: ConversationListService {
     /// 加载会话列表
     ///
     /// 返回模拟的会话列表数据

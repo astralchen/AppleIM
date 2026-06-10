@@ -170,7 +170,11 @@ extension AppleIMTests {
             try? FileManager.default.removeItem(at: rootDirectory)
         }
 
-        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "search_user")
+        let (repository, databaseContext) = try await makeRepository(
+            rootDirectory: rootDirectory,
+            accountID: "search_user",
+            eventDispatcher: NoopChatStoreEventDispatcher()
+        )
         _ = try await databaseContext.databaseActor.write(paths: databaseContext.paths) { db in
             try db.execute(
                 sql: """
@@ -281,7 +285,7 @@ extension AppleIMTests {
         let storageService = await FileAccountStorageService(rootDirectory: rootDirectory)
         let databaseActor = DatabaseActor()
         let storeProvider = ChatStoreProvider(accountID: "search_usecase_user", storageService: storageService, database: databaseActor)
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(id: "usecase_search_conversation", userID: "search_usecase_user", title: "UseCase Bridge", sortTimestamp: 1)
         )
@@ -298,7 +302,7 @@ extension AppleIMTests {
             )
         )
 
-        let useCase = LocalSearchUseCase(userID: "search_usecase_user", storeProvider: storeProvider)
+        let useCase = LocalSearchService(userID: "search_usecase_user", storeProvider: storeProvider)
         try await useCase.rebuildIndex()
 
         let bridgeResults = try await useCase.search(query: "UseCase")
@@ -502,7 +506,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let useCase = LocalConversationListUseCase(userID: "ui_test_user", storeProvider: storeProvider)
+        let useCase = LocalConversationListService(userID: "ui_test_user", storeProvider: storeProvider)
 
         let page = try await useCase.loadConversationPage(limit: 50, after: nil)
 
@@ -522,13 +526,13 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertContact(makeContactRecord(contactID: "friend_normal", userID: "contacts_group_user", wxid: "normal", nickname: "Normal Friend"))
         try await repository.upsertContact(makeContactRecord(contactID: "friend_starred", userID: "contacts_group_user", wxid: "star", nickname: "Star Friend", isStarred: true))
         try await repository.upsertContact(makeContactRecord(contactID: "group_ios", userID: "contacts_group_user", wxid: "ios_group", nickname: "iOS Group", type: .group))
         try await repository.upsertContact(makeContactRecord(contactID: "deleted_friend", userID: "contacts_group_user", wxid: "deleted", nickname: "Deleted", isDeleted: true))
 
-        let useCase = LocalContactListUseCase(userID: "contacts_group_user", storeProvider: storeProvider)
+        let useCase = LocalContactListService(userID: "contacts_group_user", storeProvider: storeProvider)
         let state = try await useCase.loadContacts(query: "")
         let filtered = try await useCase.loadContacts(query: "star")
 
@@ -553,7 +557,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         let contact = makeContactRecord(
             contactID: "contact_profile_friend",
             userID: "profile_push_user",
@@ -612,7 +616,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertContact(
             makeContactRecord(
                 contactID: "contact_profile_lonely",
@@ -644,7 +648,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertContact(
             makeContactRecord(
                 contactID: "group_core_contact",
@@ -852,11 +856,11 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         let contact = makeContactRecord(contactID: "contact_new", userID: "contacts_open_user", wxid: "new_friend", nickname: "New Friend")
         try await repository.upsertContact(contact)
 
-        let useCase = LocalContactListUseCase(userID: "contacts_open_user", storeProvider: storeProvider)
+        let useCase = LocalContactListService(userID: "contacts_open_user", storeProvider: storeProvider)
         let created = try await useCase.openConversation(for: contact.contactID)
         let reused = try await useCase.openConversation(for: contact.contactID)
         let conversations = try await repository.listConversations(for: "contacts_open_user")
@@ -887,7 +891,11 @@ extension AppleIMTests {
             try? FileManager.default.removeItem(at: rootDirectory)
         }
 
-        let (repository, databaseContext) = try await makeRepository(rootDirectory: rootDirectory, accountID: "search_failure_user")
+        let (repository, databaseContext) = try await makeRepository(
+            rootDirectory: rootDirectory,
+            accountID: "search_failure_user",
+            eventDispatcher: NoopChatStoreEventDispatcher()
+        )
         try await repository.upsertConversation(
             makeConversationRecord(id: "search_failure_conversation", userID: "search_failure_user", title: "Failure", sortTimestamp: 1)
         )
@@ -903,6 +911,13 @@ extension AppleIMTests {
                 sortSequence: 100
             )
         )
+        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
+        await searchIndex.indexConversationBestEffort(
+            conversationID: "search_failure_conversation",
+            userID: "search_failure_user"
+        )
+        await searchIndex.indexMessageBestEffort(messageID: "search_failure_message", userID: "search_failure_user")
+
         try await waitForCondition {
             let count = try await databaseContext.databaseActor.read(in: .search, paths: databaseContext.paths) { db in
                 try Int.fetchOne(
@@ -923,10 +938,10 @@ extension AppleIMTests {
             }
             return count == 1
         }
+        try await databaseContext.databaseActor.closeConnections(for: databaseContext.paths)
         try FileManager.default.removeItem(at: databaseContext.paths.searchDatabase)
         try FileManager.default.createDirectory(at: databaseContext.paths.searchDatabase, withIntermediateDirectories: false)
 
-        let searchIndex = SearchIndexActor(database: databaseContext.databaseActor, paths: databaseContext.paths)
         await searchIndex.indexMessageBestEffort(messageID: "search_failure_message", userID: "search_failure_user")
 
         let repairJobs = try await repository.recoverablePendingJobs(userID: "search_failure_user", now: Int64.max)

@@ -139,17 +139,17 @@ final class AppDependencyContainer {
     func makeConversationListViewController(
         onSelectConversation: @escaping (ConversationListRowState) -> Void
     ) -> ConversationListViewController {
-        let useCase = LocalConversationListUseCase(
+        let conversationService = LocalConversationListService(
             userID: accountID,
             storeProvider: storeProvider,
             simulatedIncomingPushService: simulatedIncomingPushService
         )
-        let searchUseCase = LocalSearchUseCase(
+        let searchService = LocalSearchService(
             userID: accountID,
             storeProvider: storeProvider
         )
-        let viewModel = ConversationListViewModel(useCase: useCase)
-        let searchViewModel = SearchViewModel(useCase: searchUseCase)
+        let viewModel = ConversationListViewModel(useCase: conversationService)
+        let searchViewModel = SearchViewModel(useCase: searchService)
         return ConversationListViewController(
             viewModel: viewModel,
             searchViewModel: searchViewModel,
@@ -175,11 +175,11 @@ final class AppDependencyContainer {
     }
 
     func makeContactListViewController(router: any AppRouting) -> ContactListViewController {
-        let useCase = LocalContactListUseCase(
+        let contactService = LocalContactListService(
             userID: accountID,
             storeProvider: storeProvider
         )
-        let viewModel = ContactListViewModel(useCase: useCase)
+        let viewModel = ContactListViewModel(useCase: contactService)
         return ContactListViewController(
             viewModel: viewModel,
             onSelectConversation: { [router] conversation in
@@ -192,7 +192,7 @@ final class AppDependencyContainer {
         conversation: ConversationListRowState,
         unreadBadgePublisher: AnyPublisher<String?, Never> = Just<String?>(nil).eraseToAnyPublisher()
     ) -> ChatViewController {
-        let useCase = StoreBackedChatUseCase(
+        let chatServicesFactory = StoreBackedChatServicesFactory(
             userID: accountID,
             conversationID: conversation.id,
             currentUserAvatarURL: accountAvatarURL,
@@ -203,7 +203,10 @@ final class AppDependencyContainer {
             mediaUploadService: mediaUploadService,
             simulatedIncomingPushService: simulatedIncomingPushService
         )
-        let viewModel = ChatViewModel(useCase: useCase, title: conversation.title)
+        let viewModel = ChatViewModel(
+            dependencies: chatServicesFactory.makeViewModelDependencies(),
+            title: conversation.title
+        )
         let viewController = ChatViewController(
             viewModel: viewModel,
             unreadBadgePublisher: unreadBadgePublisher
@@ -213,7 +216,7 @@ final class AppDependencyContainer {
     }
 
     func prepareCurrentAccountStorage() async throws -> AccountStoragePaths {
-        _ = try await storeProvider.repository()
+        _ = try await storeProvider.accountStore()
         return try await storageService.prepareStorage(for: accountID)
     }
 

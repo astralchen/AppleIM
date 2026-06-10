@@ -260,6 +260,32 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func chatInputBarRefreshMentionHighlightKeepsFollowingTextPlain() throws {
+        let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
+        inputBar.setText("@Sondra ", selectedRange: NSRange(location: ("@Sondra " as NSString).length, length: 0), animated: false)
+
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        textView.textColor = .systemBlue
+        textView.text = "@Sondra 你好"
+        textView.selectedRange = NSRange(location: (textView.text as NSString).length, length: 0)
+        inputBar.textViewDidChange(textView)
+
+        let attributedText = try #require(textView.attributedText)
+        let nsText = textView.text as NSString
+        let mentionRange = nsText.range(of: "@Sondra")
+        let followingTextRange = nsText.range(of: "你好")
+        let mentionColor = try #require(
+            attributedText.attribute(.foregroundColor, at: mentionRange.location, effectiveRange: nil) as? UIColor
+        )
+        let followingTextColor = try #require(
+            attributedText.attribute(.foregroundColor, at: followingTextRange.location, effectiveRange: nil) as? UIColor
+        )
+
+        #expect(mentionColor == .systemBlue)
+        #expect(followingTextColor != .systemBlue)
+    }
+
+    @MainActor
     @Test func chatInputBarPreviewSendDoesNotTriggerTextSend() throws {
         let inputBar = ChatInputBarView(frame: CGRect(x: 0, y: 0, width: 390, height: 80))
         let recorder = ChatInputBarActionRecorder()

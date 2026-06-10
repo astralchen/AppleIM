@@ -29,6 +29,7 @@ extension AppleIMTests {
             object: nil,
             userInfo: payload.userInfo
         )
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
     }
 
     @MainActor
@@ -124,6 +125,63 @@ extension AppleIMTests {
         backButtonView.sendActions(for: .touchUpInside)
 
         #expect(navigationController.topViewController === rootViewController)
+    }
+
+    @MainActor
+    @Test func chatViewControllerReplacesActiveMentionQueryAndKeepsFollowingTextPlain() async throws {
+        let useCase = GroupContextStubChatUseCase(
+            context: GroupChatContext(
+                members: [
+                    GroupMember(conversationID: "group_vc", memberID: "current_user", displayName: "Me", role: .admin, joinTime: 1),
+                    GroupMember(conversationID: "group_vc", memberID: "ming", displayName: "明明", role: .member, joinTime: 2)
+                ],
+                currentUserRole: .admin,
+                announcement: nil
+            )
+        )
+        let viewModel = ChatViewModel(useCase: useCase, title: "Group")
+        let viewController = ChatViewController(viewModel: viewModel)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = viewController
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        viewController.loadViewIfNeeded()
+        viewModel.load()
+        try await waitForCondition {
+            await MainActor.run {
+                viewModel.currentState.phase == .loaded
+            }
+        }
+
+        let inputBar = try #require(findView(ofType: ChatInputBarView.self, in: viewController.view))
+        let textView = try #require(findView(ofType: UITextView.self, in: inputBar))
+        textView.text = "@m"
+        inputBar.textViewDidChange(textView)
+
+        let option = ChatMentionOptionState(id: "ming", userID: "ming", displayName: "明明", mentionsAll: false)
+        viewController.mentionPicker(ChatMentionPickerViewController(options: []), didSelect: option)
+
+        #expect(textView.text == "@明明 ")
+        #expect(textView.selectedRange == NSRange(location: ("@明明 " as NSString).length, length: 0))
+
+        let insertRange = textView.selectedRange
+        #expect(inputBar.textView(textView, shouldChangeTextIn: insertRange, replacementText: "w"))
+        textView.text = (textView.text as NSString).replacingCharacters(in: insertRange, with: "w")
+        textView.selectedRange = NSRange(location: insertRange.location + 1, length: 0)
+        inputBar.textViewDidChange(textView)
+
+        #expect(textView.text == "@明明 w")
+        #expect(ChatMentionTextStyling.mentionRanges(in: textView.text).map { (textView.text as NSString).substring(with: $0) } == ["@明明"])
+        let attributedText = try #require(textView.attributedText)
+        let followingTextRange = (textView.text as NSString).range(of: "w")
+        let followingTextColor = try #require(
+            attributedText.attribute(.foregroundColor, at: followingTextRange.location, effectiveRange: nil) as? UIColor
+        )
+        #expect(followingTextColor != .systemBlue)
     }
 
     @MainActor

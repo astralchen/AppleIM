@@ -82,6 +82,39 @@ final class DefaultChatPhotoLibraryMediaPreparationService: ChatPhotoLibraryMedi
         }
     }
 
+    /// 创建 Photos 资源请求完成回调。
+    nonisolated static func makeCompletionHandler(
+        fileHandle: FileHandle,
+        temporaryFileManager: any TemporaryMediaFileManaging,
+        temporaryURL: URL,
+        completion: @escaping @MainActor (Result<URL, ChatPhotoLibraryMediaPreparationError>) -> Void
+    ) -> (Error?) -> Void {
+        { error in
+            let result: Result<URL, ChatPhotoLibraryMediaPreparationError>
+            do {
+                try fileHandle.close()
+            } catch {
+                temporaryFileManager.removeFileIfExists(at: temporaryURL)
+                result = .failure(.unableToCloseFile)
+                Task { @MainActor in
+                    completion(result)
+                }
+                return
+            }
+
+            if error == nil {
+                result = .success(temporaryURL)
+            } else {
+                temporaryFileManager.removeFileIfExists(at: temporaryURL)
+                result = .failure(.requestFailed)
+            }
+
+            Task { @MainActor in
+                completion(result)
+            }
+        }
+    }
+
     /// 将 Photos 视频资源流式写入临时文件。
     private func stream(
         _ resource: PHAssetResource,
@@ -104,30 +137,12 @@ final class DefaultChatPhotoLibraryMediaPreparationService: ChatPhotoLibraryMedi
             for: resource,
             options: options,
             dataReceivedHandler: Self.makeDataReceivedHandler(fileHandle: fileHandle),
-            completionHandler: { [temporaryFileManager] error in
-                let result: Result<URL, ChatPhotoLibraryMediaPreparationError>
-                do {
-                    try fileHandle.close()
-                } catch {
-                    temporaryFileManager.removeFileIfExists(at: temporaryURL)
-                    result = .failure(.unableToCloseFile)
-                    Task { @MainActor in
-                        completion(result)
-                    }
-                    return
-                }
-
-                if error == nil {
-                    result = .success(temporaryURL)
-                } else {
-                    temporaryFileManager.removeFileIfExists(at: temporaryURL)
-                    result = .failure(.requestFailed)
-                }
-
-                Task { @MainActor in
-                    completion(result)
-                }
-            }
+            completionHandler: Self.makeCompletionHandler(
+                fileHandle: fileHandle,
+                temporaryFileManager: temporaryFileManager,
+                temporaryURL: temporaryURL,
+                completion: completion
+            )
         )
     }
 }

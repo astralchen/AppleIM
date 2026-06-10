@@ -960,6 +960,35 @@ extension AppleIMTests {
         let data = try Data(contentsOf: url)
         #expect(data == Data([0x01, 0x02, 0x03]))
     }
+
+    @Test func photoLibraryVideoCompletionHandlerHopsToMainActorFromDetachedExecutor() async throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("picked-video.mov")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let result = await withCheckedContinuation { (continuation: CheckedContinuation<Result<URL, ChatPhotoLibraryMediaPreparationError>, Never>) in
+            Task.detached {
+                let fileHandle = try FileHandle(forWritingTo: url)
+                let completionHandler = DefaultChatPhotoLibraryMediaPreparationService.makeCompletionHandler(
+                    fileHandle: fileHandle,
+                    temporaryFileManager: DefaultTemporaryMediaFileManager(),
+                    temporaryURL: url,
+                    completion: { result in
+                        #expect(Thread.isMainThread)
+                        continuation.resume(returning: result)
+                    }
+                )
+
+                completionHandler(nil)
+            }
+        }
+
+        #expect(try result.get() == url)
+    }
 }
 
 @MainActor

@@ -7,13 +7,13 @@
 
 import Foundation
 
-protocol ContactListUseCase: Sendable {
+protocol ContactListService: Sendable {
     func loadContacts(query: String) async throws -> ContactListViewState
     func openConversation(for contactID: ContactID) async throws -> ConversationListRowState
     func simulateContactProfileChange() async throws -> SimulatedContactProfilePushResult?
 }
 
-nonisolated struct LocalContactListUseCase: ContactListUseCase {
+nonisolated struct LocalContactListService: ContactListService {
     private let userID: UserID
     private let storeProvider: ChatStoreProvider
 
@@ -23,8 +23,8 @@ nonisolated struct LocalContactListUseCase: ContactListUseCase {
     }
 
     func loadContacts(query: String) async throws -> ContactListViewState {
-        let repository = try await storeProvider.repository()
-        let allContacts = try await repository.listContacts(for: userID)
+        let accountStore = try await storeProvider.accountStore()
+        let allContacts = try await accountStore.contacts.listContacts(for: userID)
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let contacts = trimmedQuery.isEmpty
             ? allContacts
@@ -37,9 +37,9 @@ nonisolated struct LocalContactListUseCase: ContactListUseCase {
     }
 
     func openConversation(for contactID: ContactID) async throws -> ConversationListRowState {
-        let repository = try await storeProvider.repository()
-        let conversation = try await repository.conversationForContact(contactID: contactID, userID: userID)
-        return LocalConversationListUseCase.rowStates(from: [conversation]).first
+        let accountStore = try await storeProvider.accountStore()
+        let conversation = try await accountStore.contacts.conversationForContact(contactID: contactID, userID: userID)
+        return LocalConversationListService.rowStates(from: [conversation]).first
             ?? ConversationListRowState(
                 id: conversation.id,
                 title: conversation.title,

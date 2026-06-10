@@ -86,7 +86,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(id: "unread_total_a", userID: "unread_total_user", unreadCount: 2)
         )
@@ -132,7 +132,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(id: "unread_zero_conversation", userID: "unread_zero_user", unreadCount: 0)
         )
@@ -231,7 +231,11 @@ extension AppleIMTests {
             try? FileManager.default.removeItem(at: rootDirectory)
         }
 
-        let (repository, _) = try await makeRepository(rootDirectory: rootDirectory, accountID: "observe_message_user")
+        let (repository, _) = try await makeRepository(
+            rootDirectory: rootDirectory,
+            accountID: "observe_message_user",
+            eventDispatcher: NoopChatStoreEventDispatcher()
+        )
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "observe_message_conversation",

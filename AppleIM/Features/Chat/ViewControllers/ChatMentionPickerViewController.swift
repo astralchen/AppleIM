@@ -7,6 +7,21 @@
 import UIKit
 import CoreFoundation
 
+private enum MentionPickerLayout {
+    static let selectionControlSize: CGFloat = 28
+    static let selectionControlAvatarSpacing: CGFloat = 12
+    static let sectionIndexTouchWidth: CGFloat = 44
+    static let sectionIndexPreferredItemHeight: CGFloat = 28
+    static let sectionIndexMaximumHeight: CGFloat = 360
+
+    static var selectionAccessorySize: CGSize {
+        CGSize(
+            width: selectionControlSize + selectionControlAvatarSpacing,
+            height: selectionControlSize
+        )
+    }
+}
+
 /// @ 提醒选择器事件回调。
 @MainActor
 protocol ChatMentionPickerViewControllerDelegate: AnyObject {
@@ -58,6 +73,7 @@ final class ChatMentionPickerViewController: UIViewController {
     private var optionByContactID: [ContactID: ChatMentionOptionState] = [:]
     private var selectionMode: SelectionMode = .single
     private var selectedContactIDs: [ContactID] = []
+    private var synchronizesSectionIndexWithScrollPosition = true
 
     weak var delegate: ChatMentionPickerViewControllerDelegate?
 
@@ -67,7 +83,7 @@ final class ChatMentionPickerViewController: UIViewController {
     private let trailingButton = UIButton(type: .system)
     private let doneButton = UIButton(type: .system)
     private let searchField = UISearchTextField()
-    private let indexStackView = UIStackView()
+    private let sectionIndexView = MentionSectionIndexView()
     private let collectionView: UICollectionView
     private var dataSource: UICollectionViewDiffableDataSource<Section, ContactID>?
 
@@ -89,6 +105,11 @@ final class ChatMentionPickerViewController: UIViewController {
         configureDataSource()
         renderChrome()
         applySnapshot(animatingDifferences: false)
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateHighlightedSectionIndexIfNeeded()
     }
 
     /// 外部状态刷新时同步候选项。
@@ -154,15 +175,14 @@ final class ChatMentionPickerViewController: UIViewController {
         collectionView.alwaysBounceVertical = true
         collectionView.keyboardDismissMode = .onDrag
         collectionView.delegate = self
+        collectionView.accessibilityIdentifier = "chat.mentionPicker.collection"
 
-        indexStackView.translatesAutoresizingMaskIntoConstraints = false
-        indexStackView.axis = .vertical
-        indexStackView.alignment = .center
-        indexStackView.distribution = .equalSpacing
-        indexStackView.spacing = 2
-        indexStackView.accessibilityIdentifier = "chat.mentionPicker.sectionIndex"
+        sectionIndexView.translatesAutoresizingMaskIntoConstraints = false
+        sectionIndexView.onSelectSection = { [weak self] section in
+            self?.scrollToSection(section)
+        }
 
-        [grabberView, leadingButton, titleLabel, trailingButton, doneButton, searchField, collectionView, indexStackView].forEach(view.addSubview)
+        [grabberView, leadingButton, titleLabel, trailingButton, doneButton, searchField, collectionView, sectionIndexView].forEach(view.addSubview)
 
         NSLayoutConstraint.activate([
             grabberView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
@@ -199,9 +219,9 @@ final class ChatMentionPickerViewController: UIViewController {
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            indexStackView.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor),
-            indexStackView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
-            indexStackView.widthAnchor.constraint(equalToConstant: 18)
+            sectionIndexView.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor),
+            sectionIndexView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+            sectionIndexView.widthAnchor.constraint(equalToConstant: MentionPickerLayout.sectionIndexTouchWidth)
         ])
         renderSectionIndex()
     }
@@ -252,7 +272,7 @@ final class ChatMentionPickerViewController: UIViewController {
         let isSelected = selectedContactIDs.contains(contactID)
         cell.contentConfiguration = memberConfiguration(for: cell, option: option)
         cell.accessories = showsSelectionControl
-            ? [.customView(configuration: Self.selectionAccessoryConfiguration(isSelected: isSelected))]
+            ? [.customView(configuration: Self.selectionAccessoryConfiguration(optionID: option.id, isSelected: isSelected))]
             : []
         cell.backgroundConfiguration = .listPlainCell()
         cell.accessibilityIdentifier = accessibilityIdentifier(for: option, showsSelectionControl: showsSelectionControl)
@@ -261,6 +281,21 @@ final class ChatMentionPickerViewController: UIViewController {
         cell.accessibilityValue = showsSelectionControl
             ? L10n.shared.tr(isSelected ? "chat.mention.selected" : "chat.mention.notSelected")
             : nil
+    }
+
+    /// 构造多选圆形控件 accessory。
+    private static func selectionAccessoryConfiguration(
+        optionID: String,
+        isSelected: Bool
+    ) -> UICellAccessory.CustomViewConfiguration {
+        let accessoryView = MentionSelectionAccessoryView()
+        accessoryView.configure(optionID: optionID, isSelected: isSelected)
+        return UICellAccessory.CustomViewConfiguration(
+            customView: accessoryView,
+            placement: .leading(displayed: .always),
+            reservedLayoutWidth: .actual,
+            maintainsFixedSize: true
+        )
     }
 
     /// 构造成员行内容配置。
@@ -281,19 +316,6 @@ final class ChatMentionPickerViewController: UIViewController {
         configuration.secondaryTextProperties.color = .secondaryLabel
         configuration.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 16)
         return configuration
-    }
-
-    /// 构造多选圆形控件 accessory。
-    private static func selectionAccessoryConfiguration(isSelected: Bool) -> UICellAccessory.CustomViewConfiguration {
-        let button = UIButton(type: .system)
-        button.frame = CGRect(origin: .zero, size: CGSize(width: 28, height: 28))
-        button.configuration = selectionButtonConfiguration(isSelected: isSelected)
-        button.isAccessibilityElement = false
-        button.isUserInteractionEnabled = false
-        return UICellAccessory.CustomViewConfiguration(
-            customView: button,
-            placement: .leading(displayed: .always)
-        )
     }
 
     private func renderChrome() {
@@ -395,6 +417,7 @@ final class ChatMentionPickerViewController: UIViewController {
     }
 
     private func rebuildSnapshotState() {
+        synchronizesSectionIndexWithScrollPosition = true
         let visibleOptions = selectionMode == .multiple
             ? filteredOptions.filter { !$0.mentionsAll }
             : filteredOptions
@@ -440,52 +463,62 @@ final class ChatMentionPickerViewController: UIViewController {
         for section in orderedSections {
             snapshot.appendItems(itemIDsBySection[section, default: []], toSection: section)
         }
+        let completion: () -> Void = { [weak self] in
+            self?.updateHighlightedSectionIndexIfNeeded()
+        }
         if animatingDifferences {
-            dataSource?.apply(snapshot, animatingDifferences: true)
+            dataSource?.apply(snapshot, animatingDifferences: true, completion: completion)
         } else {
-            dataSource?.applySnapshotUsingReloadData(snapshot)
+            dataSource?.applySnapshotUsingReloadData(snapshot, completion: completion)
         }
     }
 
     private func renderSectionIndex() {
-        indexStackView.arrangedSubviews.forEach { view in
-            indexStackView.removeArrangedSubview(view)
-            view.removeFromSuperview()
-        }
-
-        let indexedSections = orderedSections.enumerated().compactMap { index, section -> (Int, String)? in
+        let indexedSections = orderedSections.enumerated().compactMap { index, section -> MentionSectionIndexItem? in
             guard let title = section.indexTitle else { return nil }
-            return (index, title)
+            return MentionSectionIndexItem(sectionIndex: index, title: title)
         }
-        indexStackView.isHidden = indexedSections.count <= 1
-        for (sectionIndex, title) in indexedSections {
-            let button = UIButton(type: .system)
-            button.tag = sectionIndex
-            button.configuration = Self.sectionIndexButtonConfiguration(title: title)
-            button.accessibilityIdentifier = "chat.mentionPicker.sectionIndex.\(title)"
-            button.accessibilityLabel = L10n.shared.tr("chat.mention.jumpToSection.accessibility", title)
-            button.addTarget(self, action: #selector(sectionIndexTapped(_:)), for: .touchUpInside)
-            indexStackView.addArrangedSubview(button)
-        }
+        sectionIndexView.configure(items: indexedSections)
     }
 
-    private static func sectionIndexButtonConfiguration(title: String) -> UIButton.Configuration {
-        var configuration = UIButton.Configuration.plain()
-        configuration.title = title
-        configuration.baseForegroundColor = .secondaryLabel
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 2)
-        return configuration
+    private func updateHighlightedSectionIndexIfNeeded() {
+        guard synchronizesSectionIndexWithScrollPosition else { return }
+        updateHighlightedSectionIndexFromScrollPosition()
     }
 
-    @objc private func sectionIndexTapped(_ sender: UIButton) {
-        let section = sender.tag
+    private func updateHighlightedSectionIndexFromScrollPosition() {
+        sectionIndexView.setHighlightedSection(firstVisibleIndexedSection())
+    }
+
+    private func firstVisibleIndexedSection() -> Int? {
+        collectionView.indexPathsForVisibleItems
+            .sorted { lhs, rhs in
+                let lhsFrame = collectionView.layoutAttributesForItem(at: lhs)?.frame ?? .zero
+                let rhsFrame = collectionView.layoutAttributesForItem(at: rhs)?.frame ?? .zero
+                if abs(lhsFrame.minY - rhsFrame.minY) > 0.5 {
+                    return lhsFrame.minY < rhsFrame.minY
+                }
+                return lhs.section < rhs.section
+            }
+            .first { indexPath in
+                orderedSections[safe: indexPath.section]?.indexTitle != nil
+            }?
+            .section
+    }
+
+    private func scrollToSection(_ section: Int) {
+        collectionView.layoutIfNeeded()
+        let indexPath = IndexPath(item: 0, section: section)
         guard section >= 0,
               section < orderedSections.count,
-              let itemID = itemIDsBySection[orderedSections[section]]?.first,
-              let itemIndex = dataSource?.indexPath(for: itemID) else {
+              collectionView.numberOfSections > indexPath.section,
+              collectionView.numberOfItems(inSection: indexPath.section) > indexPath.item else {
             return
         }
-        collectionView.scrollToItem(at: itemIndex, at: .top, animated: true)
+
+        synchronizesSectionIndexWithScrollPosition = false
+        sectionIndexView.setHighlightedSection(section)
+        collectionView.scrollToItem(at: indexPath, at: .top, animated: true)
     }
 
     private static func sectionTitle(for displayName: String) -> String {
@@ -520,18 +553,6 @@ final class ChatMentionPickerViewController: UIViewController {
         return option.mentionsAll ? "chat.mentionOption.__all__" : "chat.mentionOption.\(option.id)"
     }
 
-    private static func selectionButtonConfiguration(isSelected: Bool) -> UIButton.Configuration {
-        var configuration = UIButton.Configuration.plain()
-        configuration.image = isSelected ? UIImage(systemName: "checkmark") : nil
-        configuration.baseForegroundColor = .white
-        configuration.background.backgroundColor = isSelected ? .systemBlue : .clear
-        configuration.background.strokeColor = isSelected ? .systemBlue : .systemGray3
-        configuration.background.strokeWidth = 1.5
-        configuration.background.cornerRadius = 14
-        configuration.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4)
-        return configuration
-    }
-
     private static func avatarImage(for option: ChatMentionOptionState) -> UIImage? {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 44, height: 44))
         return renderer.image { context in
@@ -554,6 +575,259 @@ final class ChatMentionPickerViewController: UIViewController {
     }
 }
 
+private struct MentionSectionIndexItem: Hashable {
+    let sectionIndex: Int
+    let title: String
+}
+
+private final class MentionSectionIndexView: UIView {
+    var onSelectSection: ((Int) -> Void)?
+
+    private let stackView = UIStackView()
+    private var items: [MentionSectionIndexItem] = []
+    private var highlightedSection: Int?
+    private var lastSelectedSection: Int?
+
+    override var intrinsicContentSize: CGSize {
+        let preferredHeight = CGFloat(items.count) * MentionPickerLayout.sectionIndexPreferredItemHeight
+        return CGSize(
+            width: MentionPickerLayout.sectionIndexTouchWidth,
+            height: min(preferredHeight, MentionPickerLayout.sectionIndexMaximumHeight)
+        )
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    func configure(items: [MentionSectionIndexItem]) {
+        guard self.items != items else { return }
+        self.items = items
+        highlightedSection = nil
+        lastSelectedSection = nil
+        rebuildButtons()
+        isHidden = items.count <= 1
+        invalidateIntrinsicContentSize()
+    }
+
+    func setHighlightedSection(_ section: Int?) {
+        let nextSection = items.contains { $0.sectionIndex == section } ? section : nil
+        guard highlightedSection != nextSection else { return }
+        highlightedSection = nextSection
+        updateButtonHighlights()
+    }
+
+    private func configureView() {
+        isAccessibilityElement = false
+        accessibilityIdentifier = "chat.mentionPicker.sectionIndex"
+
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.axis = .vertical
+        stackView.alignment = .fill
+        stackView.distribution = .fillEqually
+        stackView.spacing = 0
+        addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    private func rebuildButtons() {
+        stackView.arrangedSubviews.forEach { view in
+            stackView.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+
+        for item in items {
+            let button = UIButton(type: .system)
+            button.tag = item.sectionIndex
+            button.configuration = Self.buttonConfiguration(
+                title: item.title,
+                isHighlighted: item.sectionIndex == highlightedSection
+            )
+            button.contentHorizontalAlignment = .center
+            button.contentVerticalAlignment = .center
+            button.accessibilityIdentifier = "chat.mentionPicker.sectionIndex.\(item.title)"
+            button.accessibilityLabel = L10n.shared.tr("chat.mention.jumpToSection.accessibility", item.title)
+            button.isUserInteractionEnabled = false
+            button.addTarget(self, action: #selector(indexButtonTapped(_:)), for: .touchUpInside)
+            stackView.addArrangedSubview(button)
+        }
+    }
+
+    private func updateButtonHighlights() {
+        for case let button as UIButton in stackView.arrangedSubviews {
+            guard let item = items.first(where: { $0.sectionIndex == button.tag }) else { continue }
+            button.configuration = Self.buttonConfiguration(
+                title: item.title,
+                isHighlighted: item.sectionIndex == highlightedSection
+            )
+        }
+    }
+
+    private static func buttonConfiguration(title: String, isHighlighted: Bool) -> UIButton.Configuration {
+        var configuration = UIButton.Configuration.plain()
+        configuration.title = title
+        configuration.baseForegroundColor = isHighlighted ? .systemBlue : .secondaryLabel
+        configuration.background.backgroundColor = isHighlighted
+            ? UIColor.systemBlue.withAlphaComponent(0.12)
+            : .clear
+        configuration.background.cornerRadius = 10
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+        return configuration
+    }
+
+    @objc private func indexButtonTapped(_ sender: UIButton) {
+        onSelectSection?(sender.tag)
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesBegan(touches, with: event)
+        selectItem(from: touches)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesMoved(touches, with: event)
+        selectItem(from: touches)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesEnded(touches, with: event)
+        lastSelectedSection = nil
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        super.touchesCancelled(touches, with: event)
+        lastSelectedSection = nil
+    }
+
+    private func selectItem(from touches: Set<UITouch>) {
+        guard let touch = touches.first else { return }
+        selectItem(at: touch.location(in: self))
+    }
+
+    private func selectItem(at point: CGPoint) {
+        guard let sectionIndex = sectionIndex(at: point) else { return }
+        guard sectionIndex != lastSelectedSection else { return }
+        lastSelectedSection = sectionIndex
+        onSelectSection?(sectionIndex)
+    }
+
+    private func sectionIndex(at point: CGPoint) -> Int? {
+        let stackPoint = convert(point, to: stackView)
+        let buttons = stackView.arrangedSubviews.compactMap { $0 as? UIButton }
+        if let button = buttons.first(where: { $0.frame.contains(stackPoint) }) {
+            return button.tag
+        }
+
+        return buttons.min { lhs, rhs in
+            abs(lhs.frame.midY - stackPoint.y) < abs(rhs.frame.midY - stackPoint.y)
+        }?.tag
+    }
+}
+
+private final class MentionSelectionControlView: UIView {
+    private let checkmarkView = UIImageView()
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(
+            width: MentionPickerLayout.selectionControlSize,
+            height: MentionPickerLayout.selectionControlSize
+        )
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureView()
+    }
+
+    func configure(optionID: String, isSelected: Bool) {
+        accessibilityIdentifier = "chat.mentionSelectionControl.\(optionID)"
+        backgroundColor = isSelected ? .systemBlue : .clear
+        layer.borderColor = (isSelected ? UIColor.systemBlue : UIColor.systemGray3).cgColor
+        checkmarkView.isHidden = !isSelected
+    }
+
+    private func configureView() {
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        layer.cornerRadius = MentionPickerLayout.selectionControlSize / 2
+        layer.borderWidth = 1.5
+        layer.borderColor = UIColor.systemGray3.cgColor
+
+        checkmarkView.translatesAutoresizingMaskIntoConstraints = false
+        checkmarkView.image = UIImage(
+            systemName: "checkmark",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)
+        )
+        checkmarkView.tintColor = .white
+        checkmarkView.contentMode = .scaleAspectFit
+        checkmarkView.isHidden = true
+        addSubview(checkmarkView)
+
+        NSLayoutConstraint.activate([
+            checkmarkView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            checkmarkView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            checkmarkView.widthAnchor.constraint(equalToConstant: 18),
+            checkmarkView.heightAnchor.constraint(equalToConstant: 18)
+        ])
+    }
+}
+
+private final class MentionSelectionAccessoryView: UIView {
+    private let controlView: MentionSelectionControlView
+
+    override init(frame: CGRect) {
+        controlView = MentionSelectionControlView(frame: CGRect(
+            origin: .zero,
+            size: CGSize(
+                width: MentionPickerLayout.selectionControlSize,
+                height: MentionPickerLayout.selectionControlSize
+            )
+        ))
+        super.init(frame: CGRect(origin: .zero, size: MentionPickerLayout.selectionAccessorySize))
+        configureView()
+    }
+
+    required init?(coder: NSCoder) {
+        controlView = MentionSelectionControlView(frame: CGRect(
+            origin: .zero,
+            size: CGSize(
+                width: MentionPickerLayout.selectionControlSize,
+                height: MentionPickerLayout.selectionControlSize
+            )
+        ))
+        super.init(coder: coder)
+        frame.size = MentionPickerLayout.selectionAccessorySize
+        configureView()
+    }
+
+    func configure(optionID: String, isSelected: Bool) {
+        controlView.configure(optionID: optionID, isSelected: isSelected)
+    }
+
+    private func configureView() {
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        addSubview(controlView)
+    }
+}
+
 extension ChatMentionPickerViewController: AppLanguageUpdatable {
     /// 语言变化时刷新弹层文案、方向和当前候选列表。
     func applyLanguageChange(_ context: AppLanguageContext) {
@@ -567,6 +841,17 @@ extension ChatMentionPickerViewController: AppLanguageUpdatable {
 }
 
 extension ChatMentionPickerViewController: UICollectionViewDelegate {
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard scrollView === collectionView else { return }
+        synchronizesSectionIndexWithScrollPosition = true
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView === collectionView,
+              synchronizesSectionIndexWithScrollPosition else { return }
+        updateHighlightedSectionIndexFromScrollPosition()
+    }
+
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
         guard let itemID = dataSource?.itemIdentifier(for: indexPath),

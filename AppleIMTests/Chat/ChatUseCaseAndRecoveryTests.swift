@@ -403,7 +403,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(id: "network_crash_conversation", userID: "network_crash_user", title: "Network Crash", sortTimestamp: 1)
         )
@@ -456,7 +456,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(id: "network_recovery_conversation", userID: "network_recovery_user", title: "Network", sortTimestamp: 1)
         )
@@ -735,7 +735,7 @@ extension AppleIMTests {
             storageService: storageService,
             database: DatabaseActor()
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.saveDraft(
             conversationID: "system_release",
             userID: "ui_test_user",
@@ -743,7 +743,7 @@ extension AppleIMTests {
         )
 
         let draftText = try await repository.draft(conversationID: "system_release", userID: "ui_test_user")
-        let rows = try await LocalConversationListUseCase(
+        let rows = try await LocalConversationListService(
             userID: "ui_test_user",
             storeProvider: storeProvider
         ).loadConversations()

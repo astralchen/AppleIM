@@ -46,6 +46,20 @@ actor CapturingApplicationBadgeManager: ApplicationBadgeManaging {
     }
 }
 
+nonisolated struct NoopChatStoreEventDispatcher: ChatStoreEventDispatching {
+    func setApplicationBadgeNumber(_ count: Int) async {}
+
+    func scheduleIncomingMessageNotifications(_ payloads: [IncomingMessageNotificationPayload]) async {}
+
+    func indexMessageBestEffort(messageID: MessageID, userID: UserID) {}
+
+    func removeMessageBestEffort(messageID: MessageID, userID: UserID) {}
+
+    func indexConversationBestEffort(conversationID: ConversationID, userID: UserID) {}
+
+    func postConversationsDidChange(userID: UserID, conversationIDs: Set<ConversationID>) {}
+}
+
 actor CapturingPublisherValues<Value: Sendable> {
     private var capturedValues: [Value] = []
 

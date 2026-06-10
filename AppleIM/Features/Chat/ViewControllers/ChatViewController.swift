@@ -415,6 +415,7 @@ final class ChatViewController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         restoreInteractivePopGestureIfNeeded()
+        observeKeyboard()
     }
 
     /// 窗口、安全区或输入栏完成布局后，继续保持最新消息不被底部输入区遮挡。
@@ -448,6 +449,7 @@ final class ChatViewController: UIViewController {
     /// 页面消失时停止播放、取消任务并保存草稿
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
+        stopKeyboardObservation()
         voicePlaybackController.stop()
         removePendingVoiceRecordingFile()
         inputBarView.clearPendingVoicePreview(animated: false)
@@ -686,12 +688,19 @@ final class ChatViewController: UIViewController {
 
     /// 监听系统键盘布局变化，保持底部消息不被输入区域遮挡。
     private func observeKeyboard() {
+        guard keyboardObservationTask == nil else { return }
         keyboardObservationTask = Task { @MainActor [weak self] in
             for await payload in NotificationCenter.default.keyboardNotifications() {
                 guard let self else { continue }
                 self.handleKeyboardNotification(payload)
             }
         }
+    }
+
+    /// 停止监听系统键盘，避免离屏聊天页继续响应全局键盘通知。
+    private func stopKeyboardObservation() {
+        keyboardObservationTask?.cancel()
+        keyboardObservationTask = nil
     }
 
     /// 监听仓储层会话变更，当前聊天命中时刷新消息列表。
@@ -1372,15 +1381,31 @@ final class ChatViewController: UIViewController {
 
         let currentText = inputBarView.text
         let nextText: String
-        if currentText.hasSuffix("@") {
-            nextText = String(currentText.dropLast()) + insertionText
+        let selectedRange: NSRange
+        if let replacementRange = activeMentionQueryRange(in: currentText) {
+            nextText = (currentText as NSString).replacingCharacters(in: replacementRange, with: insertionText)
+            selectedRange = NSRange(location: replacementRange.location + (insertionText as NSString).length, length: 0)
         } else if currentText.isEmpty || currentText.hasSuffix(" ") {
             nextText = currentText + insertionText
+            selectedRange = NSRange(location: (nextText as NSString).length, length: 0)
         } else {
             nextText = currentText + " " + insertionText
+            selectedRange = NSRange(location: (nextText as NSString).length, length: 0)
         }
-        inputBarView.setText(nextText, animated: true)
+        inputBarView.setText(nextText, selectedRange: selectedRange, animated: true)
         viewModel.composerTextChanged(nextText)
+    }
+
+    /// 当前正在编辑的 @ 查询 token，形如 `@` / `@m`；选择成员时应整体替换它。
+    private func activeMentionQueryRange(in text: String) -> NSRange? {
+        guard let atRange = text.range(of: "@", options: .backwards) else { return nil }
+        let queryText = text[atRange.upperBound...]
+        guard !queryText.contains(where: { character in
+            character.isWhitespace || character.isNewline
+        }) else {
+            return nil
+        }
+        return NSRange(atRange.lowerBound..<text.endIndex, in: text)
     }
 
     /// 根据新旧消息 ID 构造消息列表快照。

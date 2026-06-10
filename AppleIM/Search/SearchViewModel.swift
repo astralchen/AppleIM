@@ -28,7 +28,7 @@ import Foundation
 @MainActor
 final class SearchViewModel {
     /// 搜索用例
-    private let useCase: any SearchUseCase
+    private let service: any SearchService
     /// 防抖延迟（毫秒）
     private let debounceMilliseconds: Int
     /// 状态发布器
@@ -55,15 +55,15 @@ final class SearchViewModel {
     /// 初始化
     ///
     /// - Parameters:
-    ///   - useCase: 搜索用例
+    ///   - useCase: 搜索服务
     ///   - debounceMilliseconds: 防抖延迟（毫秒），默认 250ms
     ///   - initialState: 初始状态
     init(
-        useCase: any SearchUseCase,
+        useCase: any SearchService,
         debounceMilliseconds: Int = 250,
         initialState: SearchViewState = SearchViewState()
     ) {
-        self.useCase = useCase
+        self.service = useCase
         self.debounceMilliseconds = debounceMilliseconds
         self.stateSubject = CurrentValueSubject(initialState)
         bindQuery()
@@ -91,8 +91,8 @@ final class SearchViewModel {
     ///
     /// 异步执行索引重建，不阻塞 UI
     func rebuildIndex() {
-        Task { [useCase] in
-            try? await useCase.rebuildIndex()
+        Task { [service] in
+            try? await service.rebuildIndex()
         }
     }
 
@@ -141,9 +141,9 @@ final class SearchViewModel {
             state.phase = .loading
         }
 
-        searchTask = Task { [weak self, useCase] in
+        searchTask = Task { [weak self, service] in
             do {
-                let results = try await useCase.search(query: trimmedQuery)
+                let results = try await service.search(query: trimmedQuery)
                 guard !Task.isCancelled else { return }
                 self?.publishResults(results, generation: currentGeneration)
             } catch is CancellationError {

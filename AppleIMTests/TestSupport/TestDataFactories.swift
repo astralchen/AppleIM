@@ -88,113 +88,108 @@ func makeMockDemoDataFile(messageCount: Int, firstMessageDirection: String = "in
     let directory = temporaryDirectory()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let url = directory.appendingPathComponent("mock_demo_data.json")
-    let messages = (1...messageCount).map { index in
+    let messages: [[String: Any]] = messageCount > 0 ? (1...messageCount).map { index in
         let direction = index == 1 ? firstMessageDirection : (index.isMultiple(of: 5) ? "outgoing" : "incoming")
         let offset = index - messageCount
-        return """
-              {
-                "conversationID": "single_sondra",
-                "senderID": "\(direction == "outgoing" ? "mock_user" : "sondra")",
-                "text": "Sondra JSON message \(index)",
-                "localTimeOffsetSeconds": \(offset),
-                "messageID": "seed_single_sondra_\(index)",
-                "serverMessageID": "server_seed_single_sondra_\(index)",
-                "sequenceOffsetSeconds": \(offset),
-                "direction": "\(direction)",
-                "readStatus": "\(direction == "incoming" ? "unread" : "read")",
-                "sortSequenceOffsetSeconds": \(offset)
-              }
-        """
-    }.joined(separator: ",\n")
-    let lastOffset = 0
-    let json = """
-    [
-      {
-        "accountID": "mock_user",
-        "conversations": [
-          {
-            "id": "single_sondra",
-            "type": "single",
-            "targetID": "sondra",
-            "title": "Sondra",
-            "avatarURL": null,
-            "unreadCount": 2,
-            "draftText": null,
-            "isPinned": true,
-            "isMuted": false,
-            "isHidden": false,
-            "createdAtOffsetSeconds": -7200
-          },
-          {
-            "id": "group_core",
-            "type": "group",
-            "targetID": "chatbridge_core",
-            "title": "ChatBridge Core",
-            "avatarURL": null,
-            "unreadCount": 0,
-            "draftText": null,
-            "isPinned": false,
-            "isMuted": true,
-            "isHidden": false,
-            "createdAtOffsetSeconds": -7200,
-            "lastMessageTimeOffsetSeconds": -1800,
-            "lastMessageDigest": "群聊 JSON seed 已接入。",
-            "sortTimestampOffsetSeconds": -1800
-          },
-          {
-            "id": "system_release",
-            "type": "system",
-            "targetID": "system",
-            "title": "系统通知",
-            "avatarURL": null,
-            "unreadCount": 0,
-            "draftText": null,
-            "isPinned": false,
-            "isMuted": false,
-            "isHidden": false,
-            "createdAtOffsetSeconds": -7200,
-            "lastMessageTimeOffsetSeconds": -3600,
-            "lastMessageDigest": "系统 JSON seed 已接入。",
-            "sortTimestampOffsetSeconds": -3600
-          }
+        return [
+            "conversationID": "single_sondra",
+            "senderID": direction == "outgoing" ? "mock_user" : "sondra",
+            "text": "Sondra JSON message \(index)",
+            "localTimeOffsetSeconds": offset,
+            "messageID": "seed_single_sondra_\(index)",
+            "serverMessageID": "server_seed_single_sondra_\(index)",
+            "sequenceOffsetSeconds": offset,
+            "direction": direction,
+            "readStatus": direction == "incoming" ? "unread" : "read",
+            "sortSequenceOffsetSeconds": offset
+        ]
+    } : []
+    let payload: [[String: Any]] = [
+        [
+            "accountID": "mock_user",
+            "conversations": [
+                [
+                    "id": "single_sondra",
+                    "type": "single",
+                    "targetID": "sondra",
+                    "title": "Sondra",
+                    "avatarURL": NSNull(),
+                    "unreadCount": 2,
+                    "draftText": NSNull(),
+                    "isPinned": true,
+                    "isMuted": false,
+                    "isHidden": false,
+                    "createdAtOffsetSeconds": -7200
+                ],
+                [
+                    "id": "group_core",
+                    "type": "group",
+                    "targetID": "chatbridge_core",
+                    "title": "ChatBridge Core",
+                    "avatarURL": NSNull(),
+                    "unreadCount": 0,
+                    "draftText": NSNull(),
+                    "isPinned": false,
+                    "isMuted": true,
+                    "isHidden": false,
+                    "createdAtOffsetSeconds": -7200,
+                    "lastMessageTimeOffsetSeconds": -1800,
+                    "lastMessageDigest": "群聊 JSON seed 已接入。",
+                    "sortTimestampOffsetSeconds": -1800
+                ],
+                [
+                    "id": "system_release",
+                    "type": "system",
+                    "targetID": "system",
+                    "title": "系统通知",
+                    "avatarURL": NSNull(),
+                    "unreadCount": 0,
+                    "draftText": NSNull(),
+                    "isPinned": false,
+                    "isMuted": false,
+                    "isHidden": false,
+                    "createdAtOffsetSeconds": -7200,
+                    "lastMessageTimeOffsetSeconds": -3600,
+                    "lastMessageDigest": "系统 JSON seed 已接入。",
+                    "sortTimestampOffsetSeconds": -3600
+                ]
+            ],
+            "messages": messages,
+            "groupMembers": [
+                [
+                    "conversationID": "group_core",
+                    "memberID": "mock_user",
+                    "displayName": "Me",
+                    "role": "admin",
+                    "joinTimeOffsetSeconds": -3600
+                ],
+                [
+                    "conversationID": "group_core",
+                    "memberID": "sondra",
+                    "displayName": "Sondra",
+                    "role": "owner",
+                    "joinTimeOffsetSeconds": -3500
+                ]
+            ],
+            "groupAnnouncements": [
+                [
+                    "conversationID": "group_core",
+                    "text": "群聊 JSON seed 已接入。"
+                ]
+            ],
+            "lastMessageTimeOffsetSeconds": 0
         ],
-        "messages": [
-    \(messages)
-        ],
-        "groupMembers": [
-          {
-            "conversationID": "group_core",
-            "memberID": "mock_user",
-            "displayName": "Me",
-            "role": "admin",
-            "joinTimeOffsetSeconds": -3600
-          },
-          {
-            "conversationID": "group_core",
-            "memberID": "sondra",
-            "displayName": "Sondra",
-            "role": "owner",
-            "joinTimeOffsetSeconds": -3500
-          }
-        ],
-        "groupAnnouncements": [
-          {
-            "conversationID": "group_core",
-            "text": "群聊 JSON seed 已接入。"
-          }
-        ],
-        "lastMessageTimeOffsetSeconds": \(lastOffset)
-      },
-      {
-        "accountID": "other_user",
-        "conversations": [],
-        "messages": [],
-        "groupMembers": [],
-        "groupAnnouncements": []
-      }
+        [
+            "accountID": "other_user",
+            "conversations": [],
+            "messages": [],
+            "groupMembers": [],
+            "groupAnnouncements": []
+        ]
     ]
-    """
-    try Data(json.utf8).write(to: url, options: [.atomic])
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+    _ = try JSONSerialization.jsonObject(with: data)
+    try data.write(to: url, options: [.atomic])
     return url
 }
 
@@ -381,9 +376,13 @@ func makeBootstrappedDatabase(rootDirectory: URL, accountID: UserID) async throw
     return (databaseActor, paths)
 }
 
-func makeRepository(rootDirectory: URL, accountID: UserID) async throws -> (LocalChatRepository, DatabaseTestContext) {
+func makeRepository(
+    rootDirectory: URL,
+    accountID: UserID,
+    eventDispatcher: (any ChatStoreEventDispatching)? = nil
+) async throws -> (LocalChatRepository, DatabaseTestContext) {
     let (databaseActor, paths) = try await makeBootstrappedDatabase(rootDirectory: rootDirectory, accountID: accountID)
-    let repository = LocalChatRepository(database: databaseActor, paths: paths)
+    let repository = LocalChatRepository(database: databaseActor, paths: paths, eventDispatcher: eventDispatcher)
     return (repository, DatabaseTestContext(databaseActor: databaseActor, paths: paths))
 }
 

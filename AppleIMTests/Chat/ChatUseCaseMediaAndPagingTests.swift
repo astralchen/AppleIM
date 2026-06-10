@@ -479,11 +479,11 @@ extension AppleIMTests {
         )
 
         _ = try await repository.applyIncomingSyncBatch(batch, userID: "mention_incoming_user")
-        let rowsBeforeRead = LocalConversationListUseCase.rowStates(
+        let rowsBeforeRead = LocalConversationListService.rowStates(
             from: try await repository.listConversations(for: "mention_incoming_user")
         )
         try await repository.markConversationRead(conversationID: "incoming_mention_conversation", userID: "mention_incoming_user")
-        let rowsAfterRead = LocalConversationListUseCase.rowStates(
+        let rowsAfterRead = LocalConversationListService.rowStates(
             from: try await repository.listConversations(for: "mention_incoming_user")
         )
 
@@ -591,7 +591,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "simulated_store_conversation",
@@ -655,7 +655,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "simulated_concurrent_conversation",
@@ -713,7 +713,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "simulated_read_conversation",
@@ -817,7 +817,7 @@ extension AppleIMTests {
             database: DatabaseActor(),
             shouldSeedDemoData: false
         )
-        let repository = try await storeProvider.repository()
+        let repository = (try await storeProvider.accountStore()).dataRepairRepository
         try await repository.upsertConversation(
             makeConversationRecord(
                 id: "chat_current_push_conversation",

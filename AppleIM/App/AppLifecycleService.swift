@@ -75,11 +75,11 @@ final class AppLifecycleService {
         let storeProvider = storeProvider
         let userID = userID
         Task {
-            guard let repository = try? await storeProvider.repository() else {
+            guard let store = try? await storeProvider.accountStore() else {
                 return
             }
 
-            _ = try? await repository.refreshApplicationBadge(userID: userID)
+            _ = try? await store.notificationSettings.refreshApplicationBadge(userID: userID)
         }
     }
 

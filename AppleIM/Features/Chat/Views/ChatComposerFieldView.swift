@@ -32,6 +32,8 @@ struct ChatComposerTextHeightMeasurement {
 final class ChatComposerFieldView: UIView {
     /// 输入胶囊保持初始高度对应的固定圆角，多行输入时不随高度继续增大。
     private static let cornerRadius: CGFloat = 22
+    /// 输入框普通文本颜色必须稳定，不能从 attributedText 或插入点继承状态反推。
+    private static let plainTextColor: UIColor = .label
 
     /// 文本输入代理。
     weak var textViewDelegate: UITextViewDelegate? {
@@ -249,6 +251,7 @@ final class ChatComposerFieldView: UIView {
         textView.translatesAutoresizingMaskIntoConstraints = false
         textView.backgroundColor = .clear
         textView.font = .preferredFont(forTextStyle: .body)
+        textView.textColor = Self.plainTextColor
         textView.adjustsFontForContentSizeCategory = true
         textView.returnKeyType = .default
         textView.isScrollEnabled = false
@@ -392,7 +395,7 @@ final class ChatComposerFieldView: UIView {
     /// 应用输入文本和 @ 高亮；调用方继续通过 `textView.text` 读取纯文本。
     private func applyText(_ text: String, selectedRange: NSRange?) {
         let font = textView.font ?? .preferredFont(forTextStyle: .body)
-        let baseColor = textView.textColor ?? .label
+        let baseColor = Self.plainTextColor
         textView.font = font
         textView.textColor = baseColor
         textView.attributedText = ChatMentionTextStyling.attributedText(
@@ -401,16 +404,17 @@ final class ChatComposerFieldView: UIView {
             mentionColor: .systemBlue,
             font: font
         )
+
+        if let selectedRange {
+            let textLength = (text as NSString).length
+            let safeLocation = min(max(selectedRange.location, 0), textLength)
+            let safeLength = min(max(selectedRange.length, 0), textLength - safeLocation)
+            textView.selectedRange = NSRange(location: safeLocation, length: safeLength)
+        }
         textView.typingAttributes = [
             .font: font,
             .foregroundColor: baseColor
         ]
-
-        guard let selectedRange else { return }
-        let textLength = (text as NSString).length
-        let safeLocation = min(max(selectedRange.location, 0), textLength)
-        let safeLength = min(max(selectedRange.length, 0), textLength - safeLocation)
-        textView.selectedRange = NSRange(location: safeLocation, length: safeLength)
     }
 
     /// 尾部按钮点击事件。

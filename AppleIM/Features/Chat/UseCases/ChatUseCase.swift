@@ -1,5 +1,5 @@
 //
-//  ChatUseCase.swift
+//  ChatServiceHub.swift
 //  AppleIM
 //
 //  聊天用例
@@ -64,7 +64,7 @@ nonisolated struct GroupChatContext: Equatable, Sendable {
 }
 
 /// 聊天用例协议
-protocol ChatUseCase: Sendable {
+protocol ChatServiceHub: Sendable {
     /// 当前用例对应的账号 ID，用于过滤仓储层变更通知。
     var observedUserID: UserID? { get }
     /// 当前用例对应的会话 ID，用于过滤仓储层变更通知。
@@ -113,7 +113,7 @@ protocol ChatUseCase: Sendable {
     func revoke(messageID: MessageID) async throws
 }
 
-extension ChatUseCase {
+extension ChatServiceHub {
     var observedUserID: UserID? {
         nil
     }
@@ -178,7 +178,7 @@ extension ChatUseCase {
 }
 
 /// 本地聊天用例实现
-nonisolated struct LocalChatUseCase: ChatUseCase {
+nonisolated struct LocalChatServiceHub: ChatServiceHub {
     /// 首屏消息加载数量
     private static let initialMessageLimit = 50
     /// 最短语音发送时长
@@ -198,6 +198,8 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     private let conversationRepository: (any ConversationRepository)?
     /// 待处理任务仓储
     private let pendingJobRepository: (any PendingJobRepository)?
+    /// 表情仓储
+    private let emojiRepository: (any EmojiRepository)?
     /// 消息发送服务
     private let sendService: any MessageSendService
     /// 媒体文件存储
@@ -228,6 +230,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         repository: any MessageRepository,
         conversationRepository: (any ConversationRepository)? = nil,
         pendingJobRepository: (any PendingJobRepository)? = nil,
+        emojiRepository: (any EmojiRepository)? = nil,
         sendService: any MessageSendService,
         mediaFileStore: (any MediaFileStoring)? = nil,
         mediaUploadService: any MediaUploadService = MockMediaUploadService(),
@@ -241,6 +244,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
         self.repository = repository
         self.conversationRepository = conversationRepository
         self.pendingJobRepository = pendingJobRepository
+        self.emojiRepository = emojiRepository ?? (repository as? any EmojiRepository)
         self.sendService = sendService
         self.mediaFileStore = mediaFileStore
         self.mediaUploadService = mediaUploadService
@@ -418,7 +422,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     }
 
     func loadEmojiPanelState() async throws -> ChatEmojiPanelState {
-        guard let emojiRepository = repository as? any EmojiRepository else {
+        guard let emojiRepository else {
             return .empty
         }
 
@@ -426,7 +430,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
     }
 
     func toggleEmojiFavorite(emojiID: String, isFavorite: Bool) async throws -> ChatEmojiPanelState {
-        guard let emojiRepository = repository as? any EmojiRepository else {
+        guard let emojiRepository else {
             return .empty
         }
 
@@ -456,7 +460,7 @@ nonisolated struct LocalChatUseCase: ChatUseCase {
                             sortSequence: now
                         )
                     )
-                    try await (repository as? any EmojiRepository)?.recordEmojiUsed(
+                    try await emojiRepository?.recordEmojiUsed(
                         emojiID: emoji.emojiID,
                         userID: userID,
                         usedAt: now
@@ -1467,7 +1471,7 @@ private extension MessageSendResult {
 }
 
 /// 基于 ChatStoreProvider 的聊天用例代理
-nonisolated struct StoreBackedChatUseCase: ChatUseCase {
+nonisolated struct StoreBackedChatServiceHub: ChatServiceHub {
     /// 用户 ID
     private let userID: UserID
     /// 会话 ID
@@ -1487,7 +1491,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
     /// 统一模拟后台推送服务
     private let simulatedIncomingPushService: any SimulatedIncomingPushing
     /// 本地用例缓存 Provider，避免每次调用重复构造完整依赖图。
-    private let localUseCaseProvider: StoreBackedLocalChatUseCaseProvider
+    private let localUseCaseProvider: StoreBackedLocalChatServiceProvider
 
     var observedUserID: UserID? {
         userID
@@ -1520,7 +1524,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
         self.mediaFileStore = mediaFileStore
         self.mediaUploadService = mediaUploadService
         self.simulatedIncomingPushService = resolvedSimulatedIncomingPushService
-        self.localUseCaseProvider = StoreBackedLocalChatUseCaseProvider(
+        self.localUseCaseProvider = StoreBackedLocalChatServiceProvider(
             userID: userID,
             conversationID: conversationID,
             currentUserAvatarURL: currentUserAvatarURL,
@@ -1676,7 +1680,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 对最新 repository 解析出的本地用例执行一次异步操作。
     private func withLocalUseCase<Result>(
-        _ operation: (LocalChatUseCase) async throws -> Result
+        _ operation: (LocalChatServiceHub) async throws -> Result
     ) async throws -> Result {
         let useCase = try await localUseCaseProvider.localUseCase(storeProvider: storeProvider)
         return try await operation(useCase)
@@ -1684,7 +1688,7 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
     /// 透传本地用例产生的消息状态流，同时保留取消语义。
     private func localUseCaseStream(
-        _ makeStream: @escaping @MainActor @Sendable (LocalChatUseCase) -> AsyncThrowingStream<ChatMessageRowState, Error>
+        _ makeStream: @escaping @MainActor @Sendable (LocalChatServiceHub) -> AsyncThrowingStream<ChatMessageRowState, Error>
     ) -> AsyncThrowingStream<ChatMessageRowState, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -1712,8 +1716,8 @@ nonisolated struct StoreBackedChatUseCase: ChatUseCase {
 
 }
 
-/// 为 StoreBackedChatUseCase 缓存本地聊天用例。
-private actor StoreBackedLocalChatUseCaseProvider {
+/// 为 StoreBackedChatServiceHub 缓存本地聊天用例。
+private actor StoreBackedLocalChatServiceProvider {
     private let userID: UserID
     private let conversationID: ConversationID
     private let currentUserAvatarURL: String?
@@ -1722,7 +1726,7 @@ private actor StoreBackedLocalChatUseCaseProvider {
     private let mediaFileStore: any MediaFileStoring
     private let mediaUploadService: any MediaUploadService
     private let simulatedIncomingPushService: any SimulatedIncomingPushing
-    private var cachedUseCase: LocalChatUseCase?
+    private var cachedUseCase: LocalChatServiceHub?
 
     init(
         userID: UserID,
@@ -1744,20 +1748,21 @@ private actor StoreBackedLocalChatUseCaseProvider {
         self.simulatedIncomingPushService = simulatedIncomingPushService
     }
 
-    func localUseCase(storeProvider: ChatStoreProvider) async throws -> LocalChatUseCase {
+    func localUseCase(storeProvider: ChatStoreProvider) async throws -> LocalChatServiceHub {
         if let cachedUseCase {
             return cachedUseCase
         }
 
-        let repository = try await storeProvider.repository()
-        let useCase = LocalChatUseCase(
+        let accountStore = try await storeProvider.accountStore()
+        let useCase = LocalChatServiceHub(
             userID: userID,
             conversationID: conversationID,
             currentUserAvatarURL: currentUserAvatarURL,
             conversationAvatarURL: conversationAvatarURL,
-            repository: repository,
-            conversationRepository: repository,
-            pendingJobRepository: repository,
+            repository: accountStore.messages,
+            conversationRepository: accountStore.conversations,
+            pendingJobRepository: accountStore.pendingJobs,
+            emojiRepository: accountStore.emojis,
             sendService: sendService,
             mediaFileStore: mediaFileStore,
             mediaUploadService: mediaUploadService,

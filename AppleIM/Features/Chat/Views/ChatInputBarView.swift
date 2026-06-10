@@ -238,6 +238,17 @@ final class ChatInputBarView: UIView {
         updateTextViewHeight(animated: animated)
     }
 
+    /// 设置文本内容并指定光标位置。
+    ///
+    /// 选择 @ 成员后需要把光标放到 token 后的空格之后，避免继续输入的普通文字被并入 @ 高亮范围。
+    func setText(_ text: String, selectedRange: NSRange, animated: Bool) {
+        stateMachine.reduce(.setText(text))
+        composerFieldView.setText(text, selectedRange: selectedRange)
+        renderTextViewPlaceholder()
+        renderTrailingActionState()
+        updateTextViewHeight(animated: animated)
+    }
+
     /// 渲染语音录制状态
     ///
     /// 根据录制状态更新 UI：

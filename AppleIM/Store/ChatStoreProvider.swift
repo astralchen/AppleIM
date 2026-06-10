@@ -32,6 +32,8 @@ actor ChatStoreProvider {
     private let logger = AppLogger(category: .store)
     /// 缓存的仓储实例
     private var cachedRepository: LocalChatRepository?
+    /// 缓存的账号 Store 门面
+    private var cachedAccountStore: AccountChatStore?
     /// 正在进行中的仓储初始化任务，避免 actor 可重入导致重复 seed。
     private var repositoryInitializationTask: Task<LocalChatRepository, any Error>?
     /// 缓存的搜索索引 Actor
@@ -65,7 +67,7 @@ actor ChatStoreProvider {
         self.shouldSeedDemoData = shouldSeedDemoData
     }
 
-    /// 获取聊天仓储实例
+    /// 获取 Store 内部维护仓储实例
     ///
     /// 首次调用时初始化仓储，后续调用返回缓存实例
     ///
@@ -77,9 +79,9 @@ actor ChatStoreProvider {
     /// 4. 填充演示数据（如果需要）
     /// 5. 缓存仓储实例
     ///
-    /// - Returns: 聊天仓储实例
+    /// - Returns: Store 内部维护仓储实例
     /// - Throws: 初始化失败时抛出错误
-    func repository() async throws -> LocalChatRepository {
+    private func repositoryForStoreMaintenance() async throws -> LocalChatRepository {
         if let cachedRepository {
             logger.debug("ChatStoreProvider repository cache hit")
             return cachedRepository
@@ -104,6 +106,22 @@ actor ChatStoreProvider {
             self.repositoryInitializationTask = nil
             throw error
         }
+    }
+
+    /// 获取当前账号的聊天 Store 门面。
+    ///
+    /// 上层业务应优先依赖该门面暴露的窄能力，逐步减少对全能
+    /// `LocalChatRepository` 的直接传递。
+    func accountStore() async throws -> AccountChatStore {
+        if let cachedAccountStore {
+            logger.debug("ChatStoreProvider accountStore cache hit")
+            return cachedAccountStore
+        }
+
+        let repository = try await repositoryForStoreMaintenance()
+        let accountStore = AccountChatStore(repository: repository)
+        cachedAccountStore = accountStore
+        return accountStore
     }
 
     private func makeRepository() async throws -> LocalChatRepository {
@@ -152,7 +170,7 @@ actor ChatStoreProvider {
         let startUptime = AppLogger.performanceSpan()
         logger.info("ChatStoreProvider dataRepairService create started")
         let paths = try await bootstrappedAccountStorage()
-        let repository = try await repository()
+        let repository = try await repositoryForStoreMaintenance()
         let searchIndex = try await searchIndex()
         logger.info("ChatStoreProvider dataRepairService create completed elapsed=\(AppLogger.elapsedMilliseconds(since: startUptime))")
         return DataRepairService(
@@ -175,6 +193,7 @@ actor ChatStoreProvider {
     func deleteAccountStorage() async throws {
         try await closeAccountConnections()
         cachedRepository = nil
+        cachedAccountStore = nil
         cachedSearchIndex = nil
         cachedBootstrappedPaths = nil
         try await storageService.deleteStorage(for: accountID)

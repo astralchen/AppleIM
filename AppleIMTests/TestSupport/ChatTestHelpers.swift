@@ -10,6 +10,34 @@ import UniformTypeIdentifiers
 
 @testable import AppleIM
 
+typealias ChatUseCase = ChatServiceHub
+typealias LocalChatUseCase = LocalChatServiceHub
+typealias StoreBackedChatUseCase = StoreBackedChatServiceHub
+typealias ChatUseCaseServiceAdapter = ChatServiceHubAdapter
+
+extension ChatViewModel {
+    convenience init(
+        useCase: any ChatUseCase,
+        title: String,
+        currentUptime: @escaping () -> TimeInterval = { SystemPerformanceMeasurer.shared.currentUptime() }
+    ) {
+        let services = ChatUseCaseServiceAdapter(useCase: useCase)
+        self.init(
+            dependencies: Dependencies(
+                timeline: services,
+                draft: services,
+                sender: services,
+                messageOperations: services,
+                group: services,
+                emoji: services,
+                simulatedIncoming: services
+            ),
+            title: title,
+            currentUptime: currentUptime
+        )
+    }
+}
+
 enum TestChatError: Error, Sendable {
     case paginationFailed
     case messageActionFailed

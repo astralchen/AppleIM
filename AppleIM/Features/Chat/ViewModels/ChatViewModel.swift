@@ -31,8 +31,37 @@ import Foundation
 /// - `cancel()`: 页面消失时调用，取消所有进行中的任务
 @MainActor
 final class ChatViewModel {
-    /// UseCase 依赖，处理业务逻辑
-    private let useCase: any ChatUseCase
+    /// 聊天页窄服务依赖组。
+    nonisolated struct Dependencies: Sendable {
+        let timeline: any ChatTimelineService
+        let draft: any ChatDraftService
+        let sender: any ChatSendingService
+        let messageOperations: any ChatMessageOperationService
+        let group: any ChatGroupService
+        let emoji: any ChatEmojiService
+        let simulatedIncoming: any ChatSimulatedIncomingService
+
+        init(
+            timeline: any ChatTimelineService,
+            draft: any ChatDraftService,
+            sender: any ChatSendingService,
+            messageOperations: any ChatMessageOperationService,
+            group: any ChatGroupService,
+            emoji: any ChatEmojiService,
+            simulatedIncoming: any ChatSimulatedIncomingService
+        ) {
+            self.timeline = timeline
+            self.draft = draft
+            self.sender = sender
+            self.messageOperations = messageOperations
+            self.group = group
+            self.emoji = emoji
+            self.simulatedIncoming = simulatedIncoming
+        }
+    }
+
+    /// 服务依赖，按时间线、草稿、发送、操作等职责拆分。
+    private let dependencies: Dependencies
     /// 状态发布器，用于向 UI 发布状态变化
     private let stateSubject: CurrentValueSubject<ChatViewState, Never>
     /// 加载任务
@@ -106,14 +135,14 @@ final class ChatViewModel {
     /// 初始化 ViewModel
     ///
     /// - Parameters:
-    ///   - useCase: 聊天业务逻辑处理器
+    ///   - dependencies: 聊天页窄服务依赖组
     ///   - title: 聊天页标题
     init(
-        useCase: any ChatUseCase,
+        dependencies: Dependencies,
         title: String,
         currentUptime: @escaping () -> TimeInterval = { SystemPerformanceMeasurer.shared.currentUptime() }
     ) {
-        self.useCase = useCase
+        self.dependencies = dependencies
         self.currentUptime = currentUptime
         self.stateSubject = CurrentValueSubject(ChatViewState(title: title))
     }
@@ -137,9 +166,9 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                async let page = useCase.loadInitialMessages()
-                async let draft = useCase.loadDraft()
-                async let groupContext = useCase.loadGroupContext()
+                async let page = dependencies.timeline.loadInitialMessages()
+                async let draft = dependencies.draft.loadDraft()
+                async let groupContext = dependencies.group.loadGroupContext()
                 let loadedPage = try await page
                 let loadedDraft = try await draft ?? ""
                 let loadedGroupContext = try await groupContext
@@ -205,7 +234,7 @@ final class ChatViewModel {
             }
 
             do {
-                let page = try await useCase.loadOlderMessages(
+                let page = try await dependencies.timeline.loadOlderMessages(
                     beforeSortSequence: beforeSortSequence,
                     limit: pageSize
                 )
@@ -264,7 +293,7 @@ final class ChatViewModel {
                     state.draftText = ""
                 }
 
-                for try await row in useCase.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
+                for try await row in dependencies.sender.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                     guard !Task.isCancelled else { return }
                     logger.info("ChatViewModel sendText rowReceived taskID=\(Self.shortLogID(taskID.uuidString)) messageID=\(Self.shortLogID(row.id.rawValue)) total=\(AppLogger.elapsedMilliseconds(since: startUptime))")
                     sendOrderByMessageID[row.id] = sendOrder
@@ -294,8 +323,8 @@ final class ChatViewModel {
     ///   - data: 图片数据
     ///   - preferredFileExtension: 首选文件扩展名
     func sendImage(data: Data, preferredFileExtension: String?) {
-        startSendTask(name: "sendImage", errorMessage: "Unable to send image") { [useCase] in
-            useCase.sendImage(data: data, preferredFileExtension: preferredFileExtension)
+        startSendTask(name: "sendImage", errorMessage: "Unable to send image") { [sender = dependencies.sender] in
+            sender.sendImage(data: data, preferredFileExtension: preferredFileExtension)
         }
     }
 
@@ -311,7 +340,7 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                let panelState = try await useCase.loadEmojiPanelState()
+                let panelState = try await dependencies.emoji.loadEmojiPanelState()
                 guard !Task.isCancelled else { return }
                 publish { state in
                     state.emojiPanel = panelState
@@ -334,7 +363,7 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                let panelState = try await useCase.toggleEmojiFavorite(emojiID: emojiID, isFavorite: isFavorite)
+                let panelState = try await dependencies.emoji.toggleEmojiFavorite(emojiID: emojiID, isFavorite: isFavorite)
                 guard !Task.isCancelled else { return }
                 publish { state in
                     state.emojiPanel = panelState
@@ -354,7 +383,7 @@ final class ChatViewModel {
         startSendTask(
             name: "sendEmoji",
             errorMessage: "Unable to send emoji",
-            operation: { [useCase] in useCase.sendEmoji(emoji) },
+            operation: { [emojiService = dependencies.emoji] in emojiService.sendEmoji(emoji) },
             onFinish: { [weak self] in self?.loadEmojiPanel() }
         )
     }
@@ -363,8 +392,8 @@ final class ChatViewModel {
     ///
     /// - Parameter recording: 已完成的本地录音文件
     func sendVoice(recording: VoiceRecordingFile) {
-        startSendTask(name: "sendVoice", errorMessage: "Unable to send voice") { [useCase] in
-            useCase.sendVoice(recording: recording)
+        startSendTask(name: "sendVoice", errorMessage: "Unable to send voice") { [sender = dependencies.sender] in
+            sender.sendVoice(recording: recording)
         }
     }
 
@@ -374,8 +403,8 @@ final class ChatViewModel {
     ///   - fileURL: PHPicker 或文件提供方返回的临时视频文件
     ///   - preferredFileExtension: 首选文件扩展名
     func sendVideo(fileURL: URL, preferredFileExtension: String?) {
-        startSendTask(name: "sendVideo", errorMessage: "Unable to send video") { [useCase] in
-            useCase.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
+        startSendTask(name: "sendVideo", errorMessage: "Unable to send video") { [sender = dependencies.sender] in
+            sender.sendVideo(fileURL: fileURL, preferredFileExtension: preferredFileExtension)
         }
     }
 
@@ -453,7 +482,7 @@ final class ChatViewModel {
                 for mediaItem in media {
                     switch mediaItem {
                     case let .image(data, preferredFileExtension):
-                        for try await row in useCase.sendImage(
+                        for try await row in dependencies.sender.sendImage(
                             data: data,
                             preferredFileExtension: preferredFileExtension
                         ) {
@@ -461,7 +490,7 @@ final class ChatViewModel {
                             upsert(row)
                         }
                     case let .video(fileURL, preferredFileExtension):
-                        for try await row in useCase.sendVideo(
+                        for try await row in dependencies.sender.sendVideo(
                             fileURL: fileURL,
                             preferredFileExtension: preferredFileExtension
                         ) {
@@ -472,7 +501,7 @@ final class ChatViewModel {
                 }
 
                 guard !trimmedText.isEmpty else { return }
-                for try await row in useCase.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
+                for try await row in dependencies.sender.sendText(trimmedText, mentionedUserIDs: mentionedUserIDs, mentionsAll: mentionsAll) {
                     guard !Task.isCancelled else { return }
                     upsert(row)
                 }
@@ -580,7 +609,7 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                let announcement = try await useCase.updateGroupAnnouncement(trimmedText)
+                let announcement = try await dependencies.group.updateGroupAnnouncement(trimmedText)
                 guard let announcement else { return }
                 groupContext = groupContext.map {
                     GroupChatContext(
@@ -629,7 +658,7 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                guard let updatedRow = try await useCase.markVoicePlayed(messageID: messageID) else {
+                guard let updatedRow = try await dependencies.messageOperations.markVoicePlayed(messageID: messageID) else {
                     return
                 }
                 guard !Task.isCancelled else { return }
@@ -714,7 +743,7 @@ final class ChatViewModel {
             }
 
             do {
-                let rows = try await useCase.simulateIncomingMessages()
+                let rows = try await dependencies.simulatedIncoming.simulateIncomingMessages()
                 guard !Task.isCancelled else { return }
                 upsertSimulatedIncomingRows(rows)
                 logger.info(
@@ -732,8 +761,8 @@ final class ChatViewModel {
 
     /// 响应联系人资料变更，只更新当前聊天对应会话的标题和对方头像。
     func handleContactProfileChange(_ event: ContactProfileChangeEvent) {
-        guard event.userID == useCase.observedUserID else { return }
-        guard let conversationID = event.conversationID, conversationID == useCase.observedConversationID else { return }
+        guard event.userID == dependencies.timeline.observedUserID else { return }
+        guard let conversationID = event.conversationID, conversationID == dependencies.timeline.observedConversationID else { return }
 
         publish { state in
             state.title = event.displayName
@@ -761,7 +790,7 @@ final class ChatViewModel {
             }
 
             do {
-                let page = try await useCase.loadInitialMessages()
+                let page = try await dependencies.timeline.loadInitialMessages()
                 guard !Task.isCancelled else { return }
                 publish { state in
                     state.rows = Self.rowsWithTimeSeparators(rowsPreservingActiveVoicePlayback(page.rows))
@@ -800,7 +829,7 @@ final class ChatViewModel {
 
             do {
                 try await Task.sleep(nanoseconds: 250_000_000)
-                try await useCase.saveDraft(text)
+                try await dependencies.draft.saveDraft(text)
             } catch is CancellationError {
                 return
             } catch {
@@ -823,9 +852,9 @@ final class ChatViewModel {
         }
 
         draftTask?.cancel()
-        let useCase = self.useCase
+        let draft = dependencies.draft
         draftTask = Task {
-            try? await useCase.saveDraft(text)
+            try? await draft.saveDraft(text)
         }
     }
 
@@ -838,7 +867,7 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                for try await row in useCase.resend(messageID: messageID) {
+                for try await row in dependencies.messageOperations.resend(messageID: messageID) {
                     guard !Task.isCancelled else { return }
                     upsert(row)
                 }
@@ -861,7 +890,7 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                try await useCase.delete(messageID: messageID)
+                try await dependencies.messageOperations.delete(messageID: messageID)
                 guard !Task.isCancelled else { return }
 
                 publish { state in
@@ -890,8 +919,8 @@ final class ChatViewModel {
             guard let self else { return }
 
             do {
-                try await useCase.revoke(messageID: messageID)
-                let page = try await useCase.loadInitialMessages()
+                try await dependencies.messageOperations.revoke(messageID: messageID)
+                let page = try await dependencies.timeline.loadInitialMessages()
                 guard !Task.isCancelled else { return }
 
                 publish { state in
@@ -986,7 +1015,7 @@ final class ChatViewModel {
         latestMessagesObservationTask = Task { [weak self] in
             guard let self else { return }
             do {
-                guard let stream = try await useCase.observeLatestMessages(limit: pageSize) else {
+                guard let stream = try await dependencies.timeline.observeLatestMessages(limit: pageSize) else {
                     latestMessagesObservationTask = nil
                     return
                 }
@@ -1281,11 +1310,11 @@ final class ChatViewModel {
     }
 
     private func shouldRefreshAfterStoreChange(userID rawUserID: String?, conversationIDs rawConversationIDs: [String]) -> Bool {
-        if let observedUserID = useCase.observedUserID, let rawUserID, observedUserID.rawValue != rawUserID {
+        if let observedUserID = dependencies.timeline.observedUserID, let rawUserID, observedUserID.rawValue != rawUserID {
             return false
         }
 
-        guard let observedConversationID = useCase.observedConversationID else {
+        guard let observedConversationID = dependencies.timeline.observedConversationID else {
             return false
         }
 

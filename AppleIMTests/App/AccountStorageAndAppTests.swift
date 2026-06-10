@@ -178,6 +178,56 @@ extension AppleIMTests {
     }
 
     @MainActor
+    @Test func accountLifecycleServiceClearsSessionAndClosesConnections() async throws {
+        let session = AccountSession(
+            userID: "lifecycle_user",
+            displayName: "Lifecycle User",
+            token: "mock_token",
+            loggedInAt: 1
+        )
+        let store = InMemoryAccountSessionStore(session: session)
+        let service = AccountLifecycleService(sessionStore: store)
+        var didCloseConnections = false
+
+        await service.endSession {
+            didCloseConnections = true
+        }
+
+        #expect(store.loadSession() == nil)
+        #expect(didCloseConnections)
+    }
+
+    @MainActor
+    @Test func accountLifecycleServiceKeepsSessionWhenDeleteLocalDataFails() async throws {
+        enum DeleteError: Error {
+            case failed
+        }
+        let session = AccountSession(
+            userID: "delete_lifecycle_user",
+            displayName: "Delete Lifecycle User",
+            token: "mock_token",
+            loggedInAt: 1
+        )
+        let store = InMemoryAccountSessionStore(session: session)
+        let service = AccountLifecycleService(sessionStore: store)
+        var didCloseConnections = false
+
+        await #expect(throws: DeleteError.self) {
+            try await service.deleteLocalDataThenEndSession(
+                deleteLocalData: {
+                    throw DeleteError.failed
+                },
+                closeConnections: {
+                    didCloseConnections = true
+                }
+            )
+        }
+
+        #expect(store.loadSession() == session)
+        #expect(didCloseConnections == false)
+    }
+
+    @MainActor
     @Test func appDependencyContainerUsesLoginAccountStorage() async throws {
         let rootDirectory = temporaryDirectory()
         defer {
